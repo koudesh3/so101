@@ -5,7 +5,7 @@
 //! - `device`   one servo bus, real or simulated
 //! - `robot`    joints, calibration, the arm
 //! - `control`  ticker, calibration sweep, teleop loop
-//! - `report`   byte log -> HTML
+//! - `report`   byte log -> HTML, and the live dashboard
 
 pub mod control;
 pub mod device;
