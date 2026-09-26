@@ -49,6 +49,18 @@ impl ServoError {
     pub const OVERCURRENT: u8 = 1 << 3;
     pub const ANGLE_LIMIT: u8 = 1 << 4;
     pub const OVERLOAD: u8 = 1 << 5;
+    // Bits a servo raises while still answering with valid data: a supply dip,
+    // or its own overload or current protection. Reported, not treated as a
+    // failed read: failing the read freezes teleop with the servo still pushing.
+    pub const ADVISORY: u8 = Self::VOLTAGE | Self::OVERLOAD | Self::OVERCURRENT;
+
+    pub fn is_advisory(self) -> bool {
+        self.0 != 0 && self.0 & !Self::ADVISORY == 0
+    }
+
+    pub fn has(self, bit: u8) -> bool {
+        self.0 & bit != 0
+    }
 
     pub fn is_healthy(self) -> bool {
         self.0 == 0
