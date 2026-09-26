@@ -24,6 +24,7 @@ touches hardware is the `serialport` crate.
 | `control/calibrate`      | the range sweep                                             | integration tests |
 | `control/teleop`         | the loop                                                    | integration test: leader waves, follower follows, log decodes |
 | `report/visualize`       | byte log -> frames -> HTML report                           | integration test |
+| `report/dashboard`       | live dashboard: std-only HTTP + server-sent events, byte tap | integration test |
 | `error`                  | the one error type everything above `wire` returns          | |
 
 ## Build and test
@@ -58,6 +59,52 @@ so101 --log run.jsonl teleop --leader /dev/ttyACM0 --follower /dev/ttyACM1 \
       --leader-calibration leader.json --follower-calibration follower.json --hz 30
 so101 visualize --log-file run.jsonl --out run.html
 ```
+
+## Live dashboard
+
+```
+so101 --sim teleop --serve                     # simulated pick-and-place, open http://127.0.0.1:7878/
+so101 teleop --leader $SO_LEADER --follower $SO_FOLLOWER \
+      --leader-calibration leader.json --follower-calibration follower.json --max-step 50 --serve
+```
+
+`--serve [ADDR]` (default `127.0.0.1:7878`) streams every tick and every byte
+on both buses to one page (`report/dashboard`), and turns on a telemetry side
+channel: each tick also reads one follower servo's Present_Position..
+Present_Current block in one round trip, rotating through the six, so load,
+current, temperature, voltage and status refresh at 5 Hz per joint at 30 Hz.
+
+The page's only control is Start/Stop (or Space); the arms drive the rest:
+
+- **Workstation**: both arms from TheRobotStudio's meshes, posed through their
+  URDFs, cel-shaded with colour laid down as ordered dither, heavy ink
+  silhouette, thin inner contours. A servo is grey at rest and gains chroma
+  with speed. The grey skeleton is the commanded pose when it differs.
+- **Joint rows**: value, leader-follower gap, calibrated range rail, an
+  auto-scaled 8 s trace, and load per read.
+- **Joint space**: a fixed map. The six normalised joints are projected onto
+  the three directions you move in most, learned from the first 20 s of
+  motion after Start, then locked (axes, centre, scale), so a pose always
+  lands in the same place. Saved in the browser while the calibration is
+  unchanged; `?relearn` discards it. Isometric from a fixed cube corner, the
+  follower drawn as a tapering tail coloured by the joints driving it.
+- **Wire**: every request and reply, bus occupancy at 1 Mbaud, loop work
+  against the period, the instructions on the wire decoded.
+- **Attention**: stalls, hard-stop proximity, steady offsets, lag, speed
+  limiting, heating, overload bits, bus errors, each with what to do and a
+  ring on the servo in 3D.
+
+Follows the system light/dark setting (`?theme=` overrides); every label
+clears 4.5:1 and every chart mark 3:1 against the paper in both themes. If a
+rendered joint turns opposite to the real one, flip its `SIGN` entry in
+`src/report/dashboard.html`. `SO101_DASHBOARD=src/report/dashboard.html`
+serves the page from disk so it can be edited without rebuilding. Demo flags:
+`?synthetic` (scripted trajectories), `?virtual` (time advances only through
+`__step(ms)`), `?solo=phase` (joint-space panel only).
+
+The meshes in `src/report/assets/` are packed by `tools/build_model.py` from
+[SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) `Simulation/SO101`
+(Apache-2.0, license in `src/report/assets/LICENSE.SO-ARM100`).
 
 ## Bring-up order on real hardware
 
