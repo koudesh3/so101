@@ -4,13 +4,19 @@
 use std::time::Duration;
 
 use crate::error::{Error, Result};
-use crate::wire::protocol::{encode_instruction, parse_frame, Frame, Instruction, ParseError, BROADCAST_ID, MAX_SERVO_ID};
+use crate::wire::protocol::{ServoError, encode_instruction, parse_frame, Frame, Instruction, ParseError, BROADCAST_ID, MAX_SERVO_ID};
 use crate::wire::registers::{self, Register, LOCK, TORQUE_ENABLE};
 use crate::wire::transport::{Transport, TransportError};
+
+// How long to wait for the ack of a write that commits to non-volatile memory.
+// Up to ~40 ms has been measured; allow more than double.
+pub const EEPROM_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub struct Bus {
     transport: Box<dyn Transport>,
     pub reply_timeout: Duration,
+    // Advisory status bits seen since the last `take_flags`, per replying id.
+    flags: Vec<(u8, ServoError)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -28,7 +34,7 @@ impl ServoIdentity {
 
 impl Bus {
     pub fn new(transport: Box<dyn Transport>) -> Self {
-        Self { transport, reply_timeout: Duration::from_millis(10) }
+        Self { transport, reply_timeout: Duration::from_millis(10), flags: Vec::new() }
     }
 
     pub fn name(&self) -> &str {
@@ -59,10 +65,20 @@ impl Bus {
             return Err(Error::WrongId { expected: expected_id, got: frame.id });
         }
         let error = frame.error();
-        if !error.is_healthy() {
+        if error.is_advisory() {
+            // note: the data in this reply is still good. Failing the read here
+            // is what froze teleop on a tripped gripper: no read, so no new goal,
+            // so the servo stayed pinned against its load.
+            self.flags.push((frame.id, error));
+        } else if !error.is_healthy() {
             return Err(Error::ServoFault { id: frame.id, error });
         }
         Ok(frame)
+    }
+
+    // Advisory bits collected since the last call, then cleared.
+    pub fn take_flags(&mut self) -> Vec<(u8, ServoError)> {
+        std::mem::take(&mut self.flags)
     }
 
     pub fn ping(&mut self, id: u8) -> Result<()> {
@@ -77,6 +93,13 @@ impl Bus {
         let model = self.read(id, registers::MODEL_NUMBER)?;
         let present_position = self.read(id, registers::PRESENT_POSITION)?;
         Ok(ServoIdentity { id, model, present_position })
+    }
+
+    // `len` raw bytes from `address` in one transaction.
+    pub fn read_block(&mut self, id: u8, address: u8, len: u8) -> Result<Vec<u8>> {
+        self.send(id, Instruction::Read, &[address, len])?;
+        let frame = self.receive_status(id, len as usize)?;
+        Ok(frame.params)
     }
 
     pub fn read(&mut self, id: u8, reg: Register) -> Result<i32> {
@@ -141,10 +164,27 @@ impl Bus {
         if !reg.is_eeprom() {
             return self.write(id, reg, value);
         }
+        self.write_unlocked(id, reg, value)
+    }
+
+    // Torque off, Lock = 0, write, Lock = 1: for EEPROM and the factory area.
+    // note: a write that commits to EEPROM or the factory area acknowledges
+    // late: 2 to ~40 ms measured on hardware, against the normal 10 ms reply
+    // window. An ack that misses the window arrives during the next
+    // transaction and is misread as another servo's reply. Wait long enough.
+    pub fn write_unlocked(&mut self, id: u8, reg: Register, value: i32) -> Result<()> {
         self.write(id, TORQUE_ENABLE, 0)?;
         self.write(id, LOCK, 0)?;
+        let result = self.write_slow(id, reg, value);
+        self.write_slow(id, LOCK, 1)?;
+        result
+    }
+
+    fn write_slow(&mut self, id: u8, reg: Register, value: i32) -> Result<()> {
+        let saved = self.reply_timeout;
+        self.reply_timeout = EEPROM_ACK_TIMEOUT;
         let result = self.write(id, reg, value);
-        self.write(id, LOCK, 1)?;
+        self.reply_timeout = saved;
         result
     }
 }

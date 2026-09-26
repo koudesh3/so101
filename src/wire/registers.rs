@@ -83,9 +83,14 @@ pub const MAX_ANGLE_LIMIT: Register = Register::new("Max_Angle_Limit", 11, 2, Re
 pub const MAX_TEMPERATURE: Register = Register::new("Max_Temperature", 13, 1, ReadWrite, Unsigned);
 pub const MAX_TORQUE: Register = Register::new("Max_Torque", 16, 2, ReadWrite, Unsigned);
 pub const PHASE: Register = Register::new("Phase", 18, 1, ReadWrite, Unsigned);
+// Phase bit 4: angle feedback mode. Cleared keeps Present_Position in 0..4095
+// instead of wrapping signed (LeRobot clears it on every STS3215).
+pub const PHASE_ANGLE_FEEDBACK: i32 = 0x10;
 pub const P_COEFFICIENT: Register = Register::new("P_Coefficient", 21, 1, ReadWrite, Unsigned);
 pub const D_COEFFICIENT: Register = Register::new("D_Coefficient", 22, 1, ReadWrite, Unsigned);
 pub const I_COEFFICIENT: Register = Register::new("I_Coefficient", 23, 1, ReadWrite, Unsigned);
+pub const PROTECTION_CURRENT: Register = Register::new("Protection_Current", 28, 2, ReadWrite, Unsigned);
+pub const OVERLOAD_TORQUE: Register = Register::new("Overload_Torque", 36, 1, ReadWrite, Unsigned);
 pub const HOMING_OFFSET: Register = Register::new("Homing_Offset", 31, 2, ReadWrite, SignBit(11));
 pub const OPERATING_MODE: Register = Register::new("Operating_Mode", 33, 1, ReadWrite, Unsigned);
 
@@ -95,10 +100,13 @@ pub const GOAL_POSITION: Register = Register::new("Goal_Position", 42, 2, ReadWr
 pub const GOAL_TIME: Register = Register::new("Goal_Time", 44, 2, ReadWrite, Unsigned);
 pub const GOAL_SPEED: Register = Register::new("Goal_Speed", 46, 2, ReadWrite, SignBit(15));
 pub const TORQUE_LIMIT: Register = Register::new("Torque_Limit", 48, 2, ReadWrite, Unsigned);
+// Factory area, behind Lock like EEPROM. LeRobot sets 254 for fastest ramps.
+pub const MAXIMUM_ACCELERATION: Register = Register::new("Maximum_Acceleration", 85, 1, ReadWrite, Unsigned);
 pub const LOCK: Register = Register::new("Lock", 55, 1, ReadWrite, Unsigned);
 pub const PRESENT_POSITION: Register = Register::new("Present_Position", 56, 2, ReadOnly, SignBit(15));
 pub const PRESENT_SPEED: Register = Register::new("Present_Speed", 58, 2, ReadOnly, SignBit(15));
-pub const PRESENT_LOAD: Register = Register::new("Present_Load", 60, 2, ReadOnly, Unsigned);
+// Direction in bit 10, magnitude 0..1000 = 0..100% (LeRobot's encoding table).
+pub const PRESENT_LOAD: Register = Register::new("Present_Load", 60, 2, ReadOnly, SignBit(10));
 pub const PRESENT_VOLTAGE: Register = Register::new("Present_Voltage", 62, 1, ReadOnly, Unsigned);
 pub const PRESENT_TEMPERATURE: Register = Register::new("Present_Temperature", 63, 1, ReadOnly, Unsigned);
 pub const STATUS: Register = Register::new("Status", 65, 1, ReadOnly, Unsigned);
@@ -107,7 +115,7 @@ pub const PRESENT_CURRENT: Register = Register::new("Present_Current", 69, 2, Re
 
 pub const ALL: &[Register] = &[
     MODEL_NUMBER, ID, BAUD_RATE, RETURN_DELAY, RESPONSE_LEVEL, MIN_ANGLE_LIMIT, MAX_ANGLE_LIMIT,
-    MAX_TEMPERATURE, MAX_TORQUE, PHASE, P_COEFFICIENT, D_COEFFICIENT, I_COEFFICIENT, HOMING_OFFSET,
+    MAX_TEMPERATURE, MAX_TORQUE, PHASE, P_COEFFICIENT, D_COEFFICIENT, I_COEFFICIENT, PROTECTION_CURRENT, OVERLOAD_TORQUE, HOMING_OFFSET, MAXIMUM_ACCELERATION,
     OPERATING_MODE, TORQUE_ENABLE, ACCELERATION, GOAL_POSITION, GOAL_TIME, GOAL_SPEED, TORQUE_LIMIT,
     LOCK, PRESENT_POSITION, PRESENT_SPEED, PRESENT_LOAD, PRESENT_VOLTAGE, PRESENT_TEMPERATURE, STATUS,
     MOVING, PRESENT_CURRENT,
