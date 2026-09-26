@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 teleop</title>
+<style>
+  :root {
+    --ink: #121212;
+    --ink-2: #555555;
+    --ink-3: #737373;   /* 4.7:1 on white: the floor for 10px labels */
+    --paper: #ffffff;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  /* Dark: ink and paper swap. Follows the system setting; ?theme= overrides. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --ink: #ededed; --ink-2: #b0b0b0; --ink-3: #8f8f8f; --paper: #0f0f10; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --ink: #ededed; --ink-2: #b0b0b0; --ink-3: #8f8f8f; --paper: #0f0f10; color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: var(--paper); overflow: hidden; }
+  body { color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  #gl { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #ui { position: fixed; left: 0; top: 0; width: 1600px; height: 900px; transform-origin: 0 0; pointer-events: none; }
+  .t { position: absolute; white-space: pre; line-height: 1; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1, "ss01" 1; }
+  .halo { text-shadow: 0 0 2px var(--paper), 0 0 4px var(--paper), 0 0 6px var(--paper); }
+  .cap { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+  .cap3 { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+  .lbl { font-size: 12px; color: var(--ink); letter-spacing: 0.01em; }
+  .lbl2 { font-size: 11px; color: var(--ink-2); }
+  .big { font-size: 30px; font-weight: 300; letter-spacing: -0.02em; }
+  .mid { font-size: 18px; font-weight: 400; letter-spacing: -0.01em; }
+  .mono { font-family: var(--mono); font-size: 10px; color: var(--ink-2); letter-spacing: 0; }
+  .mono.ink { color: var(--ink); }
+  .alert { font-size: 12px; color: var(--ink); transition: opacity 400ms ease; }
+  .r { text-align: right; }
+  #btn {
+    position: fixed; pointer-events: auto; cursor: pointer; user-select: none;
+    font: 500 11px var(--sans); letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--ink); background: var(--paper); border: 1px solid var(--ink); border-radius: 0;
+    padding: 7px 14px 6px; transform-origin: 100% 0;
+  }
+  #btn:hover { background: var(--ink); color: var(--paper); }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui"></div>
+<button id="btn">Start</button>
+<script>
+"use strict";
+// ─────────────────────────────────────────────────────────────────────────────
+// SO-101 live instrument. Everything is drawn in a 1600×900 design space and
+// scaled to the window. Graphics: WebGL2 with an 8×8 ordered dither, so every
+// fill is ink or pigment on white paper. Text: absolutely positioned DOM.
+// The only control is Start/Stop. The arms drive everything else.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const W = 1600, H = 900;
+const JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"];
+const SHORT = ["pan", "lift", "elbow", "wrist flex", "wrist roll", "gripper"];
+// Joint identity colours, one validated palette per theme (LCH). Light: the
+// lightness alternates so neighbours separate under colour-vision deficiency.
+// Dark: inside OKLCH L 0.48-0.67 against #0f0f10, all six checks pass. Every
+// mark is also labelled, so identity never rests on colour alone.
+const LCH_LIGHT = [[48, 60, 262], [68, 62, 60], [46, 62, 320], [66, 45, 190], [52, 65, 28], [70, 60, 110]];
+const LCH_DARK = [[54, 60, 262], [56, 62, 58], [52, 62, 318], [56, 46, 188], [48, 66, 26], [60, 62, 100]];
+const QS = new URLSearchParams(location.search);
+// ?virtual: time advances only through window.__step(ms), for frame-exact capture.
+// ?synthetic: no server; the page feeds itself scripted joint trajectories.
+// ?solo=phase: draw only the joint-space panel.
+const VIRTUAL = QS.has("virtual"), SYNTH = QS.has("synthetic"), SOLO = QS.get("solo");
+let VT = 0;
+const NOW = () => VIRTUAL ? VT : performance.now();
+const THEME_Q = QS.get("theme");
+if (THEME_Q) document.documentElement.dataset.theme = THEME_Q;
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+let DARK = false, LCH, INK, PAPER, TAPE, GRAY, COLORS, PRINTED, SHADOW_COL, SHADOW_COV, GRID, HILITE, SERVO_LIT;
+// Greys are written as light-theme values (1 = paper, 0.07 = ink). G() maps
+// them onto the current theme, so every grey keeps its contrast step.
+function G(v) {
+  const t = (1 - v) / 0.93, p = DARK ? 0.059 : 1, k = DARK ? 0.93 : 0.07, g = p + (k - p) * t;
+  return [g, g, g];
+}
+// WCAG relative luminance and contrast, used to hold every 2D mark at >= 3:1.
+const relLum = c => c.map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+const contrast = (a, b) => { const x = relLum(a), y = relLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+// Walk lightness away from the paper until the colour clears `min` against it.
+function legible([l, c, h], min = 3.05) {
+  let col = lch(l, c, h);
+  for (let i = 0; i < 60 && contrast(col, PAPER) < min; i++) { l += DARK ? 1 : -1; col = lch(l, c, h); }
+  return col;
+}
+// The lightness `legible` would settle on, for callers that re-derive colours.
+function legibleL([l, c, h], min) {
+  for (let i = 0; i < 60 && contrast(lch(l, c, h), PAPER) < min; i++) l += DARK ? 1 : -1;
+  return l;
+}
+function applyTheme() {
+  DARK = THEME_Q ? THEME_Q === "dark" : darkQuery.matches;
+  LCH = DARK ? LCH_DARK : LCH_LIGHT;
+  INK = G(0.07); PAPER = G(1); GRAY = G(0.62);
+  TAPE = legible(DARK ? [50, 40, 250] : [66, 36, 248]);   // painter's tape
+  // 2D marks (lines, bars, swatches, wire ticks) use the palette nudged just far
+  // enough for 3:1 on this paper; the 3D servos use the palette as validated.
+  COLORS = LCH.map(x => legible(x));
+  // Printed shells: light pigment on the paper. On dark paper the lit tone
+  // needs more coverage and the shadow tone drops toward the paper.
+  PRINTED = DARK ? { col: lch(52, 6, 78), shade: lch(24, 8, 70), lit: 0.62, dark: 0.7 } : { col: lch(84, 10, 78), shade: lch(64, 16, 68), lit: 0.34, dark: 0.62 };
+  SERVO_LIT = DARK ? 0.94 : 0.9;
+  // Cast shadow: grey dots on white; on black, the shadow erases the grid instead.
+  SHADOW_COL = DARK ? PAPER : G(0.62); SHADOW_COV = DARK ? 0.92 : 0.3;
+  GRID = G(0.5); HILITE = DARK ? [0.97, 0.97, 0.95] : [1, 1, 1];  // the specular blob stays light in both themes
+  document.documentElement.style.background = css(PAPER);
+}
+darkQuery.addEventListener("change", applyTheme);
+
+const css = c => `rgb(${c.map(v => Math.round(v * 255)).join(",")})`;
+function lch(L, C, Hh) {
+  const h = Hh * Math.PI / 180, a = C * Math.cos(h), b = C * Math.sin(h);
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200, e = 216 / 24389, k = 24389 / 27;
+  const f = t => t ** 3 > e ? t ** 3 : (116 * t - 16) / k;
+  const X = 0.95047 * f(fx), Y = L > k * e ? fy ** 3 : L / k, Z = 1.08883 * f(fz);
+  const lin = [3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.969266 * X + 1.8760108 * Y + 0.041556 * Z, 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z];
+  return lin.map(u => { u = Math.min(1, Math.max(0, u)); return u <= 0.0031308 ? 12.92 * u : 1.055 * u ** (1 / 2.4) - 0.055; });
+}
+applyTheme();
+
+// OKLab, for blending joint colours perceptually.
+const toLin = u => u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4;
+const toGam = u => { u = clamp(u, 0, 1); return u <= 0.0031308 ? 12.92 * u : 1.055 * u ** (1 / 2.4) - 0.055; };
+function oklab(c) {
+  const [r, g, b] = c.map(toLin);
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b), m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b), s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+function fromOklab([L, a, b]) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3, s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [toGam(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s), toGam(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s), toGam(-0.0041960863 * l - 0.5086478768 * m + 1.5373136259 * s)];
+}
+// The colour of a motion: each joint's colour weighted by its squared share of
+// the joint-space velocity, so one joint shows its own colour, two cross-fade,
+// several meet in the middle. Averaged in OKLab with chroma restored to the
+// contributors' mean, so opposite hues don't cancel to mud; overall speed then
+// sets saturation (grey when still), as on the servos.
+function motionColor(dz, dtS) {
+  const labs = COLORS.map(oklab);
+  let W = 0, L = 0, a = 0, b = 0, C = 0, top = 0, topW = 0;
+  dz.forEach((d, j) => { const w = d * d; W += w; L += w * labs[j][0]; a += w * labs[j][1]; b += w * labs[j][2]; C += w * Math.hypot(labs[j][1], labs[j][2]); if (w > topW) { topW = w; top = j; } });
+  if (W < 1e-12) return G(0.55);
+  L /= W; a /= W; b /= W; C /= W;
+  let h = Math.hypot(a, b);
+  if (h < 1e-4) { a = labs[top][1]; b = labs[top][2]; h = Math.hypot(a, b); }
+  const speed = Math.sqrt(W) / Math.max(dtS, 1e-3);                 // range-halves per second
+  const x = clamp((speed - 0.03) / 1.1, 0, 1), k = x <= 0 ? 0 : 0.2 + 0.8 * Math.pow(x, 0.6);
+  return fromOklab([L, a / h * C * k, b / h * C * k]);
+}
+const mixc = (c, d, t) => c.map((v, i) => v + (d[i] - v) * t);
+
+// ── Math ─────────────────────────────────────────────────────────────────────
+const M = {
+  ident: () => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+  mul(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; },
+  trans: (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1],
+  rx: t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]; },
+  ry: t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]; },
+  rz: t => { const c = Math.cos(t), s = Math.sin(t); return [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]; },
+  persp(fov, asp, n, f) { const t = 1 / Math.tan(fov / 2); return [t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0]; },
+  look(eye, at, up) {
+    const z = V.norm(V.sub(eye, at)), x = V.norm(V.cross(up, z)), y = V.cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -V.dot(x, eye), -V.dot(y, eye), -V.dot(z, eye), 1];
+  },
+  ortho2d(sx, sy, ox, oy, vw, vh) { // design px → clip, with letterbox
+    return [2 * sx / vw, 0, 0, 0, 0, -2 * sy / vh, 0, 0, 0, 0, 1, 0, 2 * ox / vw - 1, 1 - 2 * oy / vh, 0, 1];
+  },
+  pt(m, p) { const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]; return [(m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w, (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w, (m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]) / w]; },
+  origin: m => [m[12], m[13], m[14]],
+  axis: (m, i) => [m[i * 4], m[i * 4 + 1], m[i * 4 + 2]],
+};
+const V = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  len: a => Math.hypot(a[0], a[1], a[2]),
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+  lerp: (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t],
+};
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = (cur, target, rate, dt) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
+
+// ── Kinematics: TheRobotStudio SO-101 URDFs (new_calib), follower and leader ─
+// Joint zero in those URDFs is LeRobot's calibrated midpoint, which is also this
+// driver's zero (degrees from the midpoint of the swept range). The tree, the
+// mesh placements and the meshes themselves arrive from /model.json + /model.bin.
+let MODEL = null;
+const JOINT_INDEX = { shoulder_pan: 0, shoulder_lift: 1, elbow_flex: 2, wrist_flex: 3, wrist_roll: 4, gripper: 5 };
+// Flip a sign here if a rendered joint turns opposite to the real one.
+const SIGN = [1, 1, 1, 1, 1, 1];
+const rpyT = (xyz, rpy) => M.mul(M.trans(...xyz), M.mul(M.rz(rpy[2]), M.mul(M.ry(rpy[1]), M.rx(rpy[0]))));
+
+function armPose(arm, base, deg) {
+  const links = { base_link: base }, jo = new Array(6);
+  let pending = arm.joints, guard = 0;
+  while (pending.length && guard++ < 16) {
+    pending = pending.filter(j => {
+      const P = links[j.parent]; if (!P) return true;
+      const k = JOINT_INDEX[j.name];
+      let q = 0;
+      if (j.type === "revolute" && k !== undefined) q = SIGN[k] * (k === 5 ? lerp(j.lower, j.upper, clamp(deg[5], 0, 100) / 100) : deg[k] * Math.PI / 180);
+      links[j.child] = M.mul(M.mul(P, j.T), M.rz(q));
+      if (k !== undefined) jo[k] = M.origin(links[j.child]);
+      return false;
+    });
+  }
+  return { links, jo, tip: M.origin(links.gripper_frame_link || links.gripper_link) };
+}
+
+// ── WebGL ────────────────────────────────────────────────────────────────────
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
+const DITHER = `
+  float b2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+  float b4(vec2 a){ return b2(0.5 * a) * 0.25 + b2(a); }
+  float bayer(vec2 a){ return b4(0.5 * a) * 0.25 + b2(a); }
+  uniform float uCell;
+  float thresh(){ return bayer(gl_FragCoord.xy / uCell) + 0.5 / 64.0; }`;
+
+function prog(vs, fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(type); gl.shaderSource(s, "#version 300 es\nprecision highp float;\n" + src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+
+// Cel shading, Wind Waker style: a hard terminator, one lit tone, one shadow
+// tone and a hard specular blob. Tones are laid down as ordered dither, so the
+// colour is applied the way a print would apply it. mode 1 = flat (shadow, outline).
+const TOON = prog(`
+  layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec3 aHull;
+  uniform mat4 uVP, uM; uniform vec4 uShadow; uniform float uOutline; uniform vec2 uView;
+  out vec3 vN; out vec3 vW;
+  void main(){
+    vec4 w = uM * vec4(aPos, 1.0);
+    mat3 R = mat3(uM);
+    if (uShadow.w > 0.5) { float t = w.z / uShadow.z; w.xyz = vec3(w.x - uShadow.x * t, w.y - uShadow.y * t, 0.0004); }
+    vec4 p = uVP * w;
+    if (uOutline > 0.0) { // inverted hull: push the surface out along the smoothed normal, in pixels
+      vec4 n = uVP * vec4(R * aHull, 0.0); float l = length(n.xy);
+      if (l > 1e-6) p.xy += n.xy / l * uOutline / uView * p.w;
+    }
+    vN = R * aNor; vW = w.xyz; gl_Position = p;
+  }`, `
+  ${DITHER}
+  in vec3 vN; in vec3 vW; out vec4 o;
+  uniform vec3 uColor, uShade, uLight, uEye, uPaper, uHi; uniform float uLit, uDark, uMode;
+  void main(){
+    float th = thresh();
+    if (uMode > 0.5) { if (th >= uLit) discard; o = vec4(uColor, 1.0); return; }
+    vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
+    vec3 v = normalize(uEye - vW), h = normalize(uLight + v);
+    float d = dot(n, uLight), spec = pow(max(dot(n, h), 0.0), 48.0);
+    vec3 c;
+    if (d > 0.12 && spec > 0.6) c = uHi;                           // highlight
+    else if (d > 0.12) c = th < uLit ? uColor : uPaper;            // lit tone
+    else c = th < uDark ? uShade : uColor;                         // shadow tone over the base
+    o = vec4(c, 1.0);
+  }`);
+
+// Floor grid: 5 cm minor, 25 cm major, fading with distance from the eye.
+// The fade is dithered too, so the grid dissolves rather than greys out.
+const FLOOR = prog(`
+  layout(location=0) in vec3 aPos; uniform mat4 uVP; out vec3 vW;
+  void main(){ vW = aPos; gl_Position = uVP * vec4(aPos, 1.0); }`, `
+  ${DITHER}
+  in vec3 vW; out vec4 o; uniform vec3 uEye, uGrid; uniform vec2 uFade;
+  float grid(vec2 p, float pitch){ vec2 c = p / pitch; vec2 g = abs(fract(c - 0.5) - 0.5) / fwidth(c); return 1.0 - min(min(g.x, g.y), 1.0); }
+  void main(){
+    float fade = 1.0 - smoothstep(uFade.x, uFade.y, length(vW - uEye));
+    float cov = max(grid(vW.xy, 0.05) * 0.42, grid(vW.xy, 0.25) * 0.85) * fade;
+    if (thresh() >= cov) discard;
+    o = vec4(uGrid, 1.0);
+  }`);
+
+// Fills: dithered in the 3D scene, smooth (alpha) in the charts.
+const FILL = prog(`
+  layout(location=0) in vec3 aPos; layout(location=1) in vec4 aCol;
+  uniform mat4 uVP; out vec4 vC;
+  void main(){ vC = aCol; gl_Position = uVP * vec4(aPos, 1.0); }`, `
+  ${DITHER}
+  in vec4 vC; out vec4 o; uniform float uSmooth;
+  void main(){
+    if (uSmooth > 0.5) { o = vC; return; }
+    if (thresh() >= vC.a) discard; o = vec4(vC.rgb, 1.0);
+  }`);
+
+// Anti-aliased screen-space-width lines. aEnd: x = which end, y = side.
+const LINE = prog(`
+  layout(location=0) in vec3 aA; layout(location=1) in vec3 aB; layout(location=2) in vec2 aEnd; layout(location=3) in vec4 aCol;
+  uniform mat4 uVP; uniform vec2 uView; uniform float uBias;
+  out vec3 vC; out float vD; out float vHalf;
+  void main(){
+    vec4 a = uVP * vec4(aA, 1.0), b = uVP * vec4(aB, 1.0);
+    vec2 sa = a.xy / a.w * uView, sb = b.xy / b.w * uView;
+    vec2 d = sb - sa; float l = length(d); d = l > 1e-5 ? d / l : vec2(1.0, 0.0);
+    vec2 n = vec2(-d.y, d.x);
+    vec4 p = mix(a, b, aEnd.x);
+    float hw = aCol.a * 0.5, reach = hw + 1.0;   // one pixel of feather each side
+    p.xy += n * aEnd.y * reach / uView * p.w;
+    p.xy += d * (aEnd.x * 2.0 - 1.0) * 0.5 / uView * p.w;
+    p.z -= uBias * p.w;
+    vC = aCol.rgb; vD = aEnd.y * reach; vHalf = hw; gl_Position = p;
+  }`, `in vec3 vC; in float vD; in float vHalf; out vec4 o;
+  void main(){ float a = clamp(vHalf + 0.5 - abs(vD), 0.0, 1.0); if (a <= 0.0) discard; o = vec4(vC, a); }`);
+
+// Batches -------------------------------------------------------------------
+class Batch {
+  constructor(stride, attrs) { this.stride = stride; this.attrs = attrs; this.data = new Float32Array(1 << 18); this.n = 0; this.vao = gl.createVertexArray(); this.buf = gl.createBuffer();
+    gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    let off = 0; for (const [loc, size] of attrs) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride * 4, off * 4); off += size; }
+    gl.bindVertexArray(null); }
+  grow() { const d = new Float32Array(this.data.length * 2); d.set(this.data); this.data = d; }
+  push(...v) { if (this.n + v.length > this.data.length) this.grow(); this.data.set(v, this.n); this.n += v.length; }
+  draw(mode) { if (!this.n) return; gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.buf); gl.bufferData(gl.ARRAY_BUFFER, this.data.subarray(0, this.n), gl.STREAM_DRAW); gl.drawArrays(mode, 0, this.n / this.stride); this.n = 0; }
+}
+const fills = new Batch(7, [[0, 3], [1, 4]]);
+const lines = new Batch(12, [[0, 3], [1, 3], [2, 2], [3, 4]]);
+
+let DPR = 1, S = 1, OX = 0, OY = 0, VW = 1, VH = 1, PX = 1;
+function line(a, b, col, w = 1) { // w in design px; a, b 2D or 3D
+  const A = a.length === 2 ? [a[0], a[1], 0] : a, B = b.length === 2 ? [b[0], b[1], 0] : b;
+  const dw = Math.max(1, w * PX);
+  for (const [e, s] of [[0, -1], [1, -1], [1, 1], [0, -1], [1, 1], [0, 1]]) lines.push(...A, ...B, e, s, col[0], col[1], col[2], dw);
+}
+function poly(pts, col, w = 1) { for (let i = 1; i < pts.length; i++) line(pts[i - 1], pts[i], col, w); }
+function quad(p0, p1, p2, p3, col, dens) {
+  const P = [p0, p1, p2, p0, p2, p3];
+  for (const p of P) fills.push(p[0], p[1], p.length === 3 ? p[2] : 0, col[0], col[1], col[2], dens);
+}
+// A filled circle (a fan of triangles), for round joins and heads.
+function disc([x, y], r, col, dens = 1) {
+  const n = 16;
+  for (let i = 0; i < n; i++) {
+    const a0 = i / n * Math.PI * 2, a1 = (i + 1) / n * Math.PI * 2;
+    for (const p of [[x, y], [x + r * Math.cos(a0), y + r * Math.sin(a0)], [x + r * Math.cos(a1), y + r * Math.sin(a1)]]) fills.push(p[0], p[1], 0, col[0], col[1], col[2], dens);
+  }
+}
+function rect(x, y, w, h, col, dens) { quad([x, y], [x + w, y], [x + w, y + h], [x, y + h], col, dens); }
+// Crisp 1px rectangle outline aligned to the design grid.
+function box(x, y, w, h, col, lw = 1) { poly([[x, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y]], col, lw); }
+
+// ── Text layer ───────────────────────────────────────────────────────────────
+const ui = document.getElementById("ui");
+const texts = new Map();
+let textFrame = 0;
+function text(id, x, y, s, cls = "lbl", opts = {}) {
+  let t = texts.get(id);
+  if (!t) { t = { el: document.createElement("div"), s: null, x: null, y: null, cls: null, color: null, op: null }; ui.appendChild(t.el); texts.set(id, t); }
+  t.seen = textFrame;
+  if (t.cls !== cls) { t.el.className = "t " + cls; t.cls = cls; }
+  if (t.s !== s) { t.el.textContent = s; t.s = s; }
+  const align = opts.align || "left";
+  const tx = align === "right" ? "translateX(-100%)" : align === "center" ? "translateX(-50%)" : "";
+  const key = x.toFixed(1) + "," + y.toFixed(1) + tx;
+  if (t.x !== key) { t.el.style.left = x + "px"; t.el.style.top = y + "px"; t.el.style.transform = tx; t.x = key; }
+  const color = opts.color || "";
+  if (t.color !== color) { t.el.style.color = color; t.color = color; }
+  const op = opts.opacity === undefined ? 1 : opts.opacity;
+  if (t.op !== op) { t.el.style.opacity = op; t.op = op; }
+}
+function sweepTexts() { for (const [id, t] of texts) if (t.seen !== textFrame) { t.el.remove(); texts.delete(id); } }
+
+// ── Data ─────────────────────────────────────────────────────────────────────
+const RING = 1800;                 // ticks kept (60 s at 30 Hz)
+const state = {
+  running: false, connected: false, hello: null, ticks: [], wires: [], tel: JOINTS.map(() => []),
+  offset: null, startedAt: 0, frozenAt: 0, lastTick: null, ended: null,
+  baseTemp: JOINTS.map(() => null), alerts: new Map(),
+};
+const cal = { deg: JOINTS.map(() => [-90, 90]) };
+
+function degRange(j) {
+  // Degrees span of the follower's calibrated range, used for rails and traces.
+  if (!state.hello) return j === 5 ? [0, 100] : [-100, 100];
+  if (j === 5) return [0, 100];
+  const c = state.hello.cal[1].joints[JOINTS[j]];
+  const mid = (c.range_min + c.range_max) / 2, k = 360 / 4096;
+  return [(c.range_min - mid) * k, (c.range_max - mid) * k];
+}
+
+const INSTR = { 1: "PING", 2: "READ", 3: "WRITE", 4: "REG WRITE", 5: "ACTION", 0x82: "SYNC READ", 0x83: "SYNC WRITE" };
+const REG = { 3: "Model_Number", 40: "Torque_Enable", 42: "Goal_Position", 55: "Lock", 56: "Present_Position", 60: "Present_Load", 62: "Present_Voltage", 63: "Present_Temperature", 21: "P_Coefficient", 16: "Max_Torque", 28: "Protection_Current", 36: "Overload_Torque", 48: "Torque_Limit", 41: "Acceleration", 7: "Return_Delay", 33: "Operating_Mode", 22: "D_Coefficient", 23: "I_Coefficient" };
+
+function hexBytes(h) { const b = new Uint8Array(h.length / 2); for (let i = 0; i < b.length; i++) b[i] = parseInt(h.substr(i * 2, 2), 16); return b; }
+
+function ingestWire(ev) {
+  const b = hexBytes(ev.h);
+  const w = { t: ev.t / 1000, p: ev.p, d: ev.d, n: b.length, id: b.length > 2 ? b[2] : 0, op: b.length > 4 ? b[4] : 0, addr: b.length > 5 ? b[5] : 0, hex: ev.h };
+  state.wires.push(w);
+  if (state.wires.length > 6000) state.wires.splice(0, 1000);
+}
+
+function ingestTick(ev) {
+  const now = NOW();
+  const off = now - ev.t / 1000;
+  state.offset = state.offset === null ? off : Math.min(off, state.offset + 0.02); // track the fastest path, allow drift
+  const tk = { t: ev.t / 1000, i: ev.i, wk: ev.wk, lt: ev.lt, sk: ev.sk, L: ev.L, F: ev.F, G: ev.G, e: ev.e, tel: ev.tel };
+  state.ticks.push(tk);
+  if (state.ticks.length > RING) state.ticks.splice(0, state.ticks.length - RING);
+  state.lastTick = tk;
+  if (ev.tel) {
+    const j = ev.tel.id - 1;
+    if (j >= 0 && j < 6) {
+      state.tel[j].push({ t: tk.t, load: ev.tel.load / 10, spd: ev.tel.spd, temp: ev.tel.temp, v: ev.tel.v / 10, cur: ev.tel.cur, st: ev.tel.st });
+      if (state.tel[j].length > 400) state.tel[j].shift();
+      if (state.baseTemp[j] === null) state.baseTemp[j] = ev.tel.temp;
+    }
+  }
+}
+
+// ── Synthetic trajectories (for demos and captures) ──────────────────────────
+// Offsets from a home pose, each segment faded in and out so the path is
+// continuous: one joint alone, a cross-fade between two, a three-joint circle,
+// a 3:2 Lissajous, gripper bursts, then a whole-arm return.
+const SYN = { t: 0, i: 0, F: null, LOOP: 32 };
+const HOME = [0, -30, 50, 40, 0, 40];
+const env = (t, a, b, r = 0.8) => clamp(Math.min((t - a) / r, (b - t) / r), 0, 1) ** 2 * (3 - 2 * clamp(Math.min((t - a) / r, (b - t) / r), 0, 1));
+function synthPose(t) {
+  t %= SYN.LOOP;
+  const p = HOME.slice(), S = Math.sin, TAU = Math.PI * 2;
+  let e = env(t, 0, 5.5); p[2] += e * 38 * S(TAU * t / 2.4);                                   // elbow alone
+  e = env(t, 5, 11.5); const u = clamp((t - 5.5) / 5.5, 0, 1);
+  p[2] += e * 38 * (1 - u) * S(TAU * t / 2.4); p[3] += e * 38 * u * S(TAU * t / 2.4);           // elbow -> wrist flex
+  e = env(t, 11, 17.5); p[0] += e * 32 * S(TAU * t / 3); p[1] += e * 26 * Math.cos(TAU * t / 3); p[2] -= e * 22 * Math.cos(TAU * t / 3);  // reach circle
+  e = env(t, 17, 23.5); p[0] += e * 36 * S(TAU * t / 2); p[4] += e * 70 * S(TAU * t / 3);      // pan x roll, 3:2
+  e = env(t, 23, 27.5); p[5] += e * 48 * S(TAU * t / 1.3) ** 3; p[3] += e * 8 * S(TAU * t / 1.3); // gripper bursts
+  e = env(t, 27, 32.4); const w = S(Math.PI * clamp((t - 27) / 5, 0, 1));
+  p[0] -= e * 40 * w; p[1] += e * 30 * w; p[2] -= e * 30 * w; p[3] += e * 15 * w; p[4] += e * 25 * w;  // whole-arm sweep
+  return p;
+}
+function synthAdvance(toMs) {
+  const dt = 1000 / 30;
+  while (SYN.t + dt <= toMs) {
+    SYN.t += dt;
+    const L = synthPose(SYN.t / 1000);
+    if (!SYN.F) SYN.F = L.slice();
+    SYN.F = SYN.F.map((f, j) => f + (L[j] - f) * (1 - Math.exp(-dt / 1000 * 14)));
+    ingestTick({ t: SYN.t * 1000, i: SYN.i++, L, F: SYN.F.slice(), G: L, wk: 0.1, lt: 0, sk: 0, e: null, tel: null });
+  }
+}
+function synthHello() {
+  const joint = (id, lo, hi) => ({ id, homing_offset: 0, range_min: lo, range_max: hi });
+  const cal = Object.fromEntries(JOINTS.map((n, i) => [n, n === "gripper" ? joint(6, 1600, 2900) : joint(i + 1, 948, 3148)]));
+  return { k: "hello", hz: 30, max_step: 50, sim: true, joints: JOINTS, ports: ["synthetic", "synthetic"], cal: [{ arm_id: "leader", joints: cal }, { arm_id: "follower", joints: cal }] };
+}
+
+function connect() {
+  if (SYNTH) { state.connected = true; state.hello = synthHello(); return; }
+  const es = new EventSource("/events");
+  es.onopen = () => { state.connected = true; };
+  es.onerror = () => { state.connected = false; };
+  es.onmessage = m => {
+    const ev = JSON.parse(m.data);
+    if (ev.k === "hello") { state.hello = ev; state.ended = null; return; }
+    if (ev.k === "end") { state.ended = ev; return; }
+    if (!state.running) { if (ev.k === "t") { state.lastTick = { L: ev.L, F: ev.F, G: ev.G, t: ev.t / 1000 }; state.offset = NOW() - ev.t / 1000; } return; }
+    if (ev.k === "t") ingestTick(ev); else if (ev.k === "w") ingestWire(ev);
+  };
+}
+
+// Server-clock "now", delayed two ticks so poses interpolate smoothly.
+function serverNow() { return (state.running ? NOW() : state.frozenAt) - (state.offset || 0); }
+function sampleAt(t) {
+  const T = state.ticks; if (!T.length) return state.lastTick;
+  if (t <= T[0].t) return T[0];
+  if (t >= T[T.length - 1].t) return T[T.length - 1];
+  let lo = 0, hi = T.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (T[m].t <= t) lo = m; else hi = m; }
+  const a = T[lo], b = T[hi], u = (t - a.t) / Math.max(1e-6, b.t - a.t);
+  const mix = (x, y) => x.map((v, i) => v + (y[i] - v) * u);
+  return { t, L: mix(a.L, b.L), F: mix(a.F, b.F), G: mix(a.G, b.G) };
+}
+
+// ── Derived signals and alerts ───────────────────────────────────────────────
+function latestTel(j) { const a = state.tel[j]; return a.length ? a[a.length - 1] : null; }
+function recentTicks(ms) { const T = state.ticks; if (!T.length) return []; const t0 = T[T.length - 1].t - ms; let i = T.length - 1; while (i > 0 && T[i - 1].t >= t0) i--; return T.slice(i); }
+function pct(arr, p) { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; }
+
+function computeAlerts(now) {
+  const found = [];
+  const R = recentTicks(1500);
+  if (R.length > 10) {
+    for (let j = 0; j < 6; j++) {
+      const [lo, hi] = degRange(j);
+      const f = R[R.length - 1].F[j], frac = (f - lo) / (hi - lo);
+      if (frac > 0.96 || frac < 0.04) found.push({ key: "lim" + j, j, sev: 1, msg: `${SHORT[j]} at ${Math.round((frac > 0.5 ? frac : 1 - frac) * 100)}% of range`, act: "ease off the stop" });
+      const errs = R.map(t => t.L[j] - t.F[j]);
+      const lag = errs.reduce((a, b) => a + Math.abs(b), 0) / errs.length;
+      const unit = j === 5 ? "%" : "°";
+      const leaderStill = Math.max(...R.map(t => t.L[j])) - Math.min(...R.map(t => t.L[j])) < 1.5;
+      const mean = errs.reduce((a, b) => a + b, 0) / errs.length;
+      const isStall = s => Math.abs(s.load) > 25 && Math.abs(s.spd) < 40 && Math.abs(errs[errs.length - 1]) > 3;
+      const tl = latestTel(j), stalled = tl && isStall(tl);
+      if (stalled && now - tl.t < 1400) {
+        const since = state.tel[j].slice().reverse().findIndex(s => !isStall(s));
+        const dur = since < 0 ? state.tel[j].length * 0.2 : since * 0.2;
+        found.push({ key: "stall" + j, j, sev: 2, msg: `${SHORT[j]} stalled · ${Math.abs(tl.load).toFixed(0)}% load`, act: j === 5 ? "open the leader trigger" : "move the leader back", dur });
+      } else if (leaderStill && Math.abs(mean) > 2.5) {
+        found.push({ key: "off" + j, j, sev: 1, msg: `${SHORT[j]} holds a ${Math.abs(mean).toFixed(1)}${unit} offset`, act: "check calibration" });
+      } else if (lag > 8) {
+        found.push({ key: "lag" + j, j, sev: 1, msg: `${SHORT[j]} lagging ${lag.toFixed(1)}${unit}`, act: "move slower or raise --max-step" });
+      }
+      if (tl && state.baseTemp[j] !== null && tl.temp - state.baseTemp[j] >= 10) found.push({ key: "hot" + j, j, sev: 2, msg: `${SHORT[j]} +${tl.temp - state.baseTemp[j]}°C`, act: "rest the arm" });
+      if (tl && tl.st & 0x20) found.push({ key: "ovl" + j, j, sev: 2, msg: `${SHORT[j]} overload bit`, act: "release the load" });
+    }
+    // Speed-limited: the goal was cut short while the follower was moving (not blocked).
+    for (let j = 0; j < 6; j++) {
+      let n = 0;
+      for (let i = 1; i < R.length; i++) if (Math.abs(R[i].G[j] - R[i].L[j]) > 1 && Math.abs(R[i].F[j] - R[i - 1].F[j]) > 0.4) n++;
+      if (n / R.length > 0.3 && !found.some(f => f.key === "stall" + j)) found.push({ key: "clamp" + j, j, sev: 1, msg: `${SHORT[j]} speed-limited ${Math.round(n / R.length * 100)}% of ticks`, act: "raise --max-step" });
+    }
+    const errs = R.filter(t => t.e).length;
+    if (errs) found.push({ key: "err", j: -1, sev: 2, msg: `${errs} bus error${errs > 1 ? "s" : ""} in 1.5 s`, act: "check the 3-pin cables" });
+  }
+  // Keep alerts with hysteresis: they appear at once and linger 1.2 s after clearing.
+  const t = NOW();
+  for (const a of found) {
+    const prev = state.alerts.get(a.key);
+    state.alerts.set(a.key, { ...a, born: prev ? prev.born : t, seen: t });
+  }
+  for (const [k, a] of state.alerts) if (t - a.seen > 1200) state.alerts.delete(k);
+}
+
+// ── Layout (design px) ───────────────────────────────────────────────────────
+const L = {
+  pad: 40,
+  head: { y: 34 },
+  hero: { x: 40, y: 84, w: 640, h: 640 },
+  rows: { x: 712, y: 90, w: 560, h: 636, n: 6 },
+  phase: { x: 1316, y: 90, w: 244, h: 244 },
+  band: { x: 40, y: 772, w: 1520, h: 96 },
+};
+
+// ── Drawing: 3D workstation ──────────────────────────────────────────────────
+const LIGHT = V.norm([-0.45, -0.35, 0.82]);
+const SHADOW = [LIGHT[0], LIGHT[1], LIGHT[2], 1];
+const BASES = { leader: [-0.2, 0.0, 0], follower: [0.2, 0.0, 0] };
+const BASE_YAW = (() => { const q = new URLSearchParams(location.search).get("yaw"); return q !== null ? parseFloat(q) * Math.PI / 180 : -Math.PI / 2; })();
+const trail = [];
+
+// ── Model: the real SO-101 meshes ────────────────────────────────────────────
+async function loadModel() {
+  const [j, b] = await Promise.all([fetch("/model.json").then(r => r.json()), fetch("/model.bin").then(r => r.arrayBuffer())]);
+  const meshes = {};
+  for (const [name, m] of Object.entries(j.meshes)) {
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+    gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(b, m.v_off, m.v_count * j.stride), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, j.stride, 0);
+    gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.BYTE, true, j.stride, 12);
+    gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.BYTE, true, j.stride, 16);
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(b, m.i_off, m.i_count), gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    meshes[name] = { vao, count: m.i_count };
+  }
+  for (const arm of Object.values(j.arms)) {
+    for (const jt of arm.joints) jt.T = rpyT(jt.xyz, jt.rpy);
+    for (const vs of Object.values(arm.links)) for (const v of vs) v.T = rpyT(v.xyz, v.rpy);
+  }
+  MODEL = { meshes, arms: j.arms };
+}
+
+// Materials: printed shells in a warm off-white; servos in their joint colour,
+// with chroma driven by how fast that joint is turning: grey at rest, a hint
+// of colour when slow, full colour when fast.
+const Q_FULL = new URLSearchParams(location.search).get("chroma") === "full";   // audit aid
+const SPEED_FULL = 110;   // deg/s (or %/s for the gripper) for full chroma
+const SPEED_REST = 2.5;   // below this the joint reads as still
+const motion = { leader: { prev: null, w: new Array(6).fill(0) }, follower: { prev: null, w: new Array(6).fill(0) } };
+function trackMotion(name, deg, dt) {
+  const m = motion[name];
+  if (m.prev && dt > 0) for (let j = 0; j < 6; j++) m.w[j] = ease(m.w[j], Math.abs(deg[j] - m.prev[j]) / dt, 7, dt);
+  m.prev = deg.slice();
+}
+function servoMats(name) {
+  return LCH.map(([l, c, h], j) => {
+    const x = clamp((motion[name].w[j] - SPEED_REST) / (SPEED_FULL - SPEED_REST), 0, 1);
+    let k = x <= 0 ? 0 : 0.18 + 0.82 * Math.pow(x, 0.6);   // a little saturation as soon as it moves
+    if (Q_FULL) k = 1;
+    // Full-speed colour is held at >= 3:1 against the paper even after dithering
+    // (the lit tone is mostly pigment), then chroma scales with speed.
+    const lk = k > 0 ? legibleL([l, c, h], 3.4) : l;
+    return { col: lch(lk, c * k, h), shade: lch(Math.max(18, lk - (DARK ? 12 : 24)), c * 1.05 * k, h), lit: SERVO_LIT, dark: DARK ? 0.5 : 0.6 };
+  });
+}
+
+function armVisuals(name, base, deg) {
+  const SERVO_MAT = servoMats(name);
+  const arm = MODEL.arms[name], P = armPose(arm, base, deg), vis = [];
+  for (const [ln, vs] of Object.entries(arm.links)) {
+    const F = P.links[ln]; if (!F) continue;
+    for (const v of vs) vis.push({ mesh: MODEL.meshes[v.mesh], m: M.mul(F, v.T), mat: v.kind === "servo" && v.joint >= 0 ? SERVO_MAT[v.joint] : PRINTED });
+  }
+  return { P, vis };
+}
+
+function drawToon(v, mode, col, lit, outlinePx, shadow) {
+  gl.bindVertexArray(v.mesh.vao);
+  gl.uniformMatrix4fv(TOON.u.uM, false, v.m);
+  gl.uniform1f(TOON.u.uMode, mode);
+  gl.uniform3fv(TOON.u.uColor, col || v.mat.col);
+  gl.uniform3fv(TOON.u.uShade, v.mat.shade);
+  gl.uniform1f(TOON.u.uLit, lit === undefined ? v.mat.lit : lit);
+  gl.uniform1f(TOON.u.uDark, v.mat.dark);
+  gl.uniform1f(TOON.u.uOutline, outlinePx || 0);
+  gl.uniform4fv(TOON.u.uShadow, shadow ? SHADOW : [0, 0, 1, 0]);
+  gl.drawElements(gl.TRIANGLES, v.mesh.count, gl.UNSIGNED_INT, 0);
+}
+
+const FLOOR_VAO = (() => {
+  const vao = gl.createVertexArray(), vb = gl.createBuffer(), e = 1.6;
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-e, -e, 0, e, -e, 0, e, e, 0, -e, -e, 0, e, e, 0, -e, e, 0]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+  gl.bindVertexArray(null);
+  return vao;
+})();
+
+const Q = new URLSearchParams(location.search);
+const DEBUG_ZERO = Q.has("zero");
+function heroCamera(t) {
+  const h = L.hero;
+  // A slow drift keeps parallax alive; Start dollies in from further out.
+  let az = -0.92 + 0.12 * Math.sin(t * 0.00009), el = 0.52 + 0.035 * Math.sin(t * 0.00006 + 1);
+  if (Q.has("top")) { az = -Math.PI / 2 + 0.001; el = 1.45; }
+  if (Q.has("side")) { az = 0.0; el = 0.05; }
+  const intro = state.startedAt ? clamp((NOW() - state.startedAt) / 2200, 0, 1) : 0;
+  const k = 1 - Math.pow(1 - intro, 3);
+  const target = [-0.05, -0.1, 0.13], dist = 1.8 + 0.9 * (1 - k);
+  el += 0.18 * (1 - k);
+  const eye = [target[0] + dist * Math.cos(el) * Math.cos(az), target[1] + dist * Math.cos(el) * Math.sin(az), target[2] + dist * Math.sin(el)];
+  const proj = M.persp(0.36, 1, 0.1, 5);
+  const view = M.look(eye, target, [0, 0, 1]);
+  // Map the hero square's clip space into the full viewport.
+  const sx = h.w * S / VW * 2 * DPR / 2, sy = h.h * S / VH * 2 * DPR / 2;
+  const cx = ((OX + (h.x + h.w / 2) * S) * DPR / VW) * 2 - 1, cy = 1 - ((OY + (h.y + h.h / 2) * S) * DPR / VH) * 2;
+  const place = [sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, 1, 0, cx, cy, 0, 1];
+  return { VP: M.mul(place, M.mul(proj, view)), eye };
+}
+function toScreen(VP, p) { const c = M.pt(VP, p); return [((c[0] + 1) / 2 * VW / DPR - OX) / S, ((1 - c[1]) / 2 * VH / DPR - OY) / S]; }
+
+let heroDt = 0;
+function drawHero(t, pose) {
+  const h = L.hero, cam = heroCamera(t), VP = cam.VP, cell = Math.max(1, Math.round(PX));
+  const x0 = Math.round((OX + h.x * S) * DPR), y0 = Math.round(VH - (OY + (h.y + h.h) * S) * DPR);
+  gl.enable(gl.SCISSOR_TEST); gl.scissor(x0, y0, Math.round(h.w * S * DPR), Math.round(h.h * S * DPR));
+  gl.disable(gl.DEPTH_TEST);
+
+  // Floor grid, fading with distance from the camera.
+  gl.useProgram(FLOOR.p); gl.uniformMatrix4fv(FLOOR.u.uVP, false, VP); gl.uniform3fv(FLOOR.u.uEye, cam.eye);
+  gl.uniform2f(FLOOR.u.uFade, 1.0, 2.5); gl.uniform1f(FLOOR.u.uCell, cell); gl.uniform3fv(FLOOR.u.uGrid, GRID);
+  gl.bindVertexArray(FLOOR_VAO); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.bindVertexArray(null);
+
+  // Tape footprints.
+  gl.useProgram(FILL.p); gl.uniformMatrix4fv(FILL.u.uVP, false, VP); gl.uniform1f(FILL.u.uCell, cell); gl.uniform1f(FILL.u.uSmooth, 0);
+  for (const b of Object.values(BASES)) {
+    const s = 0.09, tw = 0.018, R = (x, y) => [b[0] + x, b[1] + y, 0];
+    quad(R(-s, -s), R(s, -s), R(s, -s + tw), R(-s, -s + tw), TAPE, 0.8);
+    quad(R(-s, s - tw), R(s, s - tw), R(s, s), R(-s, s), TAPE, 0.8);
+    quad(R(-s, -s + tw), R(-s + tw, -s + tw), R(-s + tw, s - tw), R(-s, s - tw), TAPE, 0.8);
+    quad(R(s - tw, -s + tw), R(s, -s + tw), R(s, s - tw), R(s - tw, s - tw), TAPE, 0.8);
+  }
+  fills.draw(gl.TRIANGLES);
+  gl.useProgram(LINE.p); gl.uniformMatrix4fv(LINE.u.uVP, false, VP); gl.uniform2f(LINE.u.uView, VW / 2, VH / 2); gl.uniform1f(LINE.u.uBias, 0);
+  const sb = [-0.42, -0.46, 0];
+  line(sb, V.add(sb, [0.1, 0, 0]), INK, 1);
+  for (const dx of [0, 0.05, 0.1]) line(V.add(sb, [dx, 0, 0]), V.add(sb, [dx, 0.008, 0]), INK, 1);
+  lines.draw(gl.TRIANGLES);
+
+  const arms = [
+    { name: "leader", base: M.mul(M.trans(...BASES.leader), M.rz(BASE_YAW)), deg: pose.L },
+    { name: "follower", base: M.mul(M.trans(...BASES.follower), M.rz(BASE_YAW)), deg: pose.F },
+  ];
+  if (!MODEL) { gl.disable(gl.SCISSOR_TEST); text("loading", h.x + h.w / 2, h.y + h.h / 2, "loading model", "cap3", { align: "center" }); return null; }
+  for (const a of arms) { if (state.running) trackMotion(a.name, a.deg, heroDt); a.geo = armVisuals(a.name, a.base, a.deg); }
+
+  gl.useProgram(TOON.p);
+  gl.uniformMatrix4fv(TOON.u.uVP, false, VP); gl.uniform3fv(TOON.u.uLight, LIGHT); gl.uniform3fv(TOON.u.uEye, cam.eye);
+  gl.uniform2f(TOON.u.uView, VW / 2, VH / 2); gl.uniform1f(TOON.u.uCell, cell);
+  gl.uniform3fv(TOON.u.uPaper, PAPER); gl.uniform3fv(TOON.u.uHi, HILITE);
+  // Cast shadows: flat dither on the floor.
+  for (const a of arms) for (const v of a.geo.vis) drawToon(v, 1, SHADOW_COL, SHADOW_COV, 0, true);
+  // Ink, cartoon style. Pass 1: a thick hull with no depth test. Everything
+  // drawn after covers it except where the arm meets air, so only the outer
+  // silhouette keeps the heavy line. Pass 2: thin hulls for inner contours.
+  gl.enable(gl.CULL_FACE); gl.cullFace(gl.FRONT);
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  for (const a of arms) for (const v of a.geo.vis) drawToon(v, 1, INK, 1.01, 3.0 * PX, false);
+  gl.depthMask(true); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.clear(gl.DEPTH_BUFFER_BIT);
+  for (const a of arms) for (const v of a.geo.vis) drawToon(v, 1, DARK ? G(0.42) : INK, 1.01, 1.1 * PX, false);
+  gl.disable(gl.CULL_FACE);
+  for (const a of arms) for (const v of a.geo.vis) drawToon(v, 0);
+  gl.bindVertexArray(null);
+
+  // Commanded pose on the follower, as a thin skeleton; visible when it lags.
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(LINE.p); gl.uniformMatrix4fv(LINE.u.uVP, false, VP); gl.uniform2f(LINE.u.uView, VW / 2, VH / 2); gl.uniform1f(LINE.u.uBias, 0);
+  const ghost = armPose(MODEL.arms.follower, arms[1].base, pose.G), fol = arms[1].geo.P;
+  const lagging = pose.G.some((g, j) => Math.abs(g - pose.F[j]) > 2);
+  if (lagging) poly([ghost.jo[0], ghost.jo[1], ghost.jo[2], ghost.jo[3], ghost.jo[4], ghost.tip], G(0.35), 1);
+  // Tool-tip trail: where the follower's tip has been, fading with age; its floor trace below.
+  if (state.running) { trail.push({ p: fol.tip, t }); while (trail.length && t - trail[0].t > 3500) trail.shift(); }
+  for (let i = 1; i < trail.length; i++) {
+    const g = 0.4 + 0.58 * (t - trail[i].t) / 3500;
+    line(trail[i - 1].p, trail[i].p, G(g), 1);
+  }
+  lines.draw(gl.TRIANGLES);
+  gl.disable(gl.SCISSOR_TEST);
+
+  for (const a of arms) {
+    const p = toScreen(VP, [BASES[a.name][0], BASES[a.name][1] - 0.125, 0]);
+    text("arm-" + a.name, p[0], p[1], a.name, "cap halo", { align: "center" });
+  }
+  const sp = toScreen(VP, [-0.37, -0.49, 0]);
+  text("scale", sp[0], sp[1], "10 cm", "cap3", { align: "center" });
+  const lx = L.hero.x, ly = L.hero.y + L.hero.h - 14;
+  line([lx, ly + 4], [lx + 18, ly + 4], G(0.35), 1);
+  text("lg1", lx + 26, ly, "commanded pose, when it differs", "cap3 halo");
+  line([lx + 290, ly + 4], [lx + 308, ly + 4], G(0.55), 1);
+  text("lg2", lx + 316, ly, "follower tool path, 3 s", "cap3 halo");
+  return { VP, arms };
+}
+
+// ── Drawing: joint rows ──────────────────────────────────────────────────────
+const TRACE_MS = 8000;
+const disp = { F: new Array(6).fill(0), d: new Array(6).fill(0), lo: new Array(6).fill(null), hi: new Array(6).fill(null) };
+const signed = (x, digits, unit) => (Math.abs(x) < 0.5 * 10 ** -digits ? "±" : x > 0 ? "+" : "−") + Math.abs(x).toFixed(digits) + unit;
+
+function drawRows(now, pose, dt) {
+  const R = L.rows, rh = R.h / R.n;
+  const railX = R.x + 150, railW = 132, trX = R.x + 334, trW = R.w - 334;
+  const T = state.ticks;
+  text("rail-cap", railX, R.y - 20, "range", "cap3");
+  text("tr-l", trX, R.y - 20, "−8 s", "cap3");
+
+  text("tr-r", trX + trW, R.y - 20, "now", "cap3", { align: "right" });
+  for (let j = 0; j < 6; j++) {
+    const y = R.y + j * rh, cy = y + 44;
+    const col = COLORS[j], [lo, hi] = degRange(j), unit = j === 5 ? "%" : "°";
+    if (j) line([R.x, y], [R.x + R.w, y], G(0.9), 1);
+    rect(R.x, y + 13, 8, 8, col, 1);
+    text("name" + j, R.x + 16, y + 12, JOINTS[j].replace("_", " "), "lbl");
+    disp.F[j] = ease(disp.F[j], pose.F[j], 18, dt);
+    disp.d[j] = ease(disp.d[j], pose.L[j] - pose.F[j], 10, dt);
+    text("val" + j, R.x - 2, y + 30, signed(disp.F[j], 1, unit), "big");
+    text("dv" + j, R.x, y + 72, "Δ " + signed(disp.d[j], 1, unit), "lbl2");
+    const tl = latestTel(j);
+    text("tel" + j, R.x + 70, y + 72, tl ? `${Math.abs(tl.load).toFixed(0)}% load  ${tl.temp}°` : "", "lbl2");
+
+    // Rail: the calibrated range; last 4% at each end dithered as the danger zone.
+    const rx = x => railX + (clamp(x, lo, hi) - lo) / (hi - lo) * railW;
+    line([railX, cy], [railX + railW, cy], INK, 1);
+    for (const e of [railX, railX + railW]) line([e, cy - 6], [e, cy + 6], INK, 1);
+    const mid = rx(j === 5 ? 50 : 0); line([mid, cy - 3], [mid, cy + 3], INK, 1);
+    rect(railX, cy - 6, railW * 0.04, 12, INK, 0.2); rect(railX + railW * 0.96, cy - 6, railW * 0.04, 12, INK, 0.2);
+    const lx = rx(pose.L[j]), fx = rx(pose.F[j]), gx = rx(pose.G[j]);
+    poly([[lx - 4, cy - 15], [lx + 4, cy - 15], [lx, cy - 9], [lx - 4, cy - 15]], INK, 1);
+    if (Math.abs(gx - fx) > 1.5) line([gx, cy - 8], [gx, cy + 8], GRAY, 1);
+    rect(fx - 2.5, cy - 7, 5, 14, col, 1);
+    text("lo" + j, railX, cy + 13, signed(lo, 0, unit), "cap3");
+    text("hi" + j, railX + railW, cy + 13, signed(hi, 0, unit), "cap3", { align: "right" });
+
+    // Trace, auto-scaled to the window so small motions read; the scale eases.
+    const ty0 = y + 10, th = rh - 38;
+    let i0 = T.length - 1; while (i0 > 0 && T[i0 - 1].t > now - TRACE_MS - 100) i0--;
+    let mn = Infinity, mx = -Infinity;
+    for (let i = Math.max(0, i0); i < T.length; i++) { mn = Math.min(mn, T[i].L[j], T[i].F[j]); mx = Math.max(mx, T[i].L[j], T[i].F[j]); }
+    if (!isFinite(mn)) { mn = pose.F[j] - 5; mx = pose.F[j] + 5; }
+    const minSpan = j === 5 ? 20 : 12, c0 = (mn + mx) / 2, half = Math.max(minSpan, mx - mn) * 0.62;
+    if (disp.lo[j] === null) { disp.lo[j] = c0 - half; disp.hi[j] = c0 + half; }
+    disp.lo[j] = ease(disp.lo[j], c0 - half, 3, dt); disp.hi[j] = ease(disp.hi[j], c0 + half, 3, dt);
+    const a = disp.lo[j], b = disp.hi[j];
+    const ty = v => ty0 + th - (v - a) / (b - a) * th;
+    const tx = t => trX + trW - (now - t) / TRACE_MS * trW;
+    if (T.length > 1) {
+      const pl = [], pf = [];
+      for (let i = Math.max(0, i0); i < T.length; i++) {
+        const X = tx(T[i].t); if (X > trX + trW + 1) break;
+        pl.push([Math.max(trX, X), ty(T[i].L[j])]); pf.push([Math.max(trX, X), ty(T[i].F[j])]);
+      }
+      for (let i = 1; i < pl.length; i++) quad(pl[i - 1], pl[i], pf[i], pf[i - 1], col, 0.42);
+      poly(pl, GRAY, 1);
+      poly(pf, col, 1.5);
+      // Load: a 1 px bar per telemetry read, height = |load|.
+      const tel = state.tel[j], by = y + rh - 12;
+      line([trX, by], [trX + trW, by], G(0.9), 1);
+      for (let i = 0; i < tel.length; i++) {
+        const X = tx(tel[i].t); if (X < trX || X > trX + trW) continue;
+        const hgt = clamp(Math.abs(tel[i].load) / 100 * 14, 0.5, 14);
+        line([X, by], [X, by - hgt], (tel[i].st & 0x20) ? col : INK, 1);
+      }
+    }
+    text("sc-hi" + j, trX - 6, ty0 - 4, signed(b, 0, unit), "cap3", { align: "right" });
+    text("sc-lo" + j, trX - 6, ty0 + th - 6, signed(a, 0, unit), "cap3", { align: "right" });
+    if (j === 5) text("rib", trX - 6, y + rh - 18, "load", "cap3", { align: "right" });
+  }
+}
+
+// ── Drawing: joint space ─────────────────────────────────────────────────────
+// A fixed map of joint space: same pose, same place, every session.
+// The six joints (normalised by their calibrated range) are projected onto the
+// three directions you move in most, learned from the first LEARN_S seconds of
+// actual motion after Start, then locked: axes, centre (your average pose while
+// learning, the cube's centre) and scale never change again, so nothing already
+// drawn can move. The locked map is saved and reused while the calibration is
+// unchanged; ?relearn discards it. Drawn isometric, from a fixed cube corner.
+const K = 3, LEARN_S = 20, PCA_KEY = "so101.jointspace.v1";
+const PCA = { mu: new Array(6).fill(0), C: Array.from({ length: 6 }, () => new Array(6).fill(0)), n: 0, v: [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]], lam: [1e-3, 1e-3, 1e-3], scale: null, lastI: -1, locked: false, saved: false, motionS: 0, samples: [], prevZ: null, prevT: 0, total: 1 };
+function calSignature() {
+  if (!state.hello) return "";
+  const c = state.hello.cal[1].joints;
+  return JOINTS.map(n => `${c[n].range_min}:${c[n].range_max}`).join(",");
+}
+function loadLockedMap() {
+  if (QS.has("relearn")) { try { localStorage.removeItem(PCA_KEY); } catch (e) {} return false; }
+  try {
+    const m = JSON.parse(localStorage.getItem(PCA_KEY) || "null");
+    if (!m || m.sig !== calSignature() || !m.centre) return false;
+    Object.assign(PCA, { v: m.v, lam: m.lam, scale: m.scale, total: m.total, centre: m.centre, locked: true, saved: true });
+    return true;
+  } catch (e) { return false; }
+}
+function lockMap() {
+  // Scale: the cube holds 98% of the learned poses, measured from the fixed
+  // centre, so one extreme moment doesn't shrink everything else.
+  PCA.centre = PCA.mu.slice();
+  const reaches = PCA.samples.map(z => Math.max(...PCA.v.map(v => Math.abs(z.reduce((s, x, k) => s + (x - PCA.centre[k]) * v[k], 0)))));
+  PCA.scale = Math.max(1.1 * pct(reaches, 0.98), 0.05);
+  PCA.total = PCA.C.reduce((s, row, r) => s + row[r], 0) || 1;
+  PCA.locked = true; PCA.samples = [];
+  try { localStorage.setItem(PCA_KEY, JSON.stringify({ sig: calSignature(), v: PCA.v, lam: PCA.lam, scale: PCA.scale, total: PCA.total, centre: PCA.centre })); } catch (e) {}
+}
+function norm6(deg) { return deg.map((d, j) => { const [lo, hi] = degRange(j); return (d - (lo + hi) / 2) / ((hi - lo) / 2); }); }
+function pcaUpdate() {
+  const T = state.ticks; if (!T.length || PCA.locked) return;
+  for (let i = Math.max(0, T.length - 60); i < T.length; i++) {
+    if (T[i].i <= PCA.lastI) continue; PCA.lastI = T[i].i;
+    const z = norm6(T[i].F);
+    // Only motion teaches the map: holding still does not use up the learning time.
+    if (PCA.prevZ) {
+      const dt = (T[i].t - PCA.prevT) / 1000, sp = Math.hypot(...z.map((x, j) => x - PCA.prevZ[j])) / Math.max(dt, 1e-3);
+      if (sp > 0.05) PCA.motionS += dt;
+    }
+    PCA.prevZ = z; PCA.prevT = T[i].t; PCA.samples.push(z);
+    const w = 1 / (PCA.n + 1); PCA.n++;                            // running mean/covariance of the learning window
+    const d = z.map((x, j) => x - PCA.mu[j]);
+    for (let j = 0; j < 6; j++) PCA.mu[j] += w * d[j];
+    for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) PCA.C[r][c] = (1 - w) * PCA.C[r][c] + w * (1 - w) * d[r] * d[c];
+  }
+  const mul = (C, v) => C.map(row => row.reduce((s, x, k) => s + x * v[k], 0));
+  const unitOr = (v, keep) => { const l = Math.hypot(...v); return l > 1e-9 ? v.map(x => x / l) : keep.slice(); };
+  const dot = (u, v) => u.reduce((s, x, k) => s + x * v[k], 0);
+  let D = PCA.C.map(r => r.slice());
+  const vs = [], ls = [];
+  for (let a = 0; a < K; a++) {
+    // Seed from last frame's axis; if that sees no variance, from the joint that varies most.
+    const diag = D.map((r, i) => r[i]), jmax = diag.indexOf(Math.max(...diag));
+    let v = Math.hypot(...mul(D, PCA.v[a])) < 1e-3 * (diag[jmax] || 1) ? D[jmax].slice() : PCA.v[a].slice();
+    if (Math.hypot(...v) < 1e-12) v = PCA.v[a].slice();
+    const orth = u => { for (const w of vs) { const p = dot(u, w); u = u.map((x, i) => x - p * w[i]); } return u; };
+    v = unitOr(orth(v), PCA.v[a]);
+    for (let k = 0; k < 16; k++) v = unitOr(orth(mul(D, v)), v);
+    if (dot(v, PCA.v[a]) < 0) v = v.map(x => -x);                    // keep each axis pointing the same way
+    const l = dot(v, mul(PCA.C, v));
+    vs.push(v); ls.push(Math.max(l, 1e-6));
+    D = D.map((row, r) => row.map((x, c) => x - l * v[r] * v[c]));
+  }
+  PCA.v = vs; PCA.lam = ls;
+  if (PCA.motionS >= LEARN_S) lockMap();
+}
+
+function drawPhase(now, pose, dt) {
+  const P = L.phase, cx = P.x + P.w / 2, cy = P.y + P.h / 2;
+  if (state.running) pcaUpdate();
+  const V3 = PCA.v;
+  // Centre: the average learned pose, fixed at lock (the running mean while learning).
+  const c0 = PCA.locked ? PCA.centre : PCA.mu;
+  const proj = deg => { const z = norm6(deg); return V3.map(v => z.reduce((s, x, k) => s + (x - c0[k]) * v[k], 0)); };
+  // Scale: fixed once locked. While learning, a provisional scale that only grows.
+  if (!PCA.locked) {
+    let reach = 0.2;
+    for (let i = state.ticks.length - 1; i >= 0 && state.ticks[i].t > now - 12000; i--) for (const x of proj(state.ticks[i].F)) reach = Math.max(reach, Math.abs(x));
+    PCA.scale = Math.max(PCA.scale || 0, 1.12 * reach);
+  }
+  const R = PCA.scale, k = (P.h / 2 - 12) / (2 * R);
+  const learning = !PCA.locked;
+  // Isometric: axis 1 runs down-right, axis 2 down-left, axis 3 up.
+  const iso = ([a, b, c]) => [cx + (a - b) * 0.8660254 * k, cy + (a + b) * 0.5 * k - c * k];
+  const inCube = p => p.every(x => Math.abs(x) <= R * 1.001);
+  text("ph-cap", P.x, P.y - 20, "joint space", "cap");
+  text("ph-cap2", P.x + P.w, P.y - 20, learning ? `learning · ${Math.max(0, LEARN_S - PCA.motionS).toFixed(0)} s to go` : PCA.saved ? "locked · saved" : "locked", "cap3", { align: "right" });
+
+  // The cube: back edges faint, the floor (axis-3 minimum) carries the shadows.
+  const C8 = [];
+  for (const a of [-R, R]) for (const b of [-R, R]) for (const c of [-R, R]) C8.push([a, b, c]);
+  for (let i = 0; i < 8; i++) for (let j = i + 1; j < 8; j++) {
+    const d = C8[i].map((x, t) => x !== C8[j][t]).filter(Boolean).length;
+    if (d === 1) line(iso(C8[i]), iso(C8[j]), G(0.86), 1);
+  }
+  // Floor grid, quarters of the cube.
+  for (let t = -1; t <= 1; t += 0.5) {
+    line(iso([t * R, -R, -R]), iso([t * R, R, -R]), G(0.93), 1);
+    line(iso([-R, t * R, -R]), iso([R, t * R, -R]), G(0.93), 1);
+  }
+  // Axis tripod from the centre.
+  ["1", "2", "3"].forEach((n, a) => {
+    const tip = [0, 0, 0]; tip[a] = R * 0.35;
+    line(iso([0, 0, 0]), iso(tip), G(0.55), 1);
+    const lp = iso(tip.map(x => x * 1.25));
+    text("ph-t" + a, lp[0], lp[1] - 5, n, "cap3", { align: "center" });
+  });
+
+  // Path: the last 12 s of the follower, coloured by the joints driving it, with
+  // its shadow on the floor for depth.
+  const T = state.ticks, SPAN = 12000;
+  let i0 = T.length - 1; while (i0 > 0 && T[i0 - 1].t > now - SPAN) i0--;
+  let prev = null, prevZ = null, headCol = INK;
+  const segs = [];
+  for (let i = Math.max(0, i0); i < T.length; i++) {
+    const z = norm6(T[i].F), q = proj(T[i].F);
+    if (prev && inCube(prev) && inCube(q)) {
+      const col = motionColor(z.map((v, j) => v - prevZ[j]), (T[i].t - T[i - 1].t) / 1000);
+      const age = clamp((now - T[i].t) / SPAN, 0, 1);
+      segs.push([prev, q, learning ? G(0.6) : col, age, (now - T[i].t) / 1000]);
+    }
+    if (prev) headCol = learning ? G(0.45) : motionColor(z.map((v, j) => v - prevZ[j]), (T[i].t - T[i - 1].t) / 1000);
+    prev = q; prevZ = z;
+  }
+  for (const [a, b, , age] of segs) line(iso([a[0], a[1], -R]), iso([b[0], b[1], -R]), mixc(G(0.8), PAPER, 0.8 * age), 1);
+  // Tadpole: the stroke swells toward now and tapers into a hairline over
+  // ~1.5 s; round joins on the thick part keep curves smooth.
+  const widthAt = ageS => 1.1 + 5.2 * Math.pow(Math.max(0, 1 - ageS / 1.5), 1.8);
+  for (const [a, b, col, age, ageS] of segs) {
+    const w = widthAt(ageS), c = mixc(col, PAPER, 0.85 * age * age), B = iso(b);
+    line(iso(a), B, c, w);
+    if (w > 2) disc(B, w / 2, c);
+  }
+
+  // Now: follower solid with a drop line to the floor, leader hollow.
+  const fp = proj(pose.F).map(x => clamp(x, -R, R)), lp3 = proj(pose.L).map(x => clamp(x, -R, R));
+  const f = iso(fp), l = iso(lp3), fl = iso([fp[0], fp[1], -R]);
+  for (let s = 0; s < 1; s += 0.08) line(V.lerp([...f, 0], [...fl, 0], s).slice(0, 2), V.lerp([...f, 0], [...fl, 0], s + 0.04).slice(0, 2), G(0.6), 1);
+  rect(fl[0] - 1.5, fl[1] - 1.5, 3, 3, G(0.6), 1);
+  // Leader: a hollow ring, tied to the head by a hairline when they differ.
+  // Shown only once they separate, so a tight follow is just the tadpole.
+  const sep = Math.hypot(l[0] - f[0], l[1] - f[1]);
+  if (sep > 7) {
+    line(l, f, G(0.5), 1);
+    const ring = []; for (let i = 0; i <= 24; i++) ring.push([l[0] + 4 * Math.cos(i / 24 * Math.PI * 2), l[1] + 4 * Math.sin(i / 24 * Math.PI * 2)]);
+    poly(ring, G(0.3), 1);
+  }
+  disc(f, 3.4, headCol);
+
+  // Loadings: what each axis is made of, one signed bar per joint.
+  const tot = PCA.locked ? PCA.total : (PCA.C.reduce((s, row, r) => s + row[r], 0) || 1);
+  V3.forEach((v, a) => {
+    const y = P.y + P.h + 22 + a * 46;
+    text("ph-ax" + a, P.x, y, `axis ${a + 1}`, "lbl");
+    text("ph-ev" + a, P.x + P.w, y, `${Math.round(PCA.lam[a] / tot * 100)}% of motion`, "lbl2", { align: "right" });
+    const bw = P.w / 6;
+    v.forEach((x, j) => {
+      const bx = P.x + j * bw + 4, by = y + 30, hgt = x * 12;
+      line([bx, by], [bx + bw - 8, by], G(0.85), 1);
+      rect(bx + 2, Math.min(by, by - hgt), bw - 12, Math.max(1, Math.abs(hgt)), COLORS[j], 1);
+    });
+  });
+  ["pan", "lift", "elb", "w·flx", "w·rol", "grip"].forEach((n, j) => text("ph-j" + j, P.x + j * (P.w / 6) + 4 + (P.w / 6 - 8) / 2, P.y + P.h + 166, n, "cap3", { align: "center" }));
+  text("ph-leg", P.x, P.y + P.h + 188, "tail = last 12 s   ○ leader, when apart", "cap3");
+  const gap = Math.hypot(...norm6(pose.L).map((x, j) => x - norm6(pose.F)[j])) / Math.sqrt(6) * 100;
+  disp.gap = ease(disp.gap || 0, gap, 8, dt);
+  text("ph-gap", P.x, P.y + P.h + 212, disp.gap.toFixed(1) + "%", "mid");
+  text("ph-gapc", P.x + 64, P.y + P.h + 216, "leader ↔ follower, rms of range", "lbl2");
+}
+
+// ── Drawing: the wire ────────────────────────────────────────────────────────
+const WIRE_MS = 2000;
+let hexCache = { t: 0, lines: [] };
+
+function drawBand(now) {
+  const B = L.band;
+  // Lanes: requests up, replies down; a reply is coloured by the servo that sent it.
+  const wx = B.x + 84, ww = 460, lanes = [{ p: 0, y: B.y + 26 }, { p: 1, y: B.y + 72 }];
+  const tx = t => wx + ww - (now - t) / WIRE_MS * ww;
+  text("wire-cap", B.x, B.y - 16, "wire", "cap");
+  text("wire-t0", wx, B.y - 16, "−2 s", "cap3");
+  text("wire-t1", wx + ww, B.y - 16, "now", "cap3", { align: "right" });
+  for (const ln of lanes) {
+    line([wx, ln.y], [wx + ww, ln.y], G(0.85), 1);
+    text("lane" + ln.p, B.x, ln.y - 12, ln.p ? "follower" : "leader", "lbl2");
+    text("lanes" + ln.p, B.x, ln.y + 2, "req ↑ rep ↓", "cap3");
+  }
+  const Wr = state.wires;
+  const bytes = [0, 0], rtt = [[], []], pend = [null, null];
+  for (let i = 0; i < Wr.length; i++) {
+    const w = Wr[i];
+    if (w.d === 0) pend[w.p] = w; else if (pend[w.p]) { rtt[w.p].push(w.t - pend[w.p].t); }
+    if (w.t < now - WIRE_MS || w.t > now) continue;
+    const X = Math.round(tx(w.t)) + 0.5, ln = lanes[w.p];
+    bytes[w.p] += w.n;
+    const hgt = 3 + Math.min(16, w.n * 0.8);
+    if (w.d === 0) line([X, ln.y], [X, ln.y - hgt], w.op === 0x83 ? INK : G(0.45), 1);
+    else { const j = w.id - 1; line([X, ln.y + 1], [X, ln.y + 1 + hgt], j >= 0 && j < 6 ? COLORS[j] : INK, 1); }
+  }
+  // Bus occupancy: 1 Mbaud, 10 bits a byte on the wire.
+  const sx = wx + ww + 44;
+  const busy = b => (b * 10 / 1e6) / (WIRE_MS / 1000) * 100;
+  text("bus-cap", sx, B.y - 16, "bus occupancy", "cap");
+  [0, 1].forEach(p => {
+    const yy = lanes[p].y - 12, v = busy(bytes[p]);
+    text("bus" + p, sx, yy, v.toFixed(1) + "%", "mid");
+    rect(sx + 70, yy + 6, 80, 6, INK, 0.08);
+    rect(sx + 70, yy + 6, Math.max(1, 80 * v / 100), 6, INK, 1);
+    const r = rtt[p].slice(-60); text("rtt" + p, sx + 160, yy + 3, r.length ? `rtt ${pct(r, 0.5).toFixed(2)} ms` : "", "lbl2");
+  });
+
+  // Loop timing: last 150 ticks, work against the period.
+  const lx = sx + 280, lw = 190, lh = 50, ly = B.y + 14;
+  const hz = state.hello ? state.hello.hz : 30, period = 1000 / hz;
+  const R = state.ticks.slice(-150);
+  const wks = R.map(t => t.wk);
+  const used = R.length ? wks.reduce((a, b) => a + b, 0) / R.length / period * 100 : 0;
+  text("loop-cap", lx, B.y - 16, "loop", "cap");
+  text("loop-used", lx + lw + 18, B.y + 10, used < 10 ? used.toFixed(1) + "%" : used.toFixed(0) + "%", "mid");
+  text("loop-usedc", lx + lw + 18, B.y + 32, "of each tick\nspent on the bus", "lbl2");
+  line([lx, ly + lh], [lx + lw, ly + lh], INK, 1);
+  for (let x = lx; x < lx + lw; x += 4) line([x, ly], [x + 1.5, ly], INK, 1);
+  text("loop-p", lx + lw, ly - 12, `${period.toFixed(1)} ms`, "cap3", { align: "right" });
+  R.forEach((t, i) => {
+    const X = lx + lw - (R.length - i) * (lw / 150);
+    const h1 = clamp(t.wk / period * lh, 0.8, lh), h2 = clamp(t.lt / period * lh, 0, lh - h1);
+    rect(X, ly + lh - h1, lw / 150 * 0.8, h1, t.e ? COLORS[4] : INK, 1);
+    if (h2 > 0.5) rect(X, ly + lh - h1 - h2, lw / 150 * 0.8, h2, INK, 0.25);
+  });
+  text("loop-s", lx, ly + lh + 8, `work p50 ${pct(wks, 0.5).toFixed(2)} · p99 ${pct(wks, 0.99).toFixed(2)} ms`, "cap3");
+
+  // The instructions on the wire right now, decoded.
+  const hx = lx + lw + 136;
+  text("hex-cap", hx, B.y - 16, "instructions, decoded", "cap");
+  if (NOW() - hexCache.t > 300 && state.running) {
+    hexCache.t = NOW();
+    const out = [], seen = new Set();
+    for (let i = Wr.length - 1; i >= 0 && out.length < 5; i--) {
+      const w = Wr[i]; if (w.d !== 0) continue;
+      const key = w.p + ":" + w.op + ":" + w.addr; if (seen.has(key)) continue; seen.add(key);
+      const verb = (INSTR[w.op] || "0x" + w.op.toString(16)).toLowerCase();
+      const reg = (REG[w.addr] || "addr " + w.addr).replace("Present_", "").replace("Goal_", "goal ").replace(/_/g, " ").toLowerCase();
+      const name = `${w.p ? "F" : "L"}  ${verb} ${reg}${w.id !== 0xfe ? " #" + w.id : ""}`;
+      out.push({ name, hex: w.hex.match(/../g).slice(0, 7).join(" ") + (w.n > 7 ? " …" : "") });
+    }
+    hexCache.lines = out;
+  }
+  hexCache.lines.forEach((l, i) => {
+    text("hexn" + i, hx, B.y + i * 16, l.name, "mono ink");
+    text("hexb" + i, W - L.pad, B.y + i * 16, l.hex, "mono", { align: "right" });
+  });
+}
+
+// ── Header ───────────────────────────────────────────────────────────────────
+function drawHeader(now) {
+  text("title", L.pad, L.head.y, "SO-101", "mid");
+  text("sub", L.pad + 84, L.head.y + 5, "leader → follower, 1:1", "lbl2");
+  const R = recentTicks(2000);
+  let hz = 0; if (R.length > 2) hz = (R.length - 1) / ((R[R.length - 1].t - R[0].t) / 1000);
+  const err = R.length ? Math.sqrt(R.reduce((s, t) => s + [0, 1, 2, 3, 4].reduce((a, j) => a + (t.L[j] - t.F[j]) ** 2, 0) / 5, 0) / R.length) : 0;
+  const temps = state.tel.map(a => a.length ? a[a.length - 1].temp : null).filter(x => x !== null);
+  const volts = state.tel.map(a => a.length ? a[a.length - 1].v : null).filter(x => x !== null);
+  const status = !state.connected ? "offline" : !state.running ? (state.frozenAt ? "stopped" : "ready") : state.ended ? "loop ended" : "live";
+  const stats = [
+    ["status", status],
+    ["rate", hz ? hz.toFixed(1) + " Hz" : "—"],
+    ["tracking rms", R.length ? err.toFixed(2) + "°" : "—"],
+    ["hottest", temps.length ? Math.max(...temps) + " °C" : "—"],
+    ["supply", volts.length ? Math.min(...volts).toFixed(1) + " V" : "—"],
+    ["session", state.running || state.frozenAt ? fmtClock((state.running ? NOW() : state.frozenAt) - state.startedAt) : "—"],
+  ];
+  let x = 720;
+  stats.forEach(([k, v], i) => { text("hk" + i, x, L.head.y - 6, k, "cap3"); text("hv" + i, x, L.head.y + 8, v, "lbl"); x += 118; });
+  if (state.running && status === "live") { const on = (NOW() % 1000) < 500; rect(706, L.head.y + 10, 6, 6, INK, on ? 1 : 0.3); }
+}
+const fmtClock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+// ── Alerts: top left of the workstation, with a ring on the servo in 3D ─────
+function drawAlerts(hero) {
+  const list = [...state.alerts.values()].sort((a, b) => b.sev - a.sev || a.born - b.born).slice(0, 4);
+  const x = L.hero.x, y0 = L.hero.y + 4;
+  text("al-cap", x, y0 - 22 + 4, "attention", "cap3");
+  list.forEach((a, i) => {
+    const y = y0 + i * 22, age = NOW() - a.seen, op = age > 0 ? clamp(1 - age / 1200, 0, 1) : 1;
+    const born = clamp((NOW() - a.born) / 300, 0, 1);
+    rect(x, y + 2, 8, 8, a.j >= 0 ? COLORS[a.j] : INK, op);
+    if (a.sev > 1) box(x - 3, y - 1, 14, 14, INK, 1);
+    text("al" + a.key, x + 20, y, `${a.msg}${a.dur ? " · " + a.dur.toFixed(1) + " s" : ""}`, "alert halo", { opacity: op * born });
+    text("ala" + a.key, x + 20, y + 13, a.act, "cap3 halo", { opacity: op * born });
+    if (a.j >= 0 && hero && op > 0.3) {
+      const at = hero.arms[1].geo.P.jo[a.j];
+      if (at) {
+        const c = toScreen(hero.VP, at);
+        const r = 22 + 2.5 * Math.sin(NOW() / 160) * (a.sev > 1 ? 1 : 0.3);
+        const ring = []; for (let k = 0; k <= 48; k++) ring.push([c[0] + r * Math.cos(k / 48 * Math.PI * 2), c[1] + r * Math.sin(k / 48 * Math.PI * 2)]);
+        poly(ring, INK, 1);
+        line([c[0] + r * 0.707, c[1] - r * 0.707], [c[0] + r * 0.707 + 18, c[1] - r * 0.707 - 18], INK, 1);
+        line([c[0] + r * 0.707 + 18, c[1] - r * 0.707 - 18], [c[0] + r * 0.707 + 30, c[1] - r * 0.707 - 18], INK, 1);
+        text("alr" + a.key, c[0] + r * 0.707 + 34, c[1] - r * 0.707 - 24, SHORT[a.j], "cap halo");
+      }
+    }
+  });
+  if (!list.length && state.running && state.ticks.length > 30) text("al-ok", x, y0, "all six joints tracking", "alert", { color: "var(--ink-3)" });
+}
+
+// ── Frame ────────────────────────────────────────────────────────────────────
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  const w = window.innerWidth, h = window.innerHeight;
+  S = Math.min(w / W, h / H); OX = (w - W * S) / 2; OY = (h - H * S) / 2;
+  VW = Math.round(w * DPR); VH = Math.round(h * DPR); PX = S * DPR;
+  canvas.width = VW; canvas.height = VH;
+  ui.style.transform = `translate(${OX}px, ${OY}px) scale(${S})`;
+  const b = document.getElementById("btn");
+  b.style.right = (OX + L.pad * S) + "px"; b.style.top = (OY + (L.head.y - 10) * S) + "px"; b.style.transform = `scale(${S})`;
+}
+window.addEventListener("resize", resize);
+
+let lastFrame = NOW();
+function frame() {
+  const t = NOW(), dt = Math.min(0.1, Math.max(0, (t - lastFrame) / 1000)); lastFrame = t;
+  textFrame++;
+  gl.viewport(0, 0, VW, VH);
+  gl.clearColor(PAPER[0], PAPER[1], PAPER[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (SYNTH && state.running) synthAdvance(NOW() - state.startedAt);
+  const now = serverNow() - 70;
+  let pose = (state.running ? sampleAt(now) : state.lastTick) || { L: [0, 0, 0, 0, 0, 30], F: [0, 0, 0, 0, 0, 30], G: [0, 0, 0, 0, 0, 30] };
+  if (DEBUG_ZERO) pose = { L: [0, 0, 0, 0, 0, 50], F: [0, 0, 0, 0, 0, 50], G: [0, 0, 0, 0, 0, 50] };
+  if (state.running) computeAlerts(now);
+
+  heroDt = dt;
+  const hero = SOLO ? null : drawHero(state.running ? t : (state.frozenAt || t), pose);
+
+  // 2D layer.
+  const VP2 = M.ortho2d(S * DPR, S * DPR, OX * DPR, OY * DPR, VW, VH);
+  if (!SOLO) drawRows(now, pose, dt);
+  drawPhase(now, pose, dt);
+  if (!SOLO) { drawBand(now); drawHeader(now); drawAlerts(hero); }
+  // Frame rules.
+  line([L.pad, 62], [W - L.pad, 62], INK, 1);
+  line([L.pad, L.band.y - 34], [W - L.pad, L.band.y - 34], G(0.85), 1);
+  if (!state.running && !state.frozenAt) text("hint", L.hero.x + L.hero.w / 2, L.hero.y + 40, state.connected ? "press start, then move the leader" : "waiting for so101 teleop --serve", "lbl2", { align: "center" });
+
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(FILL.p); gl.uniformMatrix4fv(FILL.u.uVP, false, VP2); gl.uniform1f(FILL.u.uCell, Math.max(1, Math.round(PX))); gl.uniform1f(FILL.u.uSmooth, 1);
+  fills.draw(gl.TRIANGLES);
+  gl.useProgram(LINE.p); gl.uniformMatrix4fv(LINE.u.uVP, false, VP2); gl.uniform2f(LINE.u.uView, VW / 2, VH / 2); gl.uniform1f(LINE.u.uBias, 0);
+  lines.draw(gl.TRIANGLES);
+  sweepTexts();
+  if (!VIRTUAL) requestAnimationFrame(frame);
+}
+// Frame-exact stepping for captures: advance the clock, draw one frame.
+window.__step = ms => { VT += ms; frame(); };
+
+// ── Start / Stop ─────────────────────────────────────────────────────────────
+const btn = document.getElementById("btn");
+function start() { SYN.t = 0; SYN.i = 0; SYN.F = null; PCA.n = 0; PCA.lastI = -1; PCA.scale = null; PCA.v = [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]; PCA.mu.fill(0); PCA.C.forEach(r => r.fill(0)); Object.assign(PCA, { locked: false, saved: false, motionS: 0, samples: [], prevZ: null, prevT: 0, lam: [1e-3, 1e-3, 1e-3] }); loadLockedMap(); state.running = true; state.ticks = []; state.wires = []; state.tel = JOINTS.map(() => []); state.baseTemp = JOINTS.map(() => null); state.alerts.clear(); trail.length = 0; state.startedAt = NOW(); state.frozenAt = 0; btn.textContent = "Stop"; }
+function stop() { state.running = false; state.frozenAt = NOW(); btn.textContent = "Start"; }
+btn.addEventListener("click", () => state.running ? stop() : start());
+window.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); state.running ? stop() : start(); } });
+
+gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+resize(); connect(); loadModel();
+if (new URLSearchParams(location.search).has("autostart")) start();
+if (!VIRTUAL) requestAnimationFrame(frame); else frame();
+</script>
+</body>
+</html>
