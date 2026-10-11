@@ -126,7 +126,6 @@ fn run_loop(
                 if consecutive_errors >= fail_after {
                     // Fail-safe: never leave the follower holding a stale goal
                     // behind a fault. `run` switches its torque off on the way out.
-                    stats.overruns = ticker.overruns;
                     return Err(Error::Other(format!(
                         "follower failed {consecutive_errors} ticks in a row ({e}); stopping with torque off"
                     )));
