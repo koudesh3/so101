@@ -2,4 +2,5 @@
 //! dashboard served while teleop runs.
 
 pub mod dashboard;
+pub mod replay;
 pub mod visualize;

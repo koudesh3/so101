@@ -48,12 +48,12 @@ pub struct Telemetry {
 }
 
 // Present_Position (56) through Present_Current (69..70): one 15-byte read.
-const TELEMETRY_START: u8 = 56;
-const TELEMETRY_LEN: u8 = 15;
+pub const TELEMETRY_START: u8 = 56;
+pub const TELEMETRY_LEN: u8 = 15;
 
 impl Telemetry {
     // Decode the block that starts at Present_Position.
-    fn from_block(joint: Joint, b: &[u8]) -> Option<Self> {
+    pub fn from_block(joint: Joint, b: &[u8]) -> Option<Self> {
         if b.len() < TELEMETRY_LEN as usize {
             return None;
         }

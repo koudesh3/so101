@@ -69,7 +69,8 @@ const QS = new URLSearchParams(location.search);
 // ?virtual: time advances only through window.__step(ms), for frame-exact capture.
 // ?synthetic: no server; the page feeds itself scripted joint trajectories.
 // ?solo=phase: draw only the joint-space panel.
-const VIRTUAL = QS.has("virtual"), SYNTH = QS.has("synthetic"), SOLO = QS.get("solo");
+// ?replay=URL: no server; play a recorded episode (`so101 replay`) on a loop.
+const VIRTUAL = QS.has("virtual"), SYNTH = QS.has("synthetic"), SOLO = QS.get("solo"), REPLAY = QS.get("replay");
 let VT = 0;
 const NOW = () => VIRTUAL ? VT : performance.now();
 const THEME_Q = QS.get("theme");
@@ -463,18 +464,49 @@ function synthHello() {
   return { k: "hello", hz: 30, max_step: 50, sim: true, joints: JOINTS, ports: ["synthetic", "synthetic"], cal: [{ arm_id: "leader", joints: cal }, { arm_id: "follower", joints: cal }] };
 }
 
+function onEvent(ev) {
+  if (ev.k === "hello") { state.hello = ev; state.ended = null; return; }
+  if (ev.k === "end") { state.ended = ev; return; }
+  if (!state.running) { if (ev.k === "t") { state.lastTick = { L: ev.L, F: ev.F, G: ev.G, t: ev.t / 1000 }; state.offset = NOW() - ev.t / 1000; } return; }
+  if (ev.k === "t") ingestTick(ev); else if (ev.k === "w") ingestWire(ev);
+}
+
+// Files may arrive gzipped ahead of time, from a static host that won't
+// compress binary or unknown types: the magic bytes say so, and the browser
+// inflates them. A server that compresses on the fly is decoded by fetch.
+async function fetchBytes(url) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const b = new Uint8Array(buf, 0, Math.min(2, buf.byteLength));
+  if (b[0] !== 0x1f || b[1] !== 0x8b) return buf;
+  return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+}
+
+// A replay is the same event stream from a file, released on the page's own
+// clock at the pace it was recorded, and started over when it runs out.
+const REP = { events: [], next: 0, t0: 0 };
+function replayAdvance(elapsedMs) {
+  const E = REP.events;
+  while (REP.next < E.length && E[REP.next].t / 1000 - REP.t0 <= elapsedMs) onEvent(E[REP.next++]);
+  if (REP.next >= E.length) start();
+}
+
 function connect() {
   if (SYNTH) { state.connected = true; state.hello = synthHello(); return; }
+  if (REPLAY) {
+    fetchBytes(REPLAY).then(buf => new TextDecoder().decode(buf)).then(text => {
+      const E = text.split("\n").filter(Boolean).map(l => JSON.parse(l));
+      onEvent(E[0]);
+      REP.events = E.slice(1, -1);
+      REP.t0 = (REP.events[0]?.t ?? 0) / 1000;
+      state.connected = true;
+      start();
+    });
+    return;
+  }
   const es = new EventSource("/events");
   es.onopen = () => { state.connected = true; };
   es.onerror = () => { state.connected = false; };
-  es.onmessage = m => {
-    const ev = JSON.parse(m.data);
-    if (ev.k === "hello") { state.hello = ev; state.ended = null; return; }
-    if (ev.k === "end") { state.ended = ev; return; }
-    if (!state.running) { if (ev.k === "t") { state.lastTick = { L: ev.L, F: ev.F, G: ev.G, t: ev.t / 1000 }; state.offset = NOW() - ev.t / 1000; } return; }
-    if (ev.k === "t") ingestTick(ev); else if (ev.k === "w") ingestWire(ev);
-  };
+  es.onmessage = m => onEvent(JSON.parse(m.data));
 }
 
 // Server-clock "now", delayed two ticks so poses interpolate smoothly.
@@ -559,9 +591,13 @@ const trail = [];
 
 // ── Model: the real SO-101 meshes ────────────────────────────────────────────
 async function loadModel() {
-  const [j, b] = await Promise.all([fetch("/model.json").then(r => r.json()), fetch("/model.bin").then(r => r.arrayBuffer())]);
+  const [j, b] = await Promise.all([fetch("model.json").then(r => r.json()), fetchBytes("model.bin")]);
+  // Both STS3215 shells undecimated (tools/build_servo.py) replace model.bin's
+  // copies, whose bent faces catch the hard highlight as white wedges.
+  const [s, sb] = await Promise.all([fetch("servo.json").then(r => r.json()), fetchBytes("servo.bin")]);
   const meshes = {};
-  for (const [name, m] of Object.entries(j.meshes)) {
+  const sources = [...Object.entries(j.meshes).filter(([n]) => !s.meshes[n]).map(([n, m]) => [n, m, b]), ...Object.entries(s.meshes).map(([n, m]) => [n, m, sb])];
+  for (const [name, m, b] of sources) {
     const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
     const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
     gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(b, m.v_off, m.v_count * j.stride), gl.STATIC_DRAW);
@@ -1084,7 +1120,7 @@ function drawHeader(now) {
   const err = R.length ? Math.sqrt(R.reduce((s, t) => s + [0, 1, 2, 3, 4].reduce((a, j) => a + (t.L[j] - t.F[j]) ** 2, 0) / 5, 0) / R.length) : 0;
   const temps = state.tel.map(a => a.length ? a[a.length - 1].temp : null).filter(x => x !== null);
   const volts = state.tel.map(a => a.length ? a[a.length - 1].v : null).filter(x => x !== null);
-  const status = !state.connected ? "offline" : !state.running ? (state.frozenAt ? "stopped" : "ready") : state.ended ? "loop ended" : "live";
+  const status = !state.connected ? "offline" : !state.running ? (state.frozenAt ? "stopped" : "ready") : state.ended ? "loop ended" : REPLAY ? "replay" : "live";
   const stats = [
     ["status", status],
     ["rate", hz ? hz.toFixed(1) + " Hz" : "—"],
@@ -1147,6 +1183,7 @@ function frame() {
   gl.viewport(0, 0, VW, VH);
   gl.clearColor(PAPER[0], PAPER[1], PAPER[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   if (SYNTH && state.running) synthAdvance(NOW() - state.startedAt);
+  if (REPLAY && state.running) replayAdvance(NOW() - state.startedAt);
   const now = serverNow() - 70;
   let pose = (state.running ? sampleAt(now) : state.lastTick) || { L: [0, 0, 0, 0, 0, 30], F: [0, 0, 0, 0, 0, 30], G: [0, 0, 0, 0, 0, 30] };
   if (DEBUG_ZERO) pose = { L: [0, 0, 0, 0, 0, 50], F: [0, 0, 0, 0, 0, 50], G: [0, 0, 0, 0, 0, 50] };
@@ -1178,7 +1215,7 @@ window.__step = ms => { VT += ms; frame(); };
 
 // ── Start / Stop ─────────────────────────────────────────────────────────────
 const btn = document.getElementById("btn");
-function start() { SYN.t = 0; SYN.i = 0; SYN.F = null; PCA.n = 0; PCA.lastI = -1; PCA.scale = null; PCA.v = [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]; PCA.mu.fill(0); PCA.C.forEach(r => r.fill(0)); Object.assign(PCA, { locked: false, saved: false, motionS: 0, samples: [], prevZ: null, prevT: 0, lam: [1e-3, 1e-3, 1e-3] }); loadLockedMap(); state.running = true; state.ticks = []; state.wires = []; state.tel = JOINTS.map(() => []); state.baseTemp = JOINTS.map(() => null); state.alerts.clear(); trail.length = 0; state.startedAt = NOW(); state.frozenAt = 0; btn.textContent = "Stop"; }
+function start() { SYN.t = 0; SYN.i = 0; SYN.F = null; PCA.n = 0; PCA.lastI = -1; PCA.scale = null; PCA.v = [[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]]; PCA.mu.fill(0); PCA.C.forEach(r => r.fill(0)); Object.assign(PCA, { locked: false, saved: false, motionS: 0, samples: [], prevZ: null, prevT: 0, lam: [1e-3, 1e-3, 1e-3] }); loadLockedMap(); state.running = true; state.ticks = []; state.wires = []; state.tel = JOINTS.map(() => []); state.baseTemp = JOINTS.map(() => null); state.alerts.clear(); trail.length = 0; state.startedAt = NOW(); state.frozenAt = 0; btn.textContent = "Stop"; if (REPLAY) { REP.next = 0; state.offset = null; state.ended = null; } }
 function stop() { state.running = false; state.frozenAt = NOW(); btn.textContent = "Start"; }
 btn.addEventListener("click", () => state.running ? stop() : start());
 window.addEventListener("keydown", e => { if (e.code === "Space") { e.preventDefault(); state.running ? stop() : start(); } });

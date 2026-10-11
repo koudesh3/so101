@@ -278,6 +278,44 @@ fn teleop_with_telemetry_reports_one_servo_per_tick_in_rotation() {
 }
 
 #[test]
+fn replay_rebuilds_the_ticks_the_live_loop_reported() {
+    use so101::report::replay::events_from_log;
+    let dir = std::env::temp_dir().join(format!("so101-replay-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log_path = dir.join("bytes.jsonl");
+    let log = ByteLog::create(&log_path).unwrap();
+    let leader_sim = Recorder::new(SimulatedBus::waving_arm("leader"), "leader", log.clone());
+    let follower_sim = Recorder::new(SimulatedBus::arm("follower"), "follower", log.clone());
+    let cal = [ArmCalibration::identity("leader"), ArmCalibration::identity("follower")];
+    let mut leader = Arm::new("leader", Bus::new(Box::new(leader_sim)), cal[0].clone());
+    let mut follower = Arm::new("follower", Bus::new(Box::new(follower_sim)), cal[1].clone());
+    leader.check_present().unwrap();
+    follower.check_present().unwrap();
+
+    let options = TeleopOptions { hz: 100.0, max_step_ticks: Some(200), max_ticks: Some(30), telemetry: true, lead: [Duration::ZERO; COUNT] };
+    let mut reports = Vec::new();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    log.flush();
+
+    let events: Vec<serde_json::Value> =
+        events_from_log(&read_log(&log_path).unwrap(), [&cal[0], &cal[1]]).iter().map(|e| serde_json::from_str(e).unwrap()).collect();
+    assert_eq!(events[0]["k"], "hello");
+    assert_eq!(events.last().unwrap()["k"], "end");
+    assert_eq!(events.last().unwrap()["errors"], 0);
+    // The setup read that holds the follower before torque-on is not a tick.
+    let ticks: Vec<_> = events.iter().filter(|e| e["k"] == "t").collect();
+    assert_eq!(ticks.len(), reports.len());
+    for (t, r) in ticks.iter().zip(&reports) {
+        assert_eq!(t["Lt"], serde_json::json!(r.leader_ticks));
+        assert_eq!(t["Ft"], serde_json::json!(r.follower_ticks));
+        assert_eq!(t["Gt"], serde_json::json!(r.goal_ticks_sent));
+        assert_eq!(t["tel"]["id"], serde_json::json!(r.telemetry.unwrap().joint.id()));
+    }
+    assert!(events.iter().any(|e| e["k"] == "w"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn dashboard_serves_page_model_and_events() {
     use so101::report::dashboard::{serve, Hub};
     use std::io::{Read, Write};

@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 viewer</title>
+<style>
+  /* Tokens, type and the renderer below are the dashboard's (dashboard.html),
+     so an arm here is drawn exactly as it is during teleop. */
+  :root {
+    --ink: #121212;
+    --ink-2: #555555;
+    --ink-3: #737373;
+    --rule: #d9d9d9;
+    --paper: #ffffff;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --ink: #ededed; --ink-2: #b0b0b0; --ink-3: #8f8f8f; --rule: #2a2a2a; --paper: #0f0f10; color-scheme: dark; }
+  }
+  :root[data-theme="dark"] { --ink: #ededed; --ink-2: #b0b0b0; --ink-3: #8f8f8f; --rule: #2a2a2a; --paper: #0f0f10; color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: var(--paper); }
+  body { color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; font-variant-numeric: tabular-nums; }
+  #app { display: grid; grid-template-columns: 300px 1fr; height: 100%; }
+  #panel { padding: 26px 24px; overflow-y: auto; border-right: 1px solid var(--rule); }
+  #stage { position: relative; min-height: 0; overflow: hidden; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #gl:active { cursor: grabbing; }
+  #tags, #leads { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #leads line { stroke: var(--ink-3); stroke-width: 1; }
+  h1 { margin: 0 0 6px; font-size: 18px; font-weight: 400; letter-spacing: -0.01em; }
+  .sub { margin: 0 0 22px; font-size: 12px; line-height: 1.5; color: var(--ink-2); }
+  .cap { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-2); }
+  .grp { display: flex; justify-content: space-between; margin: 18px 0 4px; padding-bottom: 6px; border-bottom: 1px solid var(--ink); }
+  .grp button { font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--ink-3); background: none; border: 0; padding: 0; cursor: pointer; }
+  .grp button:hover, .grp button[aria-pressed="true"] { color: var(--ink); }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li button { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; width: 100%; padding: 6px 0; font: 12px var(--sans); letter-spacing: 0.01em; color: var(--ink); background: none; border: 0; border-bottom: 1px solid var(--rule); text-align: left; cursor: pointer; }
+  li button:hover .n, li button[aria-pressed="true"] .n { text-decoration: underline; text-underline-offset: 3px; }
+  li .k { font: 10px var(--mono); color: var(--ink-3); }
+  li .sw { width: 9px; height: 9px; }
+  li .r { font: 10px var(--mono); color: var(--ink-3); }
+  #desc { min-height: 5.5em; margin: 16px 0 0; font-size: 12px; line-height: 1.55; color: var(--ink); }
+  #desc b { font-weight: 500; }
+  .note { margin: 18px 0 0; font-size: 11px; line-height: 1.55; color: var(--ink-3); }
+  .tag { position: absolute; display: flex; align-items: center; gap: 5px; white-space: nowrap; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); text-shadow: 0 0 2px var(--paper), 0 0 4px var(--paper), 0 0 6px var(--paper); transform: translate(0, -50%); }
+  .tag.left { transform: translate(-100%, -50%); flex-direction: row-reverse; }
+  .tag i { width: 13px; height: 13px; display: grid; place-items: center; font: 500 9px var(--mono); font-style: normal; letter-spacing: 0; color: #fff; text-shadow: none; }
+  #spin { position: absolute; right: 16px; top: 14px; width: 32px; height: 32px; display: grid; place-items: center; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); border-radius: 0; padding: 0; cursor: pointer; }
+  #spin svg { width: 12px; height: 12px; fill: currentColor; }
+  #pick { position: absolute; left: 16px; top: 14px; display: flex; }
+  #pick[hidden] { display: none; }
+  #pick button { height: 32px; padding: 0 calc(12px - 0.12em) 0 12px; font: 500 10px var(--sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); border-radius: 0; cursor: pointer; }
+  #pick button + button { border-left: 0; }
+  #pick button[aria-pressed="true"] { background: var(--ink); color: var(--paper); cursor: default; }
+  #spin:hover { background: var(--ink); color: var(--paper); }
+  #hint { position: absolute; right: 18px; bottom: 14px; pointer-events: none; }
+  .mini #panel, .mini #pick, .mini #spin, .mini #hint, .mini #tags, .mini #leads { display: none !important; }
+  .mini #app { display: block; height: 100%; }
+  html.mini, .mini body { background: transparent !important; }
+  .mini #stage { position: absolute; inset: 0; height: auto; }
+  /* ?panel=0: the model and its controls only; the page that embeds it says what it is. */
+  .nopanel #panel, .nopanel #spin { display: none !important; }
+  .nopanel #app { display: block; height: 100%; }
+  .nopanel #stage { position: absolute; inset: 0; height: auto; }
+  /* Embedded in a post, it must not trap the page's scrolling: no wheel zoom, and a vertical swipe
+     scrolls the page while a sideways one turns the arm. */
+  .nopanel #gl { touch-action: pan-y; }
+  @media (max-width: 760px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: 56vh auto; height: auto; min-height: 100%; }
+    #stage { order: 1; height: 56vh; }
+    #panel { order: 2; border-right: 0; border-top: 1px solid var(--rule); padding: 20px; }
+    /* Without the part lists the panel is short: the model takes the rest of the frame. */
+    .bare #app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    .bare #stage { flex: 1 1 0; height: auto; }
+    /* A fixed height (title and two lines) so viewers set side by side split at the same line. */
+    .bare #panel { flex: none; box-sizing: border-box; height: 104px; overflow: hidden; padding: 18px 20px; }
+    .bare .sub { margin: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel">
+    <h1 id="title"></h1>
+    <p class="sub" id="sub"></p>
+    <div id="lists"></div>
+    <div id="desc" aria-live="polite"></div>
+    <p class="note" id="note"></p>
+  </aside>
+  <div id="stage">
+    <canvas id="gl"></canvas>
+    <svg id="leads" aria-hidden="true"></svg>
+  <div id="tags"></div>
+    <div id="pick" role="group" aria-label="Arm"><button type="button" data-show="follower">Follower</button><button type="button" data-show="leader">Leader</button></div>
+    <button id="spin" type="button" aria-label="Pause rotation"></button>
+    <div id="hint" class="cap">Drag to orbit · scroll or pinch to zoom</div>
+  </div>
+</div>
+<script>
+// One SO-101 arm, or its servo on its own, drawn by the teleop dashboard's
+// renderer: same meshes (model.json + model.bin), same cel shading laid down
+// as ordered dither, same ink outlines, light, floor and palette.
+//   ?show=follower | leader | servo     (default follower)
+//   ?theme=light | dark                 (default: follow the system)
+const QS = new URLSearchParams(location.search);
+let SHOW = ["leader", "servo"].includes(QS.get("show")) ? QS.get("show") : "follower";
+// ?parts=0 leaves out the part lists, their descriptions and the sources note: just the title and the model.
+const PARTS = QS.get("parts") !== "0";
+document.documentElement.classList.toggle("bare", !PARTS);
+document.documentElement.classList.toggle("nopanel", QS.get("panel") === "0");
+// ?mini: the arm alone, no panel, controls or tags, posed by the page that embeds it (see LIVE).
+const MINI = QS.has("mini");
+document.documentElement.classList.toggle("mini", MINI);
+const THEME_Q = QS.get("theme");
+if (THEME_Q) document.documentElement.dataset.theme = THEME_Q;
+const darkQuery = matchMedia("(prefers-color-scheme: dark)");
+
+const JOINTS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"];
+const LCH_LIGHT = [[48, 60, 262], [68, 62, 60], [46, 62, 320], [66, 45, 190], [52, 65, 28], [70, 60, 110]];
+const LCH_DARK = [[54, 60, 262], [56, 62, 58], [52, 62, 318], [56, 46, 188], [48, 66, 26], [60, 62, 100]];
+let DARK = false, LCH, INK, PAPER, TAPE, COLORS, PRINTED, SERVO_LIT, SHADOW_COL, SHADOW_COV, GRID, HILITE;
+
+// ── Colour (as dashboard.html) ───────────────────────────────────────────────
+function G(v) {
+  const t = (1 - v) / 0.93, p = DARK ? 0.059 : 1, k = DARK ? 0.93 : 0.07, g = p + (k - p) * t;
+  return [g, g, g];
+}
+const relLum = c => c.map(v => v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+const contrast = (a, b) => { const x = relLum(a), y = relLum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+function legible([l, c, h], min = 3.05) {
+  let col = lch(l, c, h);
+  for (let i = 0; i < 60 && contrast(col, PAPER) < min; i++) { l += DARK ? 1 : -1; col = lch(l, c, h); }
+  return col;
+}
+function legibleL([l, c, h], min) {
+  for (let i = 0; i < 60 && contrast(lch(l, c, h), PAPER) < min; i++) l += DARK ? 1 : -1;
+  return l;
+}
+const css = c => `rgb(${c.map(v => Math.round(v * 255)).join(",")})`;
+function lch(L, C, Hh) {
+  const h = Hh * Math.PI / 180, a = C * Math.cos(h), b = C * Math.sin(h);
+  const fy = (L + 16) / 116, fx = fy + a / 500, fz = fy - b / 200, e = 216 / 24389, k = 24389 / 27;
+  const f = t => t ** 3 > e ? t ** 3 : (116 * t - 16) / k;
+  const X = 0.95047 * f(fx), Y = L > k * e ? fy ** 3 : L / k, Z = 1.08883 * f(fz);
+  const lin = [3.2404542 * X - 1.5371385 * Y - 0.4985314 * Z, -0.969266 * X + 1.8760108 * Y + 0.041556 * Z, 0.0556434 * X - 0.2040259 * Y + 1.0572252 * Z];
+  return lin.map(u => { u = Math.min(1, Math.max(0, u)); return u <= 0.0031308 ? 12.92 * u : 1.055 * u ** (1 / 2.4) - 0.055; });
+}
+const mixc = (c, d, t) => c.map((v, i) => v + (d[i] - v) * t);
+function applyTheme() {
+  DARK = THEME_Q ? THEME_Q === "dark" : darkQuery.matches;
+  LCH = DARK ? LCH_DARK : LCH_LIGHT;
+  INK = G(0.07); PAPER = G(1);
+  TAPE = legible(DARK ? [50, 40, 250] : [66, 36, 248]);
+  COLORS = LCH.map(x => legible(x));
+  PRINTED = DARK ? { col: lch(52, 6, 78), shade: lch(24, 8, 70), lit: 0.62, dark: 0.7 } : { col: lch(84, 10, 78), shade: lch(64, 16, 68), lit: 0.34, dark: 0.62 };
+  SERVO_LIT = DARK ? 0.94 : 0.9;
+  SHADOW_COL = DARK ? PAPER : G(0.62); SHADOW_COV = DARK ? 0.92 : 0.3;
+  GRID = G(0.5); HILITE = DARK ? [0.97, 0.97, 0.95] : [1, 1, 1];
+  document.documentElement.style.background = MINI ? "transparent" : css(PAPER);
+  SCENE = null;
+  buildPanel();
+}
+darkQuery.addEventListener("change", applyTheme);
+
+// ── Math (as dashboard.html) ─────────────────────────────────────────────────
+const M = {
+  mul(a, b) { const o = new Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) { let s = 0; for (let k = 0; k < 4; k++) s += a[k * 4 + r] * b[c * 4 + k]; o[c * 4 + r] = s; } return o; },
+  trans: (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1],
+  rx: t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]; },
+  ry: t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]; },
+  rz: t => { const c = Math.cos(t), s = Math.sin(t); return [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]; },
+  persp(fov, asp, n, f) { const t = 1 / Math.tan(fov / 2); return [t / asp, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, 2 * f * n / (n - f), 0]; },
+  look(eye, at, up) {
+    const z = V.norm(V.sub(eye, at)), x = V.norm(V.cross(up, z)), y = V.cross(z, x);
+    return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -V.dot(x, eye), -V.dot(y, eye), -V.dot(z, eye), 1];
+  },
+  pt(m, p) { const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]; return [(m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]) / w, (m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]) / w, (m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]) / w]; },
+  origin: m => [m[12], m[13], m[14]],
+  axis: (m, i) => [m[i * 4], m[i * 4 + 1], m[i * 4 + 2]],
+};
+const V = {
+  add: (a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  mul: (a, s) => [a[0] * s, a[1] * s, a[2] * s],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// ── Kinematics (as dashboard.html) ───────────────────────────────────────────
+let MODEL = null;
+const JOINT_INDEX = { shoulder_pan: 0, shoulder_lift: 1, elbow_flex: 2, wrist_flex: 3, wrist_roll: 4, gripper: 5 };
+const SIGN = [1, 1, 1, 1, 1, 1];
+const rpyT = (xyz, rpy) => M.mul(M.trans(...xyz), M.mul(M.rz(rpy[2]), M.mul(M.ry(rpy[1]), M.rx(rpy[0]))));
+function armPose(arm, base, deg) {
+  const links = { base_link: base }, jo = new Array(6), axes = new Array(6);
+  let pending = arm.joints, guard = 0;
+  while (pending.length && guard++ < 16) {
+    pending = pending.filter(j => {
+      const P = links[j.parent]; if (!P) return true;
+      const k = JOINT_INDEX[j.name];
+      let q = 0;
+      if (j.type === "revolute" && k !== undefined) q = SIGN[k] * (k === 5 ? lerp(j.lower, j.upper, clamp(deg[5], 0, 100) / 100) : deg[k] * Math.PI / 180);
+      links[j.child] = M.mul(M.mul(P, j.T), M.rz(q));
+      if (k !== undefined) { jo[k] = M.origin(links[j.child]); axes[k] = M.axis(links[j.child], 2); }
+      return false;
+    });
+  }
+  return { links, jo, axes };
+}
+
+// ── WebGL (shaders as dashboard.html) ────────────────────────────────────────
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", { antialias: false, alpha: MINI });   // mini: drawn over the embedding page
+const DITHER = `
+  float b2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+  float b4(vec2 a){ return b2(0.5 * a) * 0.25 + b2(a); }
+  float bayer(vec2 a){ return b4(0.5 * a) * 0.25 + b2(a); }
+  uniform float uCell;
+  float thresh(){ return bayer(gl_FragCoord.xy / uCell) + 0.5 / 64.0; }`;
+function prog(vs, fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(type); gl.shaderSource(s, "#version 300 es\nprecision highp float;\n" + src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+
+// The dashboard's cel shader, plus one addition for the servo's parts: with
+// uRegion >= 0, fragments outside that region of the STS3215 shell take the
+// ghost tones (the regions follow the explainer's split of the shell, in mm).
+const TOON = prog(`
+  layout(location=0) in vec3 aPos; layout(location=1) in vec3 aNor; layout(location=2) in vec3 aHull;
+  uniform mat4 uVP, uM; uniform vec4 uShadow; uniform float uOutline; uniform vec2 uView;
+  out vec3 vN; out vec3 vW; out vec3 vO;
+  void main(){
+    vec4 w = uM * vec4(aPos, 1.0);
+    mat3 R = mat3(uM);
+    if (uShadow.w > 0.5) { float t = w.z / uShadow.z; w.xyz = vec3(w.x - uShadow.x * t, w.y - uShadow.y * t, 0.0004); }
+    vec4 p = uVP * w;
+    if (uOutline > 0.0) {
+      vec4 n = uVP * vec4(R * aHull, 0.0); float l = length(n.xy);
+      if (l > 1e-6) p.xy += n.xy / l * uOutline / uView * p.w;
+    }
+    vN = R * aNor; vW = w.xyz; vO = aPos * 1000.0; gl_Position = p;
+  }`, `
+  ${DITHER}
+  in vec3 vN; in vec3 vW; in vec3 vO; out vec4 o;
+  uniform vec3 uColor, uShade, uLight, uEye, uPaper, uHi, uGhost, uGhostShade; uniform float uLit, uDark, uMode, uRegion;
+  float region(vec3 c){
+    float r = 2.0;
+    if (c.z > 14.3 && c.z <= 15.95) r = 1.0;
+    if (c.z > 15.95) r = c.x <= 2.0 ? 1.0 : 0.0;
+    if (c.z < -14.3 && c.z >= -15.95) r = 3.0;
+    if (c.z < -15.95) r = length(vec2(c.x - 12.4, c.y)) > 10.8 ? 6.0 : 4.0;
+    if (c.x < -21.8 && c.z > -14.3 && c.z < 14.3) r = 5.0;
+    return r;
+  }
+  void main(){
+    float th = thresh();
+    if (uMode > 0.5) { if (th >= uLit) discard; o = vec4(uColor, 1.0); return; }
+    vec3 base = uColor, shade = uShade; float lit = uLit;
+    if (uRegion >= 0.0 && region(vO) != uRegion) { base = uGhost; shade = uGhostShade; lit = 0.3; }
+    vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
+    vec3 v = normalize(uEye - vW), h = normalize(uLight + v);
+    float d = dot(n, uLight), spec = pow(max(dot(n, h), 0.0), 48.0);
+    vec3 c;
+    if (d > 0.12 && spec > 0.6) c = uHi;
+    else if (d > 0.12) c = th < lit ? base : uPaper;
+    else c = th < uDark ? shade : base;
+    o = vec4(c, 1.0);
+  }`);
+
+// Floor grid as the dashboard's, with the pitches as uniforms: 5 / 25 cm under
+// an arm, 1 / 5 cm under the servo alone.
+const FLOOR = prog(`
+  layout(location=0) in vec3 aPos; uniform mat4 uVP; out vec3 vW;
+  void main(){ vW = aPos; gl_Position = uVP * vec4(aPos, 1.0); }`, `
+  ${DITHER}
+  in vec3 vW; out vec4 o; uniform vec3 uEye, uGrid; uniform vec2 uFade, uPitch;
+  float grid(vec2 p, float pitch){ vec2 c = p / pitch; vec2 g = abs(fract(c - 0.5) - 0.5) / fwidth(c); return 1.0 - min(min(g.x, g.y), 1.0); }
+  void main(){
+    float fade = 1.0 - smoothstep(uFade.x, uFade.y, length(vW - uEye));
+    float cov = max(grid(vW.xy, uPitch.x) * 0.42, grid(vW.xy, uPitch.y) * 0.85) * fade;
+    if (thresh() >= cov) discard;
+    o = vec4(uGrid, 1.0);
+  }`);
+const FILL = prog(`
+  layout(location=0) in vec3 aPos; layout(location=1) in vec4 aCol;
+  uniform mat4 uVP; out vec4 vC;
+  void main(){ vC = aCol; gl_Position = uVP * vec4(aPos, 1.0); }`, `
+  ${DITHER}
+  in vec4 vC; out vec4 o;
+  void main(){ if (thresh() >= vC.a) discard; o = vec4(vC.rgb, 1.0); }`);
+const LINE = prog(`
+  layout(location=0) in vec3 aA; layout(location=1) in vec3 aB; layout(location=2) in vec2 aEnd; layout(location=3) in vec4 aCol;
+  uniform mat4 uVP; uniform vec2 uView; uniform float uBias;
+  out vec3 vC; out float vD; out float vHalf;
+  void main(){
+    vec4 a = uVP * vec4(aA, 1.0), b = uVP * vec4(aB, 1.0);
+    vec2 sa = a.xy / a.w * uView, sb = b.xy / b.w * uView;
+    vec2 d = sb - sa; float l = length(d); d = l > 1e-5 ? d / l : vec2(1.0, 0.0);
+    vec2 n = vec2(-d.y, d.x);
+    vec4 p = mix(a, b, aEnd.x);
+    float hw = aCol.a * 0.5, reach = hw + 1.0;
+    p.xy += n * aEnd.y * reach / uView * p.w;
+    p.xy += d * (aEnd.x * 2.0 - 1.0) * 0.5 / uView * p.w;
+    p.z -= uBias * p.w;
+    vC = aCol.rgb; vD = aEnd.y * reach; vHalf = hw; gl_Position = p;
+  }`, `in vec3 vC; in float vD; in float vHalf; out vec4 o;
+  void main(){ float a = clamp(vHalf + 0.5 - abs(vD), 0.0, 1.0); if (a <= 0.0) discard; o = vec4(vC, a); }`);
+
+class Batch {
+  constructor(stride, attrs) { this.stride = stride; this.data = new Float32Array(1 << 16); this.n = 0; this.vao = gl.createVertexArray(); this.buf = gl.createBuffer();
+    gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    let off = 0; for (const [loc, size] of attrs) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride * 4, off * 4); off += size; }
+    gl.bindVertexArray(null); }
+  push(...v) { if (this.n + v.length > this.data.length) { const d = new Float32Array(this.data.length * 2); d.set(this.data); this.data = d; } this.data.set(v, this.n); this.n += v.length; }
+  draw(mode) { if (!this.n) return; gl.bindVertexArray(this.vao); gl.bindBuffer(gl.ARRAY_BUFFER, this.buf); gl.bufferData(gl.ARRAY_BUFFER, this.data.subarray(0, this.n), gl.STREAM_DRAW); gl.drawArrays(mode, 0, this.n / this.stride); this.n = 0; }
+}
+const fills = new Batch(7, [[0, 3], [1, 4]]);
+const lines = new Batch(12, [[0, 3], [1, 3], [2, 2], [3, 4]]);
+let DPR = 1, PX = 1, VW = 1, VH = 1;
+function line(a, b, col, w = 1) {
+  const dw = Math.max(1, w * PX);
+  for (const [e, s] of [[0, -1], [1, -1], [1, 1], [0, -1], [1, 1], [0, 1]]) lines.push(...a, ...b, e, s, col[0], col[1], col[2], dw);
+}
+function quad(p0, p1, p2, p3, col, dens) { for (const p of [p0, p1, p2, p0, p2, p3]) fills.push(p[0], p[1], p[2], col[0], col[1], col[2], dens); }
+
+// ── Model (as dashboard.html; also measures each mesh's bounds) ──────────────
+async function fetchBytes(url) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const b = new Uint8Array(buf, 0, Math.min(2, buf.byteLength));
+  if (b[0] !== 0x1f || b[1] !== 0x8b) return buf;
+  return new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+}
+function makeMesh(b, stride, m) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const vb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Uint8Array(b, m.v_off, m.v_count * stride), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, stride, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.BYTE, true, stride, 12);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 3, gl.BYTE, true, stride, 16);
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(b, m.i_off, m.i_count), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  const dv = new DataView(b, m.v_off, m.v_count * stride), lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (let i = 0; i < m.v_count; i++) for (let a = 0; a < 3; a++) { const v = dv.getFloat32(i * stride + a * 4, true); lo[a] = Math.min(lo[a], v); hi[a] = Math.max(hi[a], v); }
+  return { vao, count: m.i_count, lo, hi };
+}
+async function loadModel() {
+  // The servos are drawn from servo.bin: both STS3215 shells undecimated
+  // (tools/build_servo.py). model.bin's copies are cut down far enough that
+  // some faces bend and catch the hard highlight as white wedges.
+  const servo = Promise.all([fetch("servo.json").then(r => r.json()), fetchBytes("servo.bin")]);
+  if (SHOW === "servo") {
+    const [s, sb] = await servo;
+    MODEL = { meshes: { servo: makeMesh(sb, s.stride, s.meshes["sts3215_03a_v1.stl"]) } };
+    return;
+  }
+  const [[j, b], [s, sb]] = await Promise.all([Promise.all([fetch("model.json").then(r => r.json()), fetchBytes("model.bin")]), servo]);
+  const meshes = {};
+  for (const [name, m] of Object.entries(j.meshes)) meshes[name] = makeMesh(b, j.stride, m);
+  for (const [name, m] of Object.entries(s.meshes)) meshes[name] = makeMesh(sb, s.stride, m);
+  for (const arm of Object.values(j.arms)) {
+    for (const jt of arm.joints) jt.T = rpyT(jt.xyz, jt.rpy);
+    for (const vs of Object.values(arm.links)) for (const v of vs) v.T = rpyT(v.xyz, v.rpy);
+  }
+  MODEL = { meshes, arms: j.arms };
+}
+
+// ── What to show ─────────────────────────────────────────────────────────────
+// Poses are the explainer's, in URDF joint angles; the gripper's angle is
+// turned into the dashboard's percent of range once the limits are loaded.
+const SHOWS = {
+  follower: {
+    title: "SO-101 follower arm",
+    sub: "Five printed links, two jaws and six STS3215 servos. Pick a part to highlight it.",
+    pose: [29, 29, -11, 57, 23], grip: 46,
+    note: "Meshes and joint limits from so101_new_calib.urdf in TheRobotStudio SO-ARM100 repo, drawn by the teleop dashboard's renderer. Posed reaching down with the gripper open: pan 29°, shoulder lift 29°, elbow −11°, wrist flex 57°, wrist roll 23°, gripper 46°, in URDF joint angles. Each arc sits on a joint axis and turns in the positive direction of that joint. Servo colours are the dashboard's joint colours.",
+    links: [
+      ["base_link", "Base", "Clamps to the counter. Holds the shoulder-pan servo and the controller-board plate. Footprint 11.09 × 9.56 cm."],
+      ["shoulder_link", "Shoulder", "Turns on the shoulder-pan servo and carries the shoulder-lift servo."],
+      ["upper_arm_link", "Upper arm", "Swings on shoulder lift and carries the elbow servo."],
+      ["lower_arm_link", "Forearm", "Swings on the elbow and carries the wrist-flex servo in its motor holder."],
+      ["wrist_link", "Wrist", "Pitches on wrist flex and holds the wrist-roll servo, the one mounted without a horn."],
+      ["gripper_link", "Fixed jaw", "Rolls on wrist roll and holds the gripper servo."],
+      ["moving_jaw_so101_v1_link", "Moving jaw", "Driven directly by the gripper servo."],
+    ],
+    ratio: () => "1/345",
+    ratioText: (n, r) => `On the follower it is a ${r} STS3215; LeRobot builds the leader's ${n} with a ${LEAD_RATIO[JOINTS.indexOf(n)]} servo instead.`,
+  },
+  leader: {
+    title: "SO-101 leader arm",
+    sub: "The arm you move by hand. Same links as the follower, a handle and trigger in place of the jaws, and six servos whose angles the follower copies. Pick a part to highlight it.",
+    pose: [29, 23, -11, 57, 23], grip: 17,
+    note: "Leader parts (wrist roll, handle, trigger) are the Leader_Specific STLs from TheRobotStudio SO-ARM100 repo, in the leader tree the dashboard uses; joint axes and limits are the follower's. Posed with the handle clear of the desk: pan 29°, shoulder lift 23°, elbow −11°, wrist flex 57°, wrist roll 23°, trigger 17°. Each arc sits on a joint axis and turns in the positive direction of that joint. Gear ratios per joint from the LeRobot SO-101 docs.",
+    links: [
+      ["base_link", "Base", "Clamps to the counter. Holds the shoulder-pan servo and the controller-board plate. Footprint 11.09 × 9.56 cm."],
+      ["shoulder_link", "Shoulder", "Turns on the shoulder-pan servo and carries the shoulder-lift servo."],
+      ["upper_arm_link", "Upper arm", "Swings on shoulder lift and carries the elbow servo."],
+      ["lower_arm_link", "Forearm", "Swings on the elbow and carries the wrist-flex servo in its motor holder."],
+      ["wrist_link", "Wrist", "Pitches on wrist flex and holds the wrist-roll servo, the one mounted without a horn."],
+      ["gripper_link", "Wrist roll and handle", "Leader only. Takes the place of the fixed jaw: the wrist-roll piece plus the handle you hold. Rolls on wrist_roll and carries the gripper servo."],
+      ["trigger_link", "Trigger", "Leader only. Takes the place of the moving jaw. Your finger works it, and the gripper servo reads its angle for the follower to copy."],
+    ],
+    ratio: j => LEAD_RATIO[j],
+    ratioText: (n, r) => `On the leader it is a ${r} servo; the follower uses 1/345 at every joint.`,
+  },
+  servo: {
+    title: "Feetech STS3215 servo",
+    sub: "The serial bus servo at every SO-101 joint. Pick a part to highlight it.",
+    note: "Not in the model: the DC motor, the 1:345 metal gear train, the 12-bit magnetic encoder and the control board. The only public CAD for this servo is its outer shell. It talks half-duplex UART, 1 Mbps by default, with IDs 0 to 253. The arc marks the output axis. Shell geometry from TheRobotStudio SO-ARM100 repo, drawn by the teleop dashboard's renderer.",
+    regions: [
+      [0, "Output horn", "The part a joint bolts to. It turns a full 360°, read as 4096 steps of 0.088°, and can track up to ±7 turns in multi-turn mode."],
+      [1, "Top cover", "The case section on the horn side, with the output shaft coming through it."],
+      [2, "Case sides", "The plastic housing walls. DFRobot lists the housing as glass-filled nylon (PA+GF). Overall size with the horn is 45.4 × 24.8 × 39.6 mm."],
+      [3, "Bottom cover", "The case section opposite the horn."],
+      [4, "Rear hub", "The second, unpowered shaft opposite the horn. This dual-shaft layout lets a bracket hold a joint from both sides."],
+      [6, "Underside block and pins", "A raised block with two rows of three pins on the underside. The model does not label them. They are laid out like a pair of 3-pin bus connectors, so check them against your own servo before you rely on it."],
+      [5, "End face", "The short end of the case, away from the output shaft. This model has no connector detail."],
+    ],
+  },
+};
+const LEAD_RATIO = ["1/191", "1/345", "1/191", "1/147", "1/147", "1/147"];
+const RANGE = ["±110°", "±100°", "±96.8°", "±95°", "−157° to 163°", "−10° to 100°"];
+const WHAT = ["Turns the whole arm about the vertical axis. Sits in the base.", "Raises and lowers the upper arm. Sits in the shoulder.", "Bends the forearm. Sits at the top of the upper arm.", "Pitches the wrist. Sits in the forearm.", "Rolls the gripper about its own axis. Sits in the wrist, mounted without a horn.", SHOW === "leader" ? "Reads the trigger. Sits in the handle." : "Opens and closes the moving jaw. Sits in the fixed jaw."];
+let spec = SHOWS[SHOW];
+
+// Selection: a part key ("link:<name>", "servo:<j>", "servos", "region:<n>"), or null.
+let sel = null, hover = null;
+const active = () => hover ?? sel;
+
+// ── Panel ────────────────────────────────────────────────────────────────────
+function buildPanel() {
+  document.title = spec.title;
+  document.getElementById("title").textContent = spec.title;
+  document.getElementById("sub").textContent = PARTS ? spec.sub : spec.sub.replace(" Pick a part to highlight it.", "");
+  document.getElementById("note").textContent = spec.note;
+  const lists = document.getElementById("lists"); lists.textContent = "";
+  if (!PARTS) { document.getElementById("desc").hidden = true; document.getElementById("note").hidden = true; return; }
+  const group = (label, all) => {
+    const head = document.createElement("div"); head.className = "grp cap";
+    head.append(label);
+    if (all) { const b = document.createElement("button"); b.type = "button"; b.textContent = "Highlight all"; bindPick(b, all); head.append(b); }
+    const ul = document.createElement("ul"); lists.append(head, ul); return ul;
+  };
+  const row = (ul, key, k, name, right, colour) => {
+    const li = document.createElement("li"), b = document.createElement("button"); b.type = "button";
+    const kk = document.createElement("span");
+    if (colour) { kk.className = "sw"; kk.style.background = css(colour); } else { kk.className = "k"; kk.textContent = k; }
+    const n = document.createElement("span"); n.className = "n"; n.textContent = name;
+    const r = document.createElement("span"); r.className = "r"; r.textContent = right || "";
+    b.append(kk, n, r); bindPick(b, key); li.append(b); ul.append(li);
+  };
+  if (SHOW === "servo") {
+    const ul = group("Exterior");
+    spec.regions.forEach(([id, name], i) => row(ul, "region:" + id, String(i + 1).padStart(2, "0"), name));
+  } else {
+    const ul = group("Printed parts");
+    spec.links.forEach(([ln, name], i) => row(ul, "link:" + ln, String(i + 1).padStart(2, "0"), name));
+    const us = group("Servos, by bus ID", "servos");
+    JOINTS.forEach((n, j) => row(us, "servo:" + j, "", `${j + 1}  ${n}`, SHOW === "leader" && j === 5 ? "trigger" : RANGE[j], COLORS[j]));
+  }
+  syncPanel();
+}
+function bindPick(b, key) {
+  b.addEventListener("click", () => { sel = sel === key ? null : key; syncPanel(); });
+  b.addEventListener("pointerenter", () => { hover = key; syncPanel(); });
+  b.addEventListener("pointerleave", () => { hover = null; syncPanel(); });
+  b.dataset.key = key;
+}
+function describe(key) {
+  if (!key) return "";
+  const [kind, v] = key.split(":");
+  if (kind === "link") { const l = spec.links.find(x => x[0] === v); return `<b>${l[1]}.</b> ${l[2]}`; }
+  if (kind === "region") { const r = spec.regions.find(x => String(x[0]) === v); return `<b>${r[1]}.</b> ${r[2]}`; }
+  if (kind === "servos") return SHOW === "leader"
+    ? "<b>Six servos.</b> One per joint, IDs 1 to 6 on the leader bus, with the same names as the follower so each leader joint maps to its follower joint."
+    : "<b>Six STS3215 servos.</b> One per joint, IDs 1 to 6 on one daisy-chained serial bus. Names and IDs follow the LeRobot SO-101 motor config.";
+  const j = +v;
+  return `<b>${JOINTS[j]}.</b> Bus ID ${j + 1}. ${WHAT[j]} ${spec.ratioText(JOINTS[j], spec.ratio(j))}`;
+}
+function syncPanel() {
+  for (const b of document.querySelectorAll("#lists button[data-key]")) b.setAttribute("aria-pressed", b.dataset.key === sel ? "true" : "false");
+  document.getElementById("desc").innerHTML = describe(active());
+}
+
+// ── Drawing ──────────────────────────────────────────────────────────────────
+const LIGHT = V.norm([-0.45, -0.35, 0.82]);
+const SHADOW = [LIGHT[0], LIGHT[1], LIGHT[2], 1];
+const FLOOR_VAO = (() => {
+  const vao = gl.createVertexArray(), vb = gl.createBuffer(), e = 1.6;
+  gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-e, -e, 0, e, -e, 0, e, e, 0, -e, -e, 0, e, e, 0, -e, e, 0]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+  gl.bindVertexArray(null);
+  return vao;
+})();
+
+// Servos in their joint colour at full chroma: the dashboard's colour for a
+// joint in motion, so each servo reads as the joint it drives.
+function servoMat(j) {
+  const [l, c, h] = LCH[j], lk = legibleL([l, c, h], 3.4);
+  return { col: lch(lk, c, h), shade: lch(Math.max(18, lk - (DARK ? 12 : 24)), c * 1.05, h), lit: SERVO_LIT, dark: DARK ? 0.5 : 0.6 };
+}
+// A servo at rest, as the dashboard draws one: its joint's lightness, no chroma.
+const restServo = () => ({ col: lch(48, 0, 0), shade: lch(24, 0, 0), lit: SERVO_LIT, dark: DARK ? 0.5 : 0.6 });
+// Parts outside the selection fade toward the paper and lose their ink.
+const ghostOf = m => ({ col: mixc(m.col, PAPER, 0.6), shade: mixc(m.shade, PAPER, 0.55), lit: 0.3, dark: 0.45 });
+
+// A pose sent by the embedding page: six values as the dashboard has them (five joints in degrees,
+// the gripper as a percent of its range), e.g. postMessage({ so101Pose: [...] }).
+// It can also send the poses to come, { so101Frame: [pose, ...] }, so the camera frames them all at once.
+let LIVE = null, FRAME_POSES = null;
+window.addEventListener("message", e => {
+  const p = e.data && e.data.so101Pose, f = e.data && e.data.so101Frame;
+  if (Array.isArray(p) && p.length === 6) { LIVE = p; SCENE = null; }
+  if (Array.isArray(f) && f.length) { FRAME_POSES = f; FRAMING = null; }
+});
+
+function scene() {
+  if (SHOW === "servo") {
+    const mesh = MODEL.meshes.servo;
+    // Stand the servo on the floor, horn up, centred on the origin.
+    const m = M.trans(-(mesh.lo[0] + mesh.hi[0]) / 2, -(mesh.lo[1] + mesh.hi[1]) / 2, -mesh.lo[2]);
+    const vis = [{ mesh, m, mat: restServo(), key: "servo" }];
+    return { vis, ...sphere(bounds(vis)), horn: { at: M.pt(m, [0.0124, 0, mesh.hi[2]]) } };
+  }
+  const arm = MODEL.arms[SHOW], gj = arm.joints.find(x => x.name === "gripper");
+  const deg = LIVE || [...spec.pose, (spec.grip * Math.PI / 180 - gj.lower) / (gj.upper - gj.lower) * 100];
+  const P = armPose(arm, M.rz(-Math.PI / 2), deg), vis = [];
+  for (const [ln, vs] of Object.entries(arm.links)) {
+    const F = P.links[ln]; if (!F) continue;
+    for (const v of vs) {
+      const servo = v.kind === "servo" && v.joint >= 0;
+      vis.push({ mesh: MODEL.meshes[v.mesh], m: M.mul(F, v.T), mat: servo ? servoMat(v.joint) : PRINTED, key: servo ? "servo:" + v.joint : "link:" + ln });
+    }
+  }
+  const box = bounds(vis);
+  return { vis, P, box, ...sphere(box) };
+}
+// Every mesh's box corners, posed: what the camera frames and the tags clear.
+function bounds(vis) {
+  const pts = [];
+  for (const v of vis) for (let i = 0; i < 8; i++) pts.push(M.pt(v.m, [0, 1, 2].map(a => (i >> a) & 1 ? v.mesh.hi[a] : v.mesh.lo[a])));
+  return { pts, lo: [0, 1, 2].map(a => Math.min(...pts.map(p => p[a]))), hi: [0, 1, 2].map(a => Math.max(...pts.map(p => p[a]))) };
+}
+// A sphere around the subject, so it fits the frame from any orbit angle.
+function sphere(box) {
+  const centre = box.lo.map((l, a) => (l + box.hi[a]) / 2);
+  return { centre, radius: Math.max(...box.pts.map(p => Math.hypot(p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]))) };
+}
+function lit(key) {
+  const a = active(); if (!a) return true;
+  if (a === "servos") return key.startsWith("servo:");
+  return a === key;
+}
+
+function drawToon(v, mode, col, litCov, outlinePx, shadow, mat, region) {
+  mat = mat || v.mat;
+  gl.bindVertexArray(v.mesh.vao);
+  gl.uniformMatrix4fv(TOON.u.uM, false, v.m);
+  gl.uniform1f(TOON.u.uMode, mode);
+  gl.uniform3fv(TOON.u.uColor, col || mat.col);
+  gl.uniform3fv(TOON.u.uShade, mat.shade);
+  gl.uniform1f(TOON.u.uLit, litCov === undefined ? mat.lit : litCov);
+  gl.uniform1f(TOON.u.uDark, mat.dark);
+  gl.uniform1f(TOON.u.uOutline, outlinePx || 0);
+  gl.uniform4fv(TOON.u.uShadow, shadow ? SHADOW : [0, 0, 1, 0]);
+  gl.uniform1f(TOON.u.uRegion, region === undefined ? -1 : region);
+  gl.drawElements(gl.TRIANGLES, v.mesh.count, gl.UNSIGNED_INT, 0);
+}
+
+// A joint arc: most of a circle on the joint axis, turning slowly in the
+// joint's positive direction, with a head at its leading end.
+function arc(c, axis, r, col, t, w = 1.5) {
+  const a = V.norm(axis), ref = Math.abs(a[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const u = V.norm(V.cross(a, ref)), v = V.cross(a, u), n = 40, span = 4.4, p0 = t;
+  const at = s => V.add(c, V.add(V.mul(u, r * Math.cos(s)), V.mul(v, r * Math.sin(s))));
+  for (let i = 0; i < n; i++) line(at(p0 + span * i / n), at(p0 + span * (i + 1) / n), col, w);
+  const e = p0 + span, tip = at(e), back = at(e - 0.32), side = V.mul(a, r * 0.2);
+  line(tip, V.add(back, side), col, w); line(tip, V.sub(back, side), col, w);
+}
+
+const cam = { yaw: -0.7, pitch: 0.42, zoom: 1, spin: !MINI, lastInput: -1e9 };   // mini: pulled back, a live pose reaches past its first framing
+let FRAMING = null;
+let last = performance.now(), phase = 0, SCENE = null;
+const tagsEl = document.getElementById("tags"), leads = document.getElementById("leads"), tags = new Map();
+function tag(id, x, y, html, left) {
+  let el = tags.get(id);
+  if (!el) { el = document.createElement("div"); tagsEl.append(el); tags.set(id, el); el.innerHTML = html; }
+  el.className = "tag" + (left ? " left" : "");
+  el.style.left = x + "px"; el.style.top = y + "px";
+}
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (cam.spin && now - cam.lastInput > 2500) cam.yaw += dt * 0.22;
+  phase += dt * 0.7;
+  gl.viewport(0, 0, VW, VH);
+  if (MINI) gl.clearColor(0, 0, 0, 0); else gl.clearColor(PAPER[0], PAPER[1], PAPER[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!MODEL) { requestAnimationFrame(frame); return; }
+  // The pose never changes, so the posed scene is built once (and again
+  // only when the theme changes its materials).
+  if (!SCENE) SCENE = scene();
+  // A posed-from-outside arm keeps one framing, so the camera holds still as the pose changes: the
+  // poses the embedding page says it will send, all of them in view; else the first pose, aimed higher.
+  if (MINI && !FRAMING) {
+    if (FRAME_POSES) {
+      const keep = LIVE, all = [];
+      for (const p of FRAME_POSES) { LIVE = p; all.push(...scene().vis); }
+      LIVE = keep; FRAMING = sphere(bounds(all));
+    } else FRAMING = { centre: V.add(SCENE.centre, [0, 0, SCENE.radius * 0.45]), radius: SCENE.radius };
+  }
+  const S = SCENE, V0 = MINI ? FRAMING : SCENE, cell = Math.max(1, Math.round(PX));
+  // Fit the sphere in whichever field of view is narrower. Box corners
+  // overstate the radius, so it may fill a little past the edge.
+  const half = Math.min(0.18, Math.atan(Math.tan(0.18) * VW / VH));
+  const dist = V0.radius * (SHOW === "servo" ? 1.05 : MINI ? 1.0 : 0.74) / Math.sin(half) * cam.zoom;
+  const eye = V.add(V0.centre, [dist * Math.cos(cam.pitch) * Math.cos(cam.yaw), dist * Math.cos(cam.pitch) * Math.sin(cam.yaw), dist * Math.sin(cam.pitch)]);
+  const VP = M.mul(M.persp(0.36, VW / VH, dist * 0.05, dist * 6), M.look(eye, V0.centre, [0, 0, 1]));
+
+  const servoView = SHOW === "servo";
+  gl.disable(gl.DEPTH_TEST);
+  // Mini draws the robot alone over the page: no floor, tape or shadow.
+  if (!MINI) {
+    gl.useProgram(FLOOR.p); gl.uniformMatrix4fv(FLOOR.u.uVP, false, VP); gl.uniform3fv(FLOOR.u.uEye, eye);
+    gl.uniform2f(FLOOR.u.uFade, dist * 0.55, dist * 1.4); gl.uniform1f(FLOOR.u.uCell, cell); gl.uniform3fv(FLOOR.u.uGrid, GRID);
+    gl.uniform2f(FLOOR.u.uPitch, servoView ? 0.01 : 0.05, servoView ? 0.05 : 0.25);
+    gl.bindVertexArray(FLOOR_VAO); gl.drawArrays(gl.TRIANGLES, 0, 6); gl.bindVertexArray(null);
+  }
+  if (!servoView && !MINI) { // painter's tape around the base, as in the dashboard
+    gl.useProgram(FILL.p); gl.uniformMatrix4fv(FILL.u.uVP, false, VP); gl.uniform1f(FILL.u.uCell, cell);
+    const s = 0.09, tw = 0.018, R = (x, y) => [x, y, 0];
+    quad(R(-s, -s), R(s, -s), R(s, -s + tw), R(-s, -s + tw), TAPE, 0.8);
+    quad(R(-s, s - tw), R(s, s - tw), R(s, s), R(-s, s), TAPE, 0.8);
+    quad(R(-s, -s + tw), R(-s + tw, -s + tw), R(-s + tw, s - tw), R(-s, s - tw), TAPE, 0.8);
+    quad(R(s - tw, -s + tw), R(s, -s + tw), R(s, s - tw), R(s - tw, s - tw), TAPE, 0.8);
+    fills.draw(gl.TRIANGLES);
+  }
+
+  // The dashboard's passes: cast shadow, heavy silhouette hull, thin inner
+  // contours, then the cel-shaded surfaces.
+  gl.useProgram(TOON.p);
+  gl.uniformMatrix4fv(TOON.u.uVP, false, VP); gl.uniform3fv(TOON.u.uLight, LIGHT); gl.uniform3fv(TOON.u.uEye, eye);
+  gl.uniform2f(TOON.u.uView, VW / 2, VH / 2); gl.uniform1f(TOON.u.uCell, cell);
+  gl.uniform3fv(TOON.u.uPaper, PAPER); gl.uniform3fv(TOON.u.uHi, HILITE);
+  const region = servoView && active() ? +active().split(":")[1] : -1;
+  const ghostServo = ghostOf(restServo());
+  gl.uniform3fv(TOON.u.uGhost, ghostServo.col); gl.uniform3fv(TOON.u.uGhostShade, ghostServo.shade);
+  if (!MINI) for (const v of S.vis) drawToon(v, 1, SHADOW_COL, SHADOW_COV, 0, true);
+  gl.enable(gl.CULL_FACE); gl.cullFace(gl.FRONT);
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  for (const v of S.vis) drawToon(v, 1, INK, 1.01, 3.0 * PX, false);
+  gl.depthMask(true); gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.clear(gl.DEPTH_BUFFER_BIT);
+  for (const v of S.vis) drawToon(v, 1, servoView || lit(v.key) ? (DARK ? G(0.42) : INK) : G(0.72), 1.01, 1.1 * PX, false);
+  gl.disable(gl.CULL_FACE);
+  for (const v of S.vis) drawToon(v, 0, undefined, undefined, 0, false, servoView || lit(v.key) ? v.mat : ghostOf(v.mat), region);
+  gl.bindVertexArray(null);
+
+  // Joint arcs, depth-tested so the arm hides the far side of each.
+  gl.useProgram(LINE.p); gl.uniformMatrix4fv(LINE.u.uVP, false, VP); gl.uniform2f(LINE.u.uView, VW / 2, VH / 2); gl.uniform1f(LINE.u.uBias, 0.004);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  const rect = canvas.getBoundingClientRect(), toCss = p => { const c = M.pt(VP, p); return [(c[0] + 1) / 2 * rect.width, (1 - c[1]) / 2 * rect.height, c[2]]; };
+  if (servoView) {
+    arc(S.horn.at, [0, 0, 1], 0.014, INK, phase, 1.5);
+  } else {
+    // ID tags as the dashboard's callouts: a column clear of the arm on
+    // whichever side the joint is nearer, a hairline back to the joint.
+    const J = S.P.jo.map(toCss), xs = S.box.pts.map(p => toCss(p)[0]), mid = (Math.min(...xs) + Math.max(...xs)) / 2;
+    const pad = 16, lx = Math.max(120, Math.min(...xs) - pad), rx = Math.min(rect.width - 120, Math.max(...xs) + pad), placed = { l: [], r: [] };
+    const order = [0, 1, 2, 3, 4, 5].sort((a, b) => J[a][1] - J[b][1]);
+    let svg = "";
+    for (const j of order) {
+      const show = !active() || lit("servo:" + j);
+      if (show) arc(S.P.jo[j], S.P.axes[j], j === 5 ? 0.024 : 0.03, COLORS[j], phase, 1.5);
+      const left = J[j][0] < mid, side = left ? placed.l : placed.r;
+      let y = J[j][1];
+      for (const q of side) if (Math.abs(q - y) < 20) y = q + 20;
+      side.push(y);
+      const x = left ? lx : rx;
+      tag("j" + j, x, y, `<i style="background:${css(COLORS[j])}">${j + 1}</i><span>${JOINTS[j].replace("_", " ")}</span>`, left);
+      tags.get("j" + j).style.opacity = show ? 1 : 0.3;
+      if (show) svg += `<line x1="${J[j][0].toFixed(1)}" y1="${J[j][1].toFixed(1)}" x2="${(x + (left ? 4 : -4)).toFixed(1)}" y2="${y.toFixed(1)}"/>`;
+    }
+    leads.innerHTML = svg;
+  }
+  lines.draw(gl.TRIANGLES);
+  gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST);
+  requestAnimationFrame(frame);
+}
+
+// ── Input: drag to orbit, wheel or pinch to zoom ─────────────────────────────
+const pointers = new Map(); let pinch = 0;
+canvas.addEventListener("pointerdown", e => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); cam.lastInput = performance.now(); });
+canvas.addEventListener("pointermove", e => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY]); cam.lastInput = performance.now();
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (pinch) cam.zoom = clamp(cam.zoom * pinch / d, 0.35, 2.5); pinch = d; return;
+  }
+  cam.yaw -= (e.clientX - prev[0]) * 0.008; cam.pitch = clamp(cam.pitch + (e.clientY - prev[1]) * 0.006, 0.05, 1.45);
+});
+const up = e => { pointers.delete(e.pointerId); pinch = 0; };
+canvas.addEventListener("pointerup", up); canvas.addEventListener("pointercancel", up);
+canvas.addEventListener("wheel", e => { if (QS.get("panel") === "0") return; e.preventDefault(); cam.zoom = clamp(cam.zoom * Math.exp(e.deltaY * 0.001), 0.35, 2.5); cam.lastInput = performance.now(); }, { passive: false });
+const spinBtn = document.getElementById("spin");
+const PAUSE_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="1" width="3" height="10"/><rect x="7" y="1" width="3" height="10"/></svg>';
+const PLAY_ICON = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 1 L11 6 L2.5 11 Z"/></svg>';
+function syncSpin() {
+  spinBtn.innerHTML = cam.spin ? PAUSE_ICON : PLAY_ICON;
+  spinBtn.setAttribute("aria-label", cam.spin ? "Pause rotation" : "Rotate");
+}
+spinBtn.addEventListener("click", () => { cam.spin = !cam.spin; syncSpin(); });
+syncSpin();
+
+// Follower / leader, switched in place: both arms come with the model, and the camera stays put
+// so the two can be compared from the same view.
+const pick = document.getElementById("pick");
+pick.hidden = SHOW === "servo";
+function syncPick() {
+  for (const b of pick.querySelectorAll("button")) b.setAttribute("aria-pressed", b.dataset.show === SHOW ? "true" : "false");
+}
+pick.addEventListener("click", e => {
+  const name = e.target.closest("button")?.dataset.show;
+  if (!name || name === SHOW) return;
+  SHOW = name; spec = SHOWS[name];
+  sel = hover = null; SCENE = null;
+  tags.clear(); tagsEl.textContent = ""; leads.innerHTML = "";
+  buildPanel(); syncPick();
+  const url = new URL(location.href); url.searchParams.set("show", name); history.replaceState(null, "", url);
+});
+syncPick();
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  // Line widths and the dither cell scale exactly as the dashboard's do (its
+  // layout is 1600 × 900 design px), so the two match at the same frame size.
+  PX = DPR * Math.min(window.innerWidth / 1600, window.innerHeight / 900);
+  VW = Math.max(1, Math.round(r.width * DPR)); VH = Math.max(1, Math.round(r.height * DPR));
+  canvas.width = VW; canvas.height = VH;
+}
+// Say so when something fails, rather than leave a blank stage.
+const fail = e => { document.getElementById("hint").textContent = "couldn't draw: " + (e.message || e.reason?.message || e.reason || e); };
+window.addEventListener("error", fail); window.addEventListener("unhandledrejection", fail);
+if (!gl) fail({ message: "this browser has WebGL 2 turned off" });
+new ResizeObserver(resize).observe(canvas);
+applyTheme(); resize(); loadModel();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

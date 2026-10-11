@@ -15,10 +15,10 @@ use so101::robot::joint::{Joint, Values, IDS};
 use so101::device::sim::SimulatedBus;
 use so101::control::teleop::{self, TeleopOptions};
 use so101::control::ticker::Ticker;
-use so101::wire::transport::{ByteLog, Recorder, SerialTransport, Transport};
+use so101::wire::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
 use so101::device::sim::demo;
 use so101::report::dashboard::{self, Hub, Tap};
-use so101::report::visualize;
+use so101::report::{replay, visualize};
 use so101::{Error, Result};
 
 #[derive(Parser)]
@@ -110,6 +110,17 @@ enum Command {
         serve: Option<String>,
     },
     /// Decode a byte log into an HTML report with charts and annotated frames.
+    /// Turn a teleop byte log into dashboard events, for `dashboard.html?replay=`.
+    Replay {
+        #[arg(long)]
+        log_file: PathBuf,
+        #[arg(long)]
+        leader_calibration: PathBuf,
+        #[arg(long)]
+        follower_calibration: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
     Visualize {
         #[arg(long)]
         log_file: PathBuf,
@@ -177,6 +188,9 @@ fn main() {
             });
             let tuning = (gains, lead);
             cmd_teleop(leader_bus, follower_bus, cals, hz, max_step, ticks, tuning, cli.sim, dash)
+        }
+        Command::Replay { log_file, leader_calibration, follower_calibration, out } => {
+            cmd_replay(&log_file, &leader_calibration, &follower_calibration, &out)
         }
         Command::Visualize { log_file, out, rows } => cmd_visualize(&log_file, &out, rows),
     };
@@ -382,14 +396,7 @@ fn cmd_teleop(
         lead,
     };
     if let Some((hub, ports)) = &dash {
-        let joints: Vec<&str> = Joint::ALL.iter().map(|j| j.name()).collect();
-        hub.set_hello(
-            serde_json::json!({
-                "k": "hello", "hz": hz, "max_step": max_step, "sim": sim, "joints": joints, "ports": ports,
-                "cal": [leader.calibration(), follower.calibration()],
-            })
-            .to_string(),
-        );
+        hub.set_hello(dashboard::hello_json(hz, max_step, sim, ports, [leader.calibration(), follower.calibration()]));
     }
     let stop = ctrl_c_flag();
     println!(
@@ -411,7 +418,7 @@ fn cmd_teleop(
         }
         was_released = r.released;
         if let Some((hub, _)) = &dash {
-            hub.publish(tick_json(hub.t_us(), r));
+            hub.publish(dashboard::tick_json(hub.t_us(), r));
         }
         if r.tick.index % (hz as u64).max(1) == 0 || r.error.is_some() {
             match &r.error {
@@ -440,6 +447,16 @@ fn cmd_teleop(
     Ok(())
 }
 
+fn cmd_replay(log_file: &Path, leader_cal: &Path, follower_cal: &Path, out: &Path) -> Result<()> {
+    let records = read_log(log_file)?;
+    let cal = [ArmCalibration::load(leader_cal)?, ArmCalibration::load(follower_cal)?];
+    let events = replay::events_from_log(&records, [&cal[0], &cal[1]]);
+    std::fs::write(out, events.join("\n") + "\n")?;
+    let ticks = events.iter().filter(|e| e.contains(r#""k":"t""#)).count();
+    println!("{} events, {ticks} ticks -> {}", events.len(), out.display());
+    Ok(())
+}
+
 fn cmd_visualize(log_file: &Path, out: &Path, rows: usize) -> Result<()> {
     let decoded = visualize::report_from_log(log_file, out, rows)?;
     println!("{} frames decoded, {} undecodable bytes -> {}", decoded.frames.len(), decoded.undecodable_bytes, out.display());
@@ -451,33 +468,4 @@ fn cmd_visualize(log_file: &Path, out: &Path, rows: usize) -> Result<()> {
         );
     }
     Ok(())
-}
-
-// One tick as a dashboard event. Values rounded to 0.01, times in ms.
-fn tick_json(t_us: u64, r: &teleop::TickReport) -> String {
-    let round = |v: &Values| v.map(|x| (x * 100.0).round() / 100.0);
-    let tel = r.telemetry.map(|t| {
-        serde_json::json!({
-            "id": t.joint.id(), "pos": t.position_ticks, "spd": t.speed, "load": t.load,
-            "v": t.voltage_tenths, "temp": t.temperature_c, "st": t.status.0, "mv": t.moving, "cur": t.current,
-        })
-    });
-    serde_json::json!({
-        "k": "t",
-        "i": r.tick.index,
-        "t": t_us,
-        "wk": (r.work_time.as_secs_f64() * 1e5).round() / 100.0,
-        "lt": (r.tick.lateness.as_secs_f64() * 1e5).round() / 100.0,
-        "sk": r.tick.skipped,
-        "L": round(&r.leader_values),
-        "F": round(&r.follower_values),
-        "G": round(&r.goal_values_sent),
-        "Lt": r.leader_ticks,
-        "Ft": r.follower_ticks,
-        "Gt": r.goal_ticks_sent,
-        "e": r.error,
-        "rel": r.released,
-        "tel": tel,
-    })
-    .to_string()
 }

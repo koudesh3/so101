@@ -46,6 +46,8 @@ so101 --sim monitor --hz 5
 so101 --sim calibrate --arm-id sim --out sim.json          # press Enter twice
 so101 --sim --log run.jsonl teleop --hz 30 --ticks 300
 so101 visualize --log-file run.jsonl --out run.html
+so101 replay --log-file run.jsonl --leader-calibration leader.json \
+      --follower-calibration follower.json --out run.events.jsonl
 ```
 
 With hardware, replace `--sim` with ports:
@@ -101,6 +103,22 @@ rendered joint turns opposite to the real one, flip its `SIGN` entry in
 serves the page from disk so it can be edited without rebuilding. Demo flags:
 `?synthetic` (scripted trajectories), `?virtual` (time advances only through
 `__step(ms)`), `?solo=phase` (joint-space panel only).
+
+`?replay=URL` plays a recorded run with no arms or server, looping at the pace
+it was recorded. `so101 replay` rebuilds the events a live `--serve` would have
+sent from a teleop byte log and the two calibrations it ran with; the page
+needs only itself, `model.json`, `model.bin` and the events file, so it can be
+hosted statically. Any of the three may be gzipped ahead of time (for hosts
+that don't compress binary files): the page inflates them.
+
+`/viewer.html?show=follower|leader|servo` draws one arm, or the servo alone,
+with the dashboard's renderer, meshes and palette: a part list to highlight
+from, joint arcs, bus-ID callouts, drag to orbit.
+
+The servos in both pages come from `servo.bin`: the two STS3215 shells
+undecimated, packed by `tools/build_servo.py` with the same normals as
+`build_model.py`. `model.bin`'s decimated copies bend some faces enough to
+catch the hard highlight as white wedges.
 
 The meshes in `src/report/assets/` are packed by `tools/build_model.py` from
 [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) `Simulation/SO101`

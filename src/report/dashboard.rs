@@ -2,6 +2,8 @@
 //! streams every tick and every wire frame to it as server-sent events.
 //!
 //! GET /        the page (compiled into the binary)
+//! GET /viewer.html   one arm or the servo alone (?show=follower|leader|servo)
+//! GET /model.json, /model.bin, /servo.json, /servo.bin   meshes
 //! GET /events  text/event-stream, one JSON object per event
 //!
 //! Event kinds (field `k`):
@@ -16,13 +18,67 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::control::teleop::TickReport;
+use crate::robot::calibration::ArmCalibration;
+use crate::robot::joint::{Joint, Values};
 use crate::wire::transport::{Transport, TransportError};
 
 const PAGE: &str = include_str!("dashboard.html");
+/// One arm, or the servo alone, drawn by the dashboard's renderer (?show=).
+const VIEWER: &str = include_str!("viewer.html");
 /// SO-101 meshes and kinematic tree, packed by tools/build_model.py from
 /// TheRobotStudio's SO-ARM100 simulation assets (Apache-2.0).
 const MODEL_JSON: &[u8] = include_bytes!("assets/model.json");
 const MODEL_BIN: &[u8] = include_bytes!("assets/model.bin");
+/// Both STS3215 shells at full resolution (tools/build_servo.py), drawn in
+/// place of model.bin's decimated copies.
+const SERVO_JSON: &[u8] = include_bytes!("assets/servo.json");
+const SERVO_BIN: &[u8] = include_bytes!("assets/servo.bin");
+
+/// The "hello" event: calibrations, rate and limits for this run.
+pub fn hello_json(hz: f64, max_step: i32, sim: bool, ports: &[String; 2], cal: [&ArmCalibration; 2]) -> String {
+    let joints: Vec<&str> = Joint::ALL.iter().map(|j| j.name()).collect();
+    serde_json::json!({
+        "k": "hello", "hz": hz, "max_step": max_step, "sim": sim, "joints": joints, "ports": ports, "cal": cal,
+    })
+    .to_string()
+}
+
+/// One tick as a "t" event. Values rounded to 0.01, times in ms.
+pub fn tick_json(t_us: u64, r: &TickReport) -> String {
+    let round = |v: &Values| v.map(|x| (x * 100.0).round() / 100.0);
+    let tel = r.telemetry.map(|t| {
+        serde_json::json!({
+            "id": t.joint.id(), "pos": t.position_ticks, "spd": t.speed, "load": t.load,
+            "v": t.voltage_tenths, "temp": t.temperature_c, "st": t.status.0, "mv": t.moving, "cur": t.current,
+        })
+    });
+    serde_json::json!({
+        "k": "t",
+        "i": r.tick.index,
+        "t": t_us,
+        "wk": (r.work_time.as_secs_f64() * 1e5).round() / 100.0,
+        "lt": (r.tick.lateness.as_secs_f64() * 1e5).round() / 100.0,
+        "sk": r.tick.skipped,
+        "L": round(&r.leader_values),
+        "F": round(&r.follower_values),
+        "G": round(&r.goal_values_sent),
+        "Lt": r.leader_ticks,
+        "Ft": r.follower_ticks,
+        "Gt": r.goal_ticks_sent,
+        "e": r.error,
+        "rel": r.released,
+        "tel": tel,
+    })
+    .to_string()
+}
+
+/// One transport call as a "w" event. Port 0 is the leader, 1 the follower;
+/// direction 0 is host to bus.
+pub fn wire_json(t_us: u64, port: u8, dir: u8, bytes: &[u8]) -> String {
+    let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+    format!(r#"{{"k":"w","t":{t_us},"p":{port},"d":{dir},"h":"{hex}"}}"#)
+}
 
 /// Fans events out to every connected page.
 pub struct Hub {
@@ -109,8 +165,11 @@ fn handle(stream: TcpStream, hub: &Hub) -> io::Result<()> {
             out.write_all(page.as_bytes())?;
             out.flush()
         }
+        "/viewer.html" => send(&mut out, "text/html; charset=utf-8", VIEWER.as_bytes()),
         "/model.json" => send(&mut out, "application/json", MODEL_JSON),
         "/model.bin" => send(&mut out, "application/octet-stream", MODEL_BIN),
+        "/servo.json" => send(&mut out, "application/json", SERVO_JSON),
+        "/servo.bin" => send(&mut out, "application/octet-stream", SERVO_BIN),
         "/events" => stream_events(out, hub.subscribe()),
         _ => {
             out.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
@@ -179,8 +238,7 @@ impl Tap {
     }
 
     fn publish(&self, dir: u8, bytes: &[u8]) {
-        let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
-        self.hub.publish(format!(r#"{{"k":"w","t":{},"p":{},"d":{},"h":"{}"}}"#, self.hub.t_us(), self.port, dir, hex));
+        self.hub.publish(wire_json(self.hub.t_us(), self.port, dir, bytes));
     }
 }
 
