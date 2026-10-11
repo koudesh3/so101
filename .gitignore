@@ -1,2 +1,5 @@
 /target
+/logs/
 *.jsonl
+__pycache__/
+.claude/
