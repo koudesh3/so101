@@ -109,7 +109,6 @@ enum Command {
         #[arg(long, num_args = 0..=1, default_missing_value = "127.0.0.1:7878")]
         serve: Option<String>,
     },
-    /// Decode a byte log into an HTML report with charts and annotated frames.
     /// Turn a teleop byte log into dashboard events, for `dashboard.html?replay=`.
     Replay {
         #[arg(long)]
@@ -121,6 +120,7 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Decode a byte log into an HTML report with charts and annotated frames.
     Visualize {
         #[arg(long)]
         log_file: PathBuf,
