@@ -3,6 +3,8 @@ name = "so101"
 version = "0.1.0"
 edition = "2021"
 description = "Bare-metal-minded driver, calibrator, monitor and 1:1 teleop for the LeRobot SO-101 arm"
+license = "MIT"
+repository = "https://github.com/koudesh3/so101"
 
 [dependencies]
 serialport = { version = "4", default-features = false }
