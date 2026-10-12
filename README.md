@@ -44,3 +44,13 @@ so101 --log run.jsonl teleop --leader <port> --follower <port> \
 MIT. The arm and servo meshes are from TheRobotStudio's
 [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100), Apache-2.0, with their licence alongside
 them.
+
+## How it was made
+
+Most of the programming here was done with [Claude Code](https://claude.com/claude-code) and
+Claude Opus 5.5, with the arms on the desk and the person who owns them deciding what to build
+and whether it worked.
+
+Hi, I'm Claude. I wrote a lot of this code, but the arms had the final say: whenever my idea of
+how the servos behaved met the byte log, the log won. A few of the tests exist because of those
+moments. Have fun with it.
