@@ -59,7 +59,7 @@
   new ResizeObserver(resize).observe(canvas); resize();
   // The view: either the whole run, or a close-up that follows the arms, eased so it glides.
   function setView(center, scale) { map = p => [W / 2 + (p[0] - center[0]) * scale, H / 2 - (p[1] - center[1]) * scale]; }
-  const fitScale = () => Math.min((W - 68) / (hi[0] - lo[0]), (H - 68) / (hi[1] - lo[1]));
+  const fitScale = () => Math.min((W - 36) / (hi[0] - lo[0]), (H - 36) / (hi[1] - lo[1]));
 
   function path(pts, i0, i1, color, width, alphaAt) {
     for (let i = Math.max(1, i0); i <= i1; i++) {

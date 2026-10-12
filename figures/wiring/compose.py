@@ -1,6 +1,9 @@
 """The wiring figure: build_scene.py's render with labels laid over it in the 3D arm's style.
 
-    python3 compose.py render.json labels.svg [follower|both]
+    python3 compose.py render.json labels.svg [follower|both] [text scale]
+
+A text scale above 1 sets the labels larger at the same anchor points (the post's phone version uses
+1.7, as follower-labels-narrow.svg, and leaves the chip inset out).
 
 Labels are the viewer's tags (small uppercase, letter-spaced, a coloured number chip for each servo,
 grey leader lines), the CH343P inset is boxed in ink on paper like the post's other
@@ -15,6 +18,7 @@ from pathlib import Path
 
 render, dst = sys.argv[1], sys.argv[2]
 variant = sys.argv[3] if len(sys.argv) > 3 else "follower"
+TS = float(sys.argv[4]) if len(sys.argv) > 4 else 1.0
 colours = json.loads(Path(render).read_text())
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,7 +32,7 @@ SANS = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Helvetica Ne
 MONO = "'SF Mono', ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace"
 # The figure shows at roughly 0.45 of its size in the post's column, so 22 units read as the
 # viewer's 10 px tags.
-TAG = 22
+TAG = 22 * TS
 
 
 def P(x, y, z=0):
@@ -44,23 +48,29 @@ def esc(s):
 
 def text(x, y, s, size=TAG, anchor="start", fill=INK, cls="t", weight=400, spacing=None):
     sp = f' letter-spacing="{spacing}"' if spacing is not None else ""
-    out.append(f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" '
+    out.append(f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}" font-size="{size:g}" font-weight="{weight}" '
                f'text-anchor="{anchor}" fill="{fill}"{sp}>{esc(s)}</text>')
 
 
 def tag(x, y, s, anchor="start", chip=None, colour=None):
     """A viewer tag: uppercase, letter-spaced, on a paper halo; with a numbered chip before it."""
+    width = len(s) * (TAG * 0.66 + 1.8 * TS)
+    # Larger type (TS > 1) is kept inside the canvas on the left too: a tag ending at x (chip and all)
+    # that would start past the left edge moves right until it fits.
+    if anchor == "end" and TS != 1:
+        reach = width + (28 * TS + 12 * TS if chip is not None else 0)
+        x = max(x, 16 + reach)
     if chip is not None:
-        cx = x if anchor == "start" else x - 30
-        out.append(f'<rect x="{cx:.1f}" y="{y - 21:.1f}" width="28" height="28" fill="{colour}"/>')
-        out.append(f'<text class="m" x="{cx + 14:.1f}" y="{y - 1:.1f}" font-size="19" font-weight="500" '
+        c = 28 * TS
+        cx = x if anchor == "start" else x - c - 2
+        out.append(f'<rect x="{cx:.1f}" y="{y - 21 * TS:.1f}" width="{c:g}" height="{c:g}" fill="{colour}"/>')
+        out.append(f'<text class="m" x="{cx + c / 2:.1f}" y="{y - TS:.1f}" font-size="{19 * TS:g}" font-weight="500" '
                    f'text-anchor="middle" fill="#fff">{chip}</text>')
-        x = x + 38 if anchor == "start" else x - 40
+        x = x + c + 10 * TS if anchor == "start" else x - c - 12 * TS
     # Kept inside the canvas: a tag that would run past the right edge ends at the edge instead.
-    width = len(s) * (TAG * 0.66 + 1.8)
     if anchor == "start" and x + width > W - 16:
         x, anchor = W - 16, "end"
-    text(x, y, s.upper(), TAG, anchor, INK, "t halo", spacing=1.8)
+    text(x, y, s.upper(), TAG, anchor, INK, "t halo", spacing=1.8 * TS)
 
 
 def leader(a, b):
@@ -68,7 +78,10 @@ def leader(a, b):
 
 
 def sub(x, y, s, anchor="start", mono=False):
-    text(x, y, s, 19, anchor, INK2, "m halo" if mono else "t halo")
+    width = len(s) * 19 * TS * 0.5
+    if TS != 1:   # (the desktop labels were placed by hand to fit, and stay as they are)
+        x = min(x, W - 16 - width) if anchor == "start" else max(x, 16 + width)
+    text(x, y, s, 19 * TS, anchor, INK2, "m halo" if mono else "t halo")
 
 
 # ---------- Tags ----------
@@ -87,8 +100,9 @@ for arm in LAYOUT["arms"]:
             leader((top[0] - 4, top[1] - 4), (lx + 2, ly + 8))
             tag(lx - 16, ly, names[i], "end", chip=i + 1, colour=colours["servos"][i])
         else:
-            out.append(f'<rect x="{top[0] - 44:.1f}" y="{top[1] - 50:.1f}" width="28" height="28" fill="{colours["servos"][i]}"/>')
-            out.append(f'<text class="m" x="{top[0] - 30:.1f}" y="{top[1] - 30:.1f}" font-size="19" font-weight="500" '
+            c = 28 * TS
+            out.append(f'<rect x="{top[0] - 16 - c:.1f}" y="{top[1] - 22 - c:.1f}" width="{c:g}" height="{c:g}" fill="{colours["servos"][i]}"/>')
+            out.append(f'<text class="m" x="{top[0] - 16 - c / 2:.1f}" y="{top[1] - 22 - c + 20 * TS:.1f}" font-size="{19 * TS:g}" font-weight="500" '
                        f'text-anchor="middle" fill="#fff">{i + 1}</text>')
             leader((top[0] - 4, top[1] - 4), (top[0] - 18, top[1] - 22))
     bp = P(4 + dx, 25 + dy, 0)
@@ -96,12 +110,12 @@ for arm in LAYOUT["arms"]:
     board = f"{arm['name']}'s driver board" if two else "Servo driver board"
     tag(bp[0] + 30, bp[1] + 72, board)
     if not two:
-        sub(bp[0] + 30, bp[1] + 98, "its own USB-C serial port")
+        sub(bp[0] + 30, bp[1] + 72 + 26 * TS, "its own USB-C serial port")
     # Below the supply's near corner, clear of its cord running off to the right.
     pp = P(50 + dx, 140 + dy, 0)
     leader((pp[0] - 2, pp[1] + 4), (pp[0] - 26, pp[1] + 36))
     tag(pp[0] - 30, pp[1] + 60, "Power supply", "end")
-    sub(pp[0] - 30, pp[1] + 86, "5–12 V DC, cord to the wall", "end")
+    sub(pp[0] - 30, pp[1] + 60 + 26 * TS, "5–12 V DC, cord to the wall", "end")
     if arm is LAYOUT["arms"][0]:
         jp = P(46 + dx, 58 + dy, 2.6)
         leader((jp[0] + 2, jp[1] + 13), (jp[0] + 8, jp[1] + 50))
@@ -115,7 +129,7 @@ if not two:
 
 # ---------- CH343P inset ----------
 
-if LAYOUT["inset"]:
+if LAYOUT["inset"] and TS == 1:
 
     # The inset is its own layer (chip-labels.svg, beside the output): wiring.html places it, with the
     # chip render under it, a fixed distance in from the corner like the toggle above, and draws the
@@ -148,8 +162,8 @@ if LAYOUT["inset"]:
     text(e[0] - 16, e[1] + 22, "to the servo socket", 20, "end", INK2)
 
 style = (f"<style>.t{{font-family:{SANS}}}.m{{font-family:{MONO}}}"
-         f".halo{{paint-order:stroke;stroke:{PAPER};stroke-width:7px;stroke-linejoin:round}}</style>")
-if LAYOUT["inset"]:
+         f".halo{{paint-order:stroke;stroke:{PAPER};stroke-width:{7 * TS:.0f}px;stroke-linejoin:round}}</style>")
+if LAYOUT["inset"] and TS == 1:
     cw, ch = iw + 2, ih + 2
     (Path(dst).parent / "chip-labels.svg").write_text(
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {cw} {ch}" width="{cw}" height="{ch}" aria-hidden="true">'

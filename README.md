@@ -2,7 +2,7 @@
 
 A from-scratch Rust driver and teleoperation loop for the LeRobot SO-101 leader and follower arms,
 written to learn how they work. The post that goes with it:
-[Teleoperation from Zero](https://nofreelun.ch/posts/devlog-1.html).
+[Teleoperation from Zero](https://nofreelun.ch/posts/teleop-from-zero.html).
 
 ## Layout
 

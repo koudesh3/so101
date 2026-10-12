@@ -1,6 +1,7 @@
 """How long each tick spends on the buses, as two histograms, from a recorded byte log.
 
     python3 figures/tick_hist.py episodes/grab1.jsonl.gz tick-time.svg
+    python3 figures/tick_hist.py episodes/grab1.jsonl.gz tick-time-narrow.svg --narrow
 
 A tick's bus time runs from the follower's sync read going out, through the leader's read, to:
   with telemetry      the reply to the dashboard's telemetry read, the tick's last packet;
@@ -17,6 +18,9 @@ import sys
 from pathlib import Path
 
 src, dst = sys.argv[1], sys.argv[2]
+# --narrow: the same chart drawn for a phone (the blog swaps it in below 560 px): taller, the legend
+# stacked, larger type, every other tick labelled.
+NARROW = "--narrow" in sys.argv[3:]
 rows = [json.loads(line) for line in (gzip.open if src.endswith(".gz") else open)(src, "rt")]
 BYTE_US = 10  # 1 Mbaud, 10 bits a byte
 
@@ -47,8 +51,14 @@ SERIES = [  # label, spans, bytes per tick, colour
     ("with the dashboard's telemetry", with_t, 14 + 48 + 26 + 8 + 21 + 14 + 48, "#994db0"),
 ]
 
-W, H = 720, 330
-L, R, T, B = 66, 690, 82, 280   # plot box
+if NARROW:
+    W, H = 360, 420
+    L, R, T, B = 62, 346, 150, 362   # plot box
+    FS, SMALL, GRID, XSTEP = 12.5, 11, 400, 2
+else:
+    W, H = 720, 330
+    L, R, T, B = 66, 690, 82, 280
+    FS, SMALL, GRID, XSTEP = 11, 10, 200, 1
 XMAX, BIN = 10.0, 0.25          # ms; ticks past XMAX are counted, not drawn
 nb = int(XMAX / BIN)
 
@@ -62,7 +72,7 @@ def hist(spans):
 
 hists = [hist(s) for _, s, _, _ in SERIES]
 peak = max(max(h[:nb]) for h in hists)
-ymax = (peak // 200 + 1) * 200
+ymax = (peak // GRID + 1) * GRID
 
 
 def X(ms):
@@ -88,9 +98,9 @@ def vline(ms, colour, dash=None, top=T):
 
 
 out.append(f'<rect width="{W}" height="{H}" fill="#ffffff"/>')
-for n in range(0, ymax + 1, 200):
+for n in range(0, ymax + 1, GRID):
     out.append(f'<path d="M{L} {Y(n):.1f}H{R}" stroke="{RULE}" stroke-width="1"/>')
-    text(L - 8, Y(n) + 4, f"{n:,}", 10, "end", INK3)
+    text(L - 8, Y(n) + 4, f"{n:,}", SMALL, "end", INK3)
 
 # Each distribution as a filled step outline, so the two read through each other.
 for (_, _, _, colour), counts in zip(SERIES, hists):
@@ -102,14 +112,16 @@ for (_, _, _, colour), counts in zip(SERIES, hists):
 
 out.append(f'<path d="M{L} {B}H{R}" stroke="{INK}" stroke-width="1"/>')
 out.append(f'<path d="M{L} {T}V{B}" stroke="{INK}" stroke-width="1"/>')
-for n in range(0, ymax + 1, 200):
+for n in range(0, ymax + 1, GRID):
     out.append(f'<path d="M{L - 4} {Y(n):.1f}H{L}" stroke="{INK}" stroke-width="1"/>')
-out.append(f'<text x="16" y="{(T + B) / 2:.1f}" font-size="10" text-anchor="middle" fill="{INK3}" '
-           f'letter-spacing="0.8" transform="rotate(-90 16 {(T + B) / 2:.1f})">TICKS</text>')
+YT = 11 if NARROW else 16
+out.append(f'<text x="{YT}" y="{(T + B) / 2:.1f}" font-size="{SMALL}" text-anchor="middle" fill="{INK3}" '
+           f'letter-spacing="0.8" transform="rotate(-90 {YT} {(T + B) / 2:.1f})">TICKS</text>')
 for ms in range(0, int(XMAX) + 1):
     out.append(f'<path d="M{X(ms):.1f} {B}V{B + 4}" stroke="{INK}" stroke-width="1"/>')
-    text(X(ms), B + 17, f"{ms}", 10, fill=INK3)
-text((L + R) / 2, B + 38, "BUS TIME PER TICK, MS", 10, fill=INK3, spacing=0.8)
+    if ms % XSTEP == 0:
+        text(X(ms), B + 17, f"{ms}", SMALL, fill=INK3)
+text((L + R) / 2, B + 40, "BUS TIME PER TICK, MS", SMALL, fill=INK3, spacing=0.8)
 
 # Markers: dashed at the bytes alone, solid at the median; the legend gives the numbers.
 for row, (name, spans, nbytes, colour) in enumerate(SERIES):
@@ -118,20 +130,25 @@ for row, (name, spans, nbytes, colour) in enumerate(SERIES):
     p90 = sorted(spans)[9 * len(spans) // 10]
     vline(wire, colour, "4 3")
     vline(med, colour)
-    y = 22 + row * 20
-    out.append(f'<rect x="{L}" y="{y - 9}" width="12" height="10" fill="{colour}" fill-opacity="0.18" stroke="{colour}" stroke-width="1.5"/>')
-    text(L + 20, y, name, 11, "start", INK, 500)
-    text(L + 210, y, f"median {med:.1f} ms · p90 {p90:.1f} ms · bytes alone {wire:.2f} ms", 11, "start", INK2)
-y = 22 + len(SERIES) * 20
-out.append(f'<path d="M{L} {y - 4}h12" stroke="{INK2}" stroke-width="1.5" stroke-dasharray="4 3"/>')
-text(L + 20, y, "bytes alone", 11, "start", INK2)
-out.append(f'<path d="M{L + 110} {y - 4}h12" stroke="{INK2}" stroke-width="1.5"/>')
-text(L + 130, y, "median", 11, "start", INK2)
+    stats = f"median {med:.1f} ms · p90 {p90:.1f} ms · bytes alone {wire:.2f} ms"
+    # Narrow: each series' name over its numbers, flush with the canvas edge.
+    x0, y = (14, 22 + row * 44) if NARROW else (L, 22 + row * 20)
+    out.append(f'<rect x="{x0}" y="{y - 9}" width="12" height="10" fill="{colour}" fill-opacity="0.18" stroke="{colour}" stroke-width="1.5"/>')
+    text(x0 + 20, y, name, FS, "start", INK, 500)
+    if NARROW:
+        text(x0 + 20, y + 19, stats, SMALL, "start", INK2)
+    else:
+        text(L + 210, y, stats, FS, "start", INK2)
+x0, y = (14, 22 + len(SERIES) * 44) if NARROW else (L, 22 + len(SERIES) * 20)
+out.append(f'<path d="M{x0} {y - 4}h12" stroke="{INK2}" stroke-width="1.5" stroke-dasharray="4 3"/>')
+text(x0 + 20, y, "bytes alone", FS, "start", INK2)
+out.append(f'<path d="M{x0 + 110} {y - 4}h12" stroke="{INK2}" stroke-width="1.5"/>')
+text(x0 + 130, y, "median", FS, "start", INK2)
 
 vline(XMAX, INK3, "2 3")
 over = hists[1][nb]
-text(X(XMAX) - 6, T + 14, "one tick at 100 Hz, 10 ms", 11, "end", INK2)
-text(X(XMAX) - 6, T + 28, f"{over} of {len(with_t):,} ticks ran past it", 11, "end", INK3)
+text(X(XMAX) - 6, T + 14, "one tick at 100 Hz, 10 ms", FS, "end", INK2)
+text(X(XMAX) - 6, T + 30, f"{over} of {len(with_t):,} ticks ran past it", FS, "end", INK3)
 
 meds = [statistics.median(s) for _, s, _, _ in SERIES]
 label = (f"Two histograms of the time each of {len(with_t):,} ticks spent on the servo buses: "
