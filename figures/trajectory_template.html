@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>An episode in joint space</title>
+<style>
+  :root { --ink: #121212; --mid: #555555; --faint: #9e9e9e; --rule: #e3e3e3; --paper: #ffffff; --lead: #121212; --follow: #007cd7;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+  html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  body { display: flex; flex-direction: column; padding: 8px 12px 10px; box-sizing: border-box; }
+  .n { font-family: var(--mono); }
+  #bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; white-space: nowrap; min-height: 30px; flex: none; }
+  #bar > * { flex: none; }
+  #bar button { height: 30px; padding: 0 12px; font: 500 10px var(--sans); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink); background: var(--paper); border: 1px solid var(--ink); border-radius: 0; cursor: pointer; }
+  #bar button:hover { background: var(--ink); color: var(--paper); }
+  #clock { min-width: 110px; font: 12px var(--sans); color: var(--mid); }
+  .key { display: flex; align-items: center; gap: 6px; font: 12px var(--sans); color: var(--ink); }
+  .key .chip { display: grid; place-items: center; width: 15px; height: 15px; font: italic 500 11px Georgia, "Times New Roman", serif; color: #fff; }
+  .key i { font-family: Georgia, "Times New Roman", serif; }
+  #stage { position: relative; flex: 1 1 auto; min-height: 0; margin-top: 6px; overflow: hidden; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* The robot itself, posed from the current observation, drawn straight over the graph (bottom left). */
+  /* The viewer frames every pose of the run, so at any moment the arm sits near the middle of its box
+     with room to swing; the box is pulled left and down so the arm itself lands in the corner. */
+  #robot { position: absolute; bottom: 0; left: 0; width: 50%; aspect-ratio: 1; max-height: 92%; transform: translate(-30%, 10%); pointer-events: none; }
+  #robot iframe { width: 100%; height: 100%; border: 0; display: block; background: transparent; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button id="play" type="button">Pause</button>
+  <button id="zoom" type="button">Close-up</button>
+  <span id="clock"></span>
+  <span class="key"><b class="chip" style="background: var(--lead)">a</b><span>action <i>a</i><sub>t</sub>, the target sent</span></span>
+  <span class="key"><b class="chip" style="background: var(--follow)">o</b><span>observation <i>o</i><sub>t</sub>, where the robot is</span></span>
+</div>
+<div id="stage"><div id="robot" style="z-index:1"><iframe src="sim/viewer.html?show=follower&amp;theme=light&amp;mini" title="The robot, posed from the current observation" loading="lazy" tabindex="-1"></iframe></div><canvas id="c" role="img" aria-label="Animation of one episode: the actions (target joint positions sent to the robot) and the observations (its actual joint positions), each a point in six-dimensional joint space, mapped from six dimensions to two by principal component analysis (the first two components). The observations trace the actions a little behind them."></canvas></div>
+<script>
+(() => {
+  const D = /*DATA*/null;
+  const N = D.action.length, DT = D.dt, TAIL = 2.5;   // seconds of tail behind each head
+  const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const LEAD = css("--lead"), FOLLOW = css("--follow"), RULE = css("--rule"), FAINT = css("--faint"), MID = css("--mid");
+
+  // Two principal components, one scale on both axes, so distances mean the same in every direction.
+  const lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+  for (const p of D.action.concat(D.observation)) for (let a = 0; a < 2; a++) { lo[a] = Math.min(lo[a], p[a]); hi[a] = Math.max(hi[a], p[a]); }
+  const mid = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2];
+  const RADIUS = 0.15 * Math.max(hi[0] - lo[0], hi[1] - lo[1]);   // close-up: this much either side of the arms fills the view
+  let W, H, close = false, cam = null, map;   // starts on the whole run; the button zooms in
+  function resize() {
+    const r = canvas.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); W = r.width; H = r.height;
+  }
+  new ResizeObserver(resize).observe(canvas); resize();
+  // The view: either the whole run, or a close-up that follows the arms, eased so it glides.
+  function setView(center, scale) { map = p => [W / 2 + (p[0] - center[0]) * scale, H / 2 - (p[1] - center[1]) * scale]; }
+  const fitScale = () => Math.min((W - 68) / (hi[0] - lo[0]), (H - 68) / (hi[1] - lo[1]));
+
+  function path(pts, i0, i1, color, width, alphaAt) {
+    for (let i = Math.max(1, i0); i <= i1; i++) {
+      const [x1, y1] = map(pts[i - 1]), [x2, y2] = map(pts[i]);
+      ctx.globalAlpha = alphaAt ? alphaAt(i) : 1;
+      ctx.strokeStyle = color; ctx.lineWidth = width;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  function draw(t, dtReal) {
+    ctx.clearRect(0, 0, W, H);
+    const i = Math.min(N - 1, Math.floor(t / DT)), tail = Math.round(TAIL / DT);
+    const heads = [D.action[i], D.observation[i]];
+    const target = close ? [(heads[0][0] + heads[1][0]) / 2, (heads[0][1] + heads[1][1]) / 2] : mid;
+    const scale = close ? Math.min(W, H) / (2 * RADIUS) : fitScale();
+    if (!cam) cam = { c: target.slice(), s: scale };
+    const k = Math.min(1, dtReal * 4);
+    cam.c = cam.c.map((v, a) => v + (target[a] - v) * k); cam.s += (scale - cam.s) * k;
+    setView(cam.c, cam.s);
+    // The whole run, faint; then each arm's recent past, fading; then where each arm is now.
+    ctx.lineCap = "round";
+    path(D.action, 1, N - 1, RULE, 1);
+    // Each recent sample as a point, fading with age (every 20 ms; the grey line is the whole run).
+    const fade = j => 0.06 + 0.94 * (1 - (i - j) / tail);
+    for (const [pts, color] of [[D.action, LEAD], [D.observation, FOLLOW]]) {
+      ctx.fillStyle = color;
+      for (let j = Math.max(0, i - tail); j < i; j++) {
+        const [x, y] = map(pts[j]);
+        ctx.globalAlpha = fade(j);
+        ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 2 * Math.PI); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    // Where each is now: an a and an o, chipped like the servo IDs (the observation drawn on top).
+    for (const [pts, color, letter] of [[D.action, LEAD, "a"], [D.observation, FOLLOW, "o"]]) {
+      const [x, y] = map(pts[i]);
+      ctx.fillStyle = "#ffffff"; ctx.fillRect(x - 9, y - 9, 18, 18);
+      ctx.fillStyle = color; ctx.fillRect(x - 7.5, y - 7.5, 15, 15);
+      ctx.fillStyle = "#ffffff"; ctx.font = `italic 500 12px Georgia, "Times New Roman", serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(letter, x, y + 0.5);
+      ctx.textAlign = "start"; ctx.textBaseline = "alphabetic";
+    }
+    pose(i);
+  }
+  // Keep the robot in the pose this tick observed. On load it is first sent a sample of every pose to
+  // come, so it frames them all and the whole robot stays in view.
+  const robot = document.querySelector("#robot iframe");
+  let posed = -1;
+  function pose(i) {
+    if (i === posed || !robot.contentWindow) return;
+    robot.contentWindow.postMessage({ so101Pose: D.pose[i] }, "*");
+    posed = i;
+  }
+  robot.addEventListener("load", () => {
+    const sample = Array.from({ length: 80 }, (_, k) => D.pose[Math.floor(k * (N - 1) / 79)]);
+    robot.contentWindow.postMessage({ so101Frame: sample }, "*");
+    posed = -1;
+  });
+
+  // The run plays through at RATE times the pace it was recorded, then starts over.
+  const total = N * DT, RATE = 2;   // twice real time: the run is long, and slow stretches drag
+  let t = 0, last = null, playing = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function frame(now) {
+    const dtReal = last == null ? 1 : (now - last) / 1000;
+    if (last != null && playing) t = (t + dtReal * RATE) % total;
+    last = now; draw(t, dtReal);
+    document.getElementById("clock").innerHTML = `<span class="n">${t.toFixed(1)}</span> s of <span class="n">${total.toFixed(1)}</span> s`;
+    requestAnimationFrame(frame);
+  }
+  const btn = document.getElementById("play");
+  const sync = () => { btn.textContent = playing ? "Pause" : "Play"; };
+  btn.addEventListener("click", () => { playing = !playing; sync(); });
+  const zoomBtn = document.getElementById("zoom");
+  zoomBtn.addEventListener("click", () => { close = !close; zoomBtn.textContent = close ? "Whole run" : "Close-up"; });
+  if (!playing) t = total * 0.4;
+  sync(); requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
