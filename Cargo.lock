@@ -365,15 +365,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "server"
-version = "0.1.0"
-dependencies = [
- "control",
- "drivers",
- "serde_json",
-]
-
-[[package]]
 name = "so101"
 version = "0.1.0"
 dependencies = [
@@ -382,7 +373,7 @@ dependencies = [
  "ctrlc",
  "drivers",
  "serde_json",
- "server",
+ "ui-server",
 ]
 
 [[package]]
@@ -420,6 +411,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "ui-server"
+version = "0.1.0"
+dependencies = [
+ "control",
+ "drivers",
+ "serde_json",
 ]
 
 [[package]]

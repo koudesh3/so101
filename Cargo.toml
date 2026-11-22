@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/drivers", "crates/control", "crates/server", "crates/so101"]
+members = [
+    "robot/crates/drivers",
+    "robot/crates/control",
+    "robot/crates/so101",
+    "ui/server",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,9 +14,9 @@ license = "MIT"
 repository = "https://github.com/koudesh3/so101"
 
 [workspace.dependencies]
-drivers = { path = "crates/drivers" }
-control = { path = "crates/control" }
-server = { path = "crates/server" }
+drivers = { path = "robot/crates/drivers" }
+control = { path = "robot/crates/control" }
+ui-server = { path = "ui/server" }
 serialport = { version = "4", default-features = false }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

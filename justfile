@@ -5,22 +5,22 @@ default:
 
 # Rust: clippy and the tests (simulated servos, no hardware)
 check:
-    cd robot && cargo clippy --workspace --all-targets
-    cd robot && cargo test --workspace
+    cargo clippy --workspace --all-targets
+    cargo test --workspace
 
 # Build the so101 binary (release)
 build:
-    cd robot && cargo build --release
+    cargo build --release
 
 # Teleop against the simulated arms, logging to a new timestamped file in data/logs/
 sim ticks="300":
-    cd robot && cargo run --release -- --sim --log ../data/logs/sim-$(date +%Y%m%d-%H%M%S).jsonl teleop --ticks {{ticks}}
+    cargo run --release -- --sim --log data/logs/sim-$(date +%Y%m%d-%H%M%S).jsonl teleop --ticks {{ticks}}
 
 # Teleop the real arms with the dashboard at http://127.0.0.1:7878 (set LEADER and FOLLOWER to the ports); logs to a new timestamped file in data/logs/
 teleop:
-    cd robot && cargo run --release -- --log ../data/logs/teleop-$(date +%Y%m%d-%H%M%S).jsonl teleop \
+    cargo run --release -- --log data/logs/teleop-$(date +%Y%m%d-%H%M%S).jsonl teleop \
       --leader "$LEADER" --follower "$FOLLOWER" \
-      --leader-calibration ../data/calibration/leader.json --follower-calibration ../data/calibration/follower.json --serve
+      --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json --serve
 
 # Rebuild ui/assets from a checkout of TheRobotStudio's SO-ARM100 repo
 meshes so_arm100:

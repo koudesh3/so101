@@ -1,6 +1,6 @@
 [package]
-name = "server"
-description = "Serves the ui/ web apps and streams live teleop events to them; replay and byte log -> HTML reports"
+name = "ui-server"
+description = "Backend for the browser apps: serves them, streams live teleop events, replays byte logs, renders HTML reports"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
