@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use crate::arm::so101::bus::Bus;
 use crate::arm::so101::calibration::ArmCalibration;
-use crate::error::{Error, Result};
 use crate::arm::so101::joint::{Joint, Ticks, Values, COUNT, IDS};
 use crate::arm::so101::protocol::ServoError;
 use crate::arm::so101::registers;
+use crate::error::{Error, Result};
 
 // The follower's position-loop gains. LeRobot halves P from the factory 32 to
 // 16 to avoid shake; higher P is stiffer and quicker to close a gap.
@@ -231,7 +231,8 @@ impl Arm {
     // Everything worth watching from one servo, in one round trip.
     pub fn read_telemetry_block(&mut self, joint: Joint) -> Result<Telemetry> {
         let bytes = self.bus.read_block(joint.id(), TELEMETRY_START, TELEMETRY_LEN)?;
-        Telemetry::from_block(joint, &bytes).ok_or_else(|| Error::Corrupt(format!("short telemetry block from {}", joint.id())))
+        Telemetry::from_block(joint, &bytes)
+            .ok_or_else(|| Error::Corrupt(format!("short telemetry block from {}", joint.id())))
     }
 
     // Advisory status bits each joint raised since the last call.

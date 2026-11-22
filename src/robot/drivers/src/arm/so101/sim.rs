@@ -67,7 +67,14 @@ pub struct SimServo {
 
 impl SimServo {
     pub fn new(id: u8, start_ticks: f64) -> Self {
-        let mut s = Self { id, table: [0u8; 128], actual_ticks: start_ticks, last_update_s: 0.0, temperature_c: AMBIENT_C, saturated_s: 0.0 };
+        let mut s = Self {
+            id,
+            table: [0u8; 128],
+            actual_ticks: start_ticks,
+            last_update_s: 0.0,
+            temperature_c: AMBIENT_C,
+            saturated_s: 0.0,
+        };
         for (reg, value) in FACTORY_DEFAULTS {
             s.set(reg, value);
         }
@@ -149,7 +156,8 @@ impl SimServo {
         self.set(registers::PRESENT_TEMPERATURE, self.temperature_c.round() as i32);
         self.set(registers::PRESENT_VOLTAGE, (74.0 - current / 120.0).round() as i32);
         let cap = self.get(registers::TORQUE_LIMIT).min(self.get(registers::MAX_TORQUE)).max(1) as f64;
-        self.saturated_s = if torque_on && magnitude >= cap * 0.98 && !moving_fast { self.saturated_s + dt } else { 0.0 };
+        self.saturated_s =
+            if torque_on && magnitude >= cap * 0.98 && !moving_fast { self.saturated_s + dt } else { 0.0 };
         let overloaded = self.saturated_s >= PROTECTION_TIME_S;
         self.set(registers::STATUS, if overloaded { ServoError::OVERLOAD as i32 } else { 0 });
     }
@@ -465,8 +473,11 @@ pub mod demo {
     // A calibration matching the demo's ranges, for either arm.
     pub fn calibration(arm_id: &str) -> ArmCalibration {
         let joints: [JointCalibration; COUNT] = std::array::from_fn(|i| {
-            let (range_min, range_max) =
-                if Joint::ALL[i] == Joint::Gripper { (GRIP_MIN, GRIP_MAX) } else { (2048 - HALF_RANGE, 2048 + HALF_RANGE) };
+            let (range_min, range_max) = if Joint::ALL[i] == Joint::Gripper {
+                (GRIP_MIN, GRIP_MAX)
+            } else {
+                (2048 - HALF_RANGE, 2048 + HALF_RANGE)
+            };
             JointCalibration { homing_offset: 0, range_min, range_max }
         });
         ArmCalibration { arm_id: arm_id.to_string(), joints }

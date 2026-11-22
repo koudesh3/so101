@@ -1,10 +1,10 @@
 //! The range sweep: poll positions until told to stop, keeping each joint's extremes.
 
 use crate::ticker::Ticker;
-use drivers::error::{Error, Result};
 use drivers::arm::so101::arm::Arm;
 use drivers::arm::so101::joint::{Joint, Ticks, COUNT};
 use drivers::arm::so101::registers::{CENTER_TICK, TICKS_PER_TURN};
+use drivers::error::{Error, Result};
 
 pub struct Sweep {
     pub min: Ticks,
@@ -45,7 +45,11 @@ pub fn check_centred(sweep: &Sweep) -> Result<()> {
         }
         let at = (CENTER_TICK - lo) as f64 / (hi - lo).max(1) as f64;
         if !(0.2..=0.8).contains(&at) {
-            bad.push(format!("{} held at {:.0}% of its range, not near the middle ({lo}..{hi})", joint.name(), at * 100.0));
+            bad.push(format!(
+                "{} held at {:.0}% of its range, not near the middle ({lo}..{hi})",
+                joint.name(),
+                at * 100.0
+            ));
         }
     }
     if bad.is_empty() {

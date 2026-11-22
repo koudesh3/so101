@@ -27,14 +27,8 @@ pub type Values = [f64; COUNT];
 pub const IDS: [u8; COUNT] = [1, 2, 3, 4, 5, 6];
 
 impl Joint {
-    pub const ALL: [Joint; COUNT] = [
-        Joint::ShoulderPan,
-        Joint::ShoulderLift,
-        Joint::ElbowFlex,
-        Joint::WristFlex,
-        Joint::WristRoll,
-        Joint::Gripper,
-    ];
+    pub const ALL: [Joint; COUNT] =
+        [Joint::ShoulderPan, Joint::ShoulderLift, Joint::ElbowFlex, Joint::WristFlex, Joint::WristRoll, Joint::Gripper];
 
     pub fn index(self) -> usize {
         self as usize

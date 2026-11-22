@@ -4,17 +4,17 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+use control::calibrate;
+use control::teleop::{self, TeleopOptions};
 use drivers::arm::so101::arm::Arm;
 use drivers::arm::so101::bus::Bus;
-use control::calibrate;
 use drivers::arm::so101::calibration::ArmCalibration;
 use drivers::arm::so101::joint::{Joint, COUNT, IDS};
 use drivers::arm::so101::registers;
 use drivers::arm::so101::sim::{SimClock, SimulatedBus};
-use control::teleop::{self, TeleopOptions};
 use drivers::arm::so101::transport::{read_log, ByteLog, Recorder};
-use web_server::visualize;
 use drivers::Error;
+use web_server::visualize;
 
 fn sim_bus(name: &str) -> Bus {
     Bus::new(Box::new(SimulatedBus::arm(name)))
@@ -154,9 +154,17 @@ fn teleop_follows_the_leader_and_the_log_replays() {
     follower.configure_follower().unwrap();
     assert_eq!(follower.read_register(Joint::ShoulderPan, registers::P_COEFFICIENT).unwrap(), 16);
 
-    let options = TeleopOptions { hz: 100.0, max_step_ticks: Some(200), max_ticks: Some(120), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 100.0,
+        max_step_ticks: Some(200),
+        max_ticks: Some(120),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    let stats = teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    let stats =
+        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+            .unwrap();
     log.flush();
 
     assert_eq!(stats.ticks, 120);
@@ -167,7 +175,13 @@ fn teleop_follows_the_leader_and_the_log_replays() {
     for joint in Joint::ALL {
         let i = joint.index();
         let gap = (last.leader_ticks[i] - last.follower_ticks[i]).abs();
-        assert!(gap < 60, "{}: leader {} follower {} (gap {gap})", joint.name(), last.leader_ticks[i], last.follower_ticks[i]);
+        assert!(
+            gap < 60,
+            "{}: leader {} follower {} (gap {gap})",
+            joint.name(),
+            last.leader_ticks[i],
+            last.follower_ticks[i]
+        );
     }
     // The step limit bounds how fast the command moves, starting from where the follower was.
     for i in 0..COUNT {
@@ -209,7 +223,13 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
     follower_sim.silenced_ids.push(2);
     let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
     let mut follower = sim_arm(follower_sim, "follower");
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(200), max_ticks: Some(10), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(200),
+        max_ticks: Some(10),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut errors = 0;
     let result = teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
         if r.error.is_some() {
@@ -228,7 +248,11 @@ fn configure_follower_caps_the_gripper_only() {
     assert_eq!(arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(), 250);
     assert_eq!(arm.read_register(Joint::Gripper, registers::OVERLOAD_TORQUE).unwrap(), 25);
     assert_eq!(arm.read_register(Joint::Gripper, registers::TORQUE_LIMIT).unwrap(), 500);
-    assert_ne!(arm.read_register(Joint::ShoulderPan, registers::MAX_TORQUE).unwrap(), 500, "arm joints keep full torque");
+    assert_ne!(
+        arm.read_register(Joint::ShoulderPan, registers::MAX_TORQUE).unwrap(),
+        500,
+        "arm joints keep full torque"
+    );
 }
 
 #[test]
@@ -268,7 +292,13 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
 fn teleop_with_telemetry_reports_one_servo_per_tick_in_rotation() {
     let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(200), max_ticks: Some(12), telemetry: true, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(200),
+        max_ticks: Some(12),
+        telemetry: true,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut seen = Vec::new();
     teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
         seen.push(r.telemetry.map(|t| t.joint.id()).unwrap_or(0));
@@ -292,13 +322,22 @@ fn replay_rebuilds_the_ticks_the_live_loop_reported() {
     leader.check_present().unwrap();
     follower.check_present().unwrap();
 
-    let options = TeleopOptions { hz: 100.0, max_step_ticks: Some(200), max_ticks: Some(30), telemetry: true, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 100.0,
+        max_step_ticks: Some(200),
+        max_ticks: Some(30),
+        telemetry: true,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+        .unwrap();
     log.flush();
 
-    let events: Vec<serde_json::Value> =
-        events_from_log(&read_log(&log_path).unwrap(), [&cal[0], &cal[1]]).iter().map(|e| serde_json::from_str(e).unwrap()).collect();
+    let events: Vec<serde_json::Value> = events_from_log(&read_log(&log_path).unwrap(), [&cal[0], &cal[1]])
+        .iter()
+        .map(|e| serde_json::from_str(e).unwrap())
+        .collect();
     assert_eq!(events[0]["k"], "hello");
     assert_eq!(events.last().unwrap()["k"], "end");
     assert_eq!(events.last().unwrap()["errors"], 0);
@@ -317,8 +356,8 @@ fn replay_rebuilds_the_ticks_the_live_loop_reported() {
 
 #[test]
 fn dashboard_serves_page_model_and_events() {
-    use web_server::live::{serve, Hub};
     use std::io::{Read, Write};
+    use web_server::live::{serve, Hub};
     let hub = Hub::new();
     hub.set_hello(r#"{"k":"hello"}"#.to_string());
     let addr = serve(hub.clone(), "127.0.0.1:0").unwrap();
@@ -366,9 +405,18 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
     let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 2848.0 } else { 2048.0 }));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(60), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(60),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut last = None;
-    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| last = Some(r.follower_ticks)).unwrap();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+        last = Some(r.follower_ticks)
+    })
+    .unwrap();
     let covered = last.unwrap()[0] - 2048;
     assert!(covered >= 600, "follower covered only {covered} of 800 ticks in 0.3 s");
 }
@@ -379,21 +427,41 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
     // 1600; after 0.7 s the leader opens to 2600. The capped gripper overloads.
     // Teleop must keep ticking, hold the gripper where it stopped, then follow
     // the leader open again.
-    let hand: drivers::arm::so101::sim::Hand =
-        Arc::new(|id: u8, t: f64| Some(if id == 6 { if t < 0.7 { 1600.0 } else { 2600.0 } } else { 2048.0 }));
+    let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, t: f64| {
+        Some(if id == 6 {
+            if t < 0.7 {
+                1600.0
+            } else {
+                2600.0
+            }
+        } else {
+            2048.0
+        })
+    });
     let object: drivers::arm::so101::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(object), "follower");
     follower.configure_follower().unwrap();
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(260), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(260),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    let stats = teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    let stats =
+        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+            .unwrap();
     let g = Joint::Gripper.index();
     assert_eq!(stats.errors, 0, "an overload flag must not fail ticks");
     let held: Vec<_> = reports.iter().filter(|r| r.released[g]).collect();
     assert!(!held.is_empty(), "the gripper never tripped");
     // Held at the contact point with a small fixed squeeze (30 ticks), not driven at the leader's 1600.
-    assert!(held.iter().skip(10).all(|r| (1860..=1900).contains(&r.goal_ticks_sent[g])), "held goal must stop pushing into the object");
+    assert!(
+        held.iter().skip(10).all(|r| (1860..=1900).contains(&r.goal_ticks_sent[g])),
+        "held goal must stop pushing into the object"
+    );
     let last = reports.last().unwrap();
     assert!(!last.released[g], "never resumed after the leader opened");
     assert!(last.follower_ticks[g] > 2300, "did not follow the leader open: {}", last.follower_ticks[g]);
@@ -406,7 +474,11 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     arm.configure_follower_with(FollowerGains { p: 28, d: 32, grip_torque: 800 }).unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, registers::MAX_TORQUE).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::Gripper, registers::TORQUE_LIMIT).unwrap(), 800);
-    assert_eq!(arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(), 250, "stall protection stays on");
+    assert_eq!(
+        arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(),
+        250,
+        "stall protection stays on"
+    );
     assert_eq!(arm.read_register(Joint::ElbowFlex, registers::P_COEFFICIENT).unwrap(), 28);
     assert_eq!(arm.read_register(Joint::ElbowFlex, registers::MAXIMUM_ACCELERATION).unwrap(), 254);
     assert_eq!(arm.read_register(Joint::ElbowFlex, registers::LOCK).unwrap(), 1);
@@ -418,12 +490,22 @@ fn lead_closes_the_gap_to_a_moving_leader() {
     // Leader pan sweeps at a constant 1200 ticks/s. Commanding 60 ms ahead
     // should leave the follower closer to the leader than no lead does.
     let gap = |lead_ms: u64| {
-        let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, t: f64| Some(if id == 1 { 1200.0 + 1200.0 * t.min(1.5) } else { 2048.0 }));
+        let hand: drivers::arm::so101::sim::Hand =
+            Arc::new(|id: u8, t: f64| Some(if id == 1 { 1200.0 + 1200.0 * t.min(1.5) } else { 2048.0 }));
         let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
         let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
-        let options = TeleopOptions { hz: 100.0, max_step_ticks: Some(80), max_ticks: Some(80), telemetry: false, lead: [Duration::from_millis(lead_ms); COUNT] };
+        let options = TeleopOptions {
+            hz: 100.0,
+            max_step_ticks: Some(80),
+            max_ticks: Some(80),
+            telemetry: false,
+            lead: [Duration::from_millis(lead_ms); COUNT],
+        };
         let mut errs = Vec::new();
-        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| errs.push((r.leader_ticks[0] - r.follower_ticks[0]).abs())).unwrap();
+        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+            errs.push((r.leader_ticks[0] - r.follower_ticks[0]).abs())
+        })
+        .unwrap();
         errs[40..].iter().sum::<i32>() as f64 / 40.0
     };
     let (none, led) = (gap(0), gap(60));
@@ -447,7 +529,12 @@ impl SlowEepromAcks {
     const TURNAROUND: Duration = Duration::from_micros(300);
 
     fn new() -> Self {
-        Self { inner: SimulatedBus::arm("bus"), busy_until: Default::default(), in_flight: Vec::new(), arrived: Default::default() }
+        Self {
+            inner: SimulatedBus::arm("bus"),
+            busy_until: Default::default(),
+            in_flight: Vec::new(),
+            arrived: Default::default(),
+        }
     }
 
     fn land_due(&mut self) {
@@ -488,7 +575,11 @@ impl drivers::arm::so101::transport::Transport for SlowEepromAcks {
         Ok(())
     }
 
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), drivers::arm::so101::transport::TransportError> {
+    fn receive_exact(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(), drivers::arm::so101::transport::TransportError> {
         let deadline = std::time::Instant::now() + timeout;
         let mut got = 0;
         while got < buf.len() {
@@ -538,13 +629,23 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
     // The leader's pan trembles 4 ticks (0.35 deg) at 8 Hz: a hand held still.
     // With 70 ms of lead the commanded goal must not shake more than without.
     let spread = |lead_ms: u64| {
-        let hand: drivers::arm::so101::sim::Hand =
-            Arc::new(|id: u8, t: f64| Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 }));
+        let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, t: f64| {
+            Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 })
+        });
         let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
         let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
-        let options = TeleopOptions { hz: 100.0, max_step_ticks: Some(40), max_ticks: Some(100), telemetry: false, lead: [Duration::from_millis(lead_ms); COUNT] };
+        let options = TeleopOptions {
+            hz: 100.0,
+            max_step_ticks: Some(40),
+            max_ticks: Some(100),
+            telemetry: false,
+            lead: [Duration::from_millis(lead_ms); COUNT],
+        };
         let mut goals = Vec::new();
-        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| goals.push(r.goal_ticks_sent[0])).unwrap();
+        teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+            goals.push(r.goal_ticks_sent[0])
+        })
+        .unwrap();
         let g = &goals[20..];
         (*g.iter().max().unwrap() - *g.iter().min().unwrap()) as f64
     };
@@ -561,13 +662,24 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     let wall: drivers::arm::so101::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 1).then_some(2000.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(wall), "follower");
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(120), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(120),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+        .unwrap();
     assert!(reports.iter().all(|r| r.flags[0].is_healthy()), "the servo should never have flagged");
     let last = reports.last().unwrap();
     assert!(last.released[0], "stall not detected");
-    assert!((last.goal_ticks_sent[0] - 2000).abs() <= 2, "held goal {} should sit at the contact point", last.goal_ticks_sent[0]);
+    assert!(
+        (last.goal_ticks_sent[0] - 2000).abs() <= 2,
+        "held goal {} should sit at the contact point",
+        last.goal_ticks_sent[0]
+    );
 }
 
 // A transport that goes silent after a number of sends: a follower bus dying mid-run.
@@ -584,7 +696,11 @@ impl drivers::arm::so101::transport::Transport for DiesAfter {
         self.sends_left -= 1;
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), drivers::arm::so101::transport::TransportError> {
+    fn receive_exact(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(), drivers::arm::so101::transport::TransportError> {
         if self.sends_left == 0 {
             return Err(drivers::arm::so101::transport::TransportError::Timeout { wanted: buf.len(), got: 0 });
         }
@@ -603,7 +719,13 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
     let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
     let dying = DiesAfter { inner: SimulatedBus::arm("follower"), sends_left: 60 };
     let mut follower = Arm::new("follower", Bus::new(Box::new(dying)), ArmCalibration::identity("follower"));
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(2000), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(2000),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut errors = 0;
     let result = teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
         if r.error.is_some() {
@@ -626,7 +748,11 @@ impl drivers::arm::so101::transport::Transport for StaleGripperFlags {
     fn send(&mut self, bytes: &[u8]) -> Result<(), drivers::arm::so101::transport::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), drivers::arm::so101::transport::TransportError> {
+    fn receive_exact(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(), drivers::arm::so101::transport::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if self.flagged_left > 0 && buf.len() >= 6 && buf[2] == 6 {
             self.flagged_left -= 1;
@@ -653,9 +779,16 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let stale = StaleGripperFlags { inner: SimulatedBus::arm("follower"), flagged_left: 8 };
     let mut follower = Arm::new("follower", Bus::new(Box::new(stale)), ArmCalibration::identity("follower"));
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(200), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(200),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+        .unwrap();
     let g = Joint::Gripper.index();
     let last = reports.last().unwrap();
     assert!(!last.released[g], "gripper latched in a hold it never earned");
@@ -675,7 +808,11 @@ impl drivers::arm::so101::transport::Transport for GripperFlagWindow {
     fn send(&mut self, bytes: &[u8]) -> Result<(), drivers::arm::so101::transport::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), drivers::arm::so101::transport::TransportError> {
+    fn receive_exact(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<(), drivers::arm::so101::transport::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if buf.len() >= 6 && buf[2] == 6 {
             self.seen += 1;
@@ -701,16 +838,33 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
     // overload flag on; opening the leader released the hold, the flag was still
     // set for a few ticks while the jaws had not started moving, and a second
     // hold latched ~30 ticks open. It stayed until the leader closed again.
-    let hand: drivers::arm::so101::sim::Hand =
-        Arc::new(|id: u8, t: f64| Some(if id == 6 { if t < 0.6 { 1600.0 } else { 2600.0 } } else { 2048.0 }));
+    let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, t: f64| {
+        Some(if id == 6 {
+            if t < 0.6 {
+                1600.0
+            } else {
+                2600.0
+            }
+        } else {
+            2048.0
+        })
+    });
     let object: drivers::arm::so101::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     // Flag on from the grip until ~0.15 s after the leader opens.
-    let window = GripperFlagWindow { inner: SimulatedBus::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
+    let window =
+        GripperFlagWindow { inner: SimulatedBus::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
     let mut follower = Arm::new("follower", Bus::new(Box::new(window)), ArmCalibration::identity("follower"));
-    let options = TeleopOptions { hz: 200.0, max_step_ticks: Some(40), max_ticks: Some(260), telemetry: false, lead: [Duration::ZERO; COUNT] };
+    let options = TeleopOptions {
+        hz: 200.0,
+        max_step_ticks: Some(40),
+        max_ticks: Some(260),
+        telemetry: false,
+        lead: [Duration::ZERO; COUNT],
+    };
     let mut reports = Vec::new();
-    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone())).unwrap();
+    teleop::run(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(r.clone()))
+        .unwrap();
     let g = Joint::Gripper.index();
     assert!(reports.iter().any(|r| r.released[g]), "the grip never held");
     let last = reports.last().unwrap();

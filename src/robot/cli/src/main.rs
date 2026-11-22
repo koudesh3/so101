@@ -7,19 +7,19 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 
-use drivers::arm::so101::arm::{Arm, FollowerGains};
-use drivers::arm::so101::bus::Bus;
 use control::calibrate;
-use drivers::arm::so101::calibration::ArmCalibration;
-use drivers::arm::so101::joint::{Joint, Values, IDS};
-use drivers::arm::so101::sim::SimulatedBus;
 use control::teleop::{self, TeleopOptions};
 use control::ticker::Ticker;
-use drivers::arm::so101::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
+use drivers::arm::so101::arm::{Arm, FollowerGains};
+use drivers::arm::so101::bus::Bus;
+use drivers::arm::so101::calibration::ArmCalibration;
+use drivers::arm::so101::joint::{Joint, Values, IDS};
 use drivers::arm::so101::sim::demo;
+use drivers::arm::so101::sim::SimulatedBus;
+use drivers::arm::so101::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
+use drivers::{Error, Result};
 use web_server::live::{self, Hub, Tap};
 use web_server::{replay, visualize};
-use drivers::{Error, Result};
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -160,16 +160,33 @@ impl Role {
 
 fn main() {
     let cli = Cli::parse();
-    let log = cli.log.as_ref().map(|p| ByteLog::create(p).unwrap_or_else(|e| fail(&format!("cannot create log {}: {e}", p.display()))));
+    let log = cli
+        .log
+        .as_ref()
+        .map(|p| ByteLog::create(p).unwrap_or_else(|e| fail(&format!("cannot create log {}: {e}", p.display()))));
     let open = |role: Role, port: Option<String>| open_bus(role, port, cli.sim, &log, None);
     let result = match cli.command {
         Command::Ping { port, id } => cmd_ping(open(Role::Single, port), id),
         Command::Scan { port } => cmd_scan(open(Role::Single, port)),
         Command::Monitor { port, calibration, hz } => cmd_monitor(open(Role::Single, port), calibration, hz),
         Command::Calibrate { port, arm_id, out } => cmd_calibrate(open(Role::Single, port), &arm_id, &out),
-        Command::Teleop { leader, follower, leader_calibration, follower_calibration, hz, max_step, ticks, p_gain, grip_torque, lead_ms, wrist_lead_ms, serve } => {
+        Command::Teleop {
+            leader,
+            follower,
+            leader_calibration,
+            follower_calibration,
+            hz,
+            max_step,
+            ticks,
+            p_gain,
+            grip_torque,
+            lead_ms,
+            wrist_lead_ms,
+            serve,
+        } => {
             let hub = serve.as_ref().map(|_| Hub::new());
-            let ports = [leader.clone().unwrap_or_else(|| "sim".into()), follower.clone().unwrap_or_else(|| "sim".into())];
+            let ports =
+                [leader.clone().unwrap_or_else(|| "sim".into()), follower.clone().unwrap_or_else(|| "sim".into())];
             let leader_bus = open_bus(Role::Leader, leader, cli.sim, &log, hub.clone());
             let follower_bus = open_bus(Role::Follower, follower, cli.sim, &log, hub.clone());
             let dash = match (serve, hub) {
@@ -294,7 +311,10 @@ fn cmd_monitor(bus: Bus, calibration: Option<PathBuf>, hz: f64) -> Result<()> {
         let telemetry = arm.read_telemetry()?;
         let ticks = std::array::from_fn(|i| telemetry[i].position_ticks);
         let values = arm.ticks_to_values(&ticks);
-        println!("\x1b[2J\x1b[H{:<14}{:>7}{:>9}{:>7}{:>7}{:>7}{:>6}{:>8}", "joint", "ticks", "value", "speed", "load", "volt", "temp", "status");
+        println!(
+            "\x1b[2J\x1b[H{:<14}{:>7}{:>9}{:>7}{:>7}{:>7}{:>6}{:>8}",
+            "joint", "ticks", "value", "speed", "load", "volt", "temp", "status"
+        );
         for (t, value) in telemetry.iter().zip(values) {
             println!(
                 "{:<14}{:>7}{:>8.1}{}{:>7}{:>7}{:>6.1}V{:>5}C{:>8}",
@@ -411,7 +431,11 @@ fn cmd_teleop(
         for joint in Joint::ALL {
             let i = joint.index();
             if r.released[i] && !was_released[i] {
-                println!("tick {:>6}  {} blocked: holding at contact; back the leader off to resume", r.tick.index, joint.name());
+                println!(
+                    "tick {:>6}  {} blocked: holding at contact; back the leader off to resume",
+                    r.tick.index,
+                    joint.name()
+                );
             } else if !r.released[i] && was_released[i] {
                 println!("tick {:>6}  {} released: following again", r.tick.index, joint.name());
             }
@@ -435,7 +459,10 @@ fn cmd_teleop(
         }
     })?;
     if let Some((hub, _)) = &dash {
-        hub.publish(serde_json::json!({"k": "end", "ticks": stats.ticks, "overruns": stats.overruns, "errors": stats.errors}).to_string());
+        hub.publish(
+            serde_json::json!({"k": "end", "ticks": stats.ticks, "overruns": stats.overruns, "errors": stats.errors})
+                .to_string(),
+        );
     }
     println!(
         "stopped after {} ticks: {} overruns, {} errors, worst tick work {:.2} ms",
@@ -459,7 +486,12 @@ fn cmd_replay(log_file: &Path, leader_cal: &Path, follower_cal: &Path, out: &Pat
 
 fn cmd_visualize(log_file: &Path, out: &Path, rows: usize) -> Result<()> {
     let decoded = visualize::report_from_log(log_file, out, rows)?;
-    println!("{} frames decoded, {} undecodable bytes -> {}", decoded.frames.len(), decoded.undecodable_bytes, out.display());
+    println!(
+        "{} frames decoded, {} undecodable bytes -> {}",
+        decoded.frames.len(),
+        decoded.undecodable_bytes,
+        out.display()
+    );
     for (port, s) in &decoded.series {
         println!(
             "  {port}: {} goal writes, {} present-position samples",

@@ -10,10 +10,10 @@
 
 use std::time::Duration;
 
-use control::teleop::TickReport;
-use control::ticker::Tick;
 use crate::live::{hello_json, tick_json, wire_json};
 use crate::visualize::decode;
+use control::teleop::TickReport;
+use control::ticker::Tick;
 use drivers::arm::so101::arm::{Telemetry, TELEMETRY_LEN, TELEMETRY_START};
 use drivers::arm::so101::calibration::ArmCalibration;
 use drivers::arm::so101::joint::{Joint, Ticks, COUNT};
@@ -67,19 +67,27 @@ pub fn events_from_log(records: &[LogRecord], cal: [&ArmCalibration; 2]) -> Vec<
         let p = &f.frame.params;
         if f.dir == Direction::HostToBus {
             let instruction = f.frame.instruction();
-            let reads_positions = instruction == Some(Instruction::SyncRead) && p.first() == Some(&registers::PRESENT_POSITION.address);
+            let reads_positions =
+                instruction == Some(Instruction::SyncRead) && p.first() == Some(&registers::PRESENT_POSITION.address);
             if port == 1 && reads_positions {
                 ticks.push(Building::new(f.t_us));
             }
             asked[port] = if reads_positions {
                 Asked::Positions
-            } else if instruction == Some(Instruction::Read) && p.len() >= 2 && p[0] == TELEMETRY_START && p[1] == TELEMETRY_LEN {
+            } else if instruction == Some(Instruction::Read)
+                && p.len() >= 2
+                && p[0] == TELEMETRY_START
+                && p[1] == TELEMETRY_LEN
+            {
                 Joint::from_id(f.frame.id).map_or(Asked::Other, Asked::Telemetry)
             } else {
                 Asked::Other
             };
             if let Some(tick) = ticks.last_mut() {
-                if port == 1 && instruction == Some(Instruction::SyncWrite) && p.first() == Some(&registers::GOAL_POSITION.address) {
+                if port == 1
+                    && instruction == Some(Instruction::SyncWrite)
+                    && p.first() == Some(&registers::GOAL_POSITION.address)
+                {
                     let width = p[1] as usize;
                     let mut goals = [0; COUNT];
                     for block in p[2..].chunks_exact(1 + width) {
@@ -108,7 +116,10 @@ pub fn events_from_log(records: &[LogRecord], cal: [&ArmCalibration; 2]) -> Vec<
         }
         if let Some(tick) = ticks.last_mut() {
             tick.end_us = f.t_us;
-            wires.push((f.t_us, wire_json(f.t_us, port as u8, if f.dir == Direction::HostToBus { 0 } else { 1 }, &f.bytes)));
+            wires.push((
+                f.t_us,
+                wire_json(f.t_us, port as u8, if f.dir == Direction::HostToBus { 0 } else { 1 }, &f.bytes),
+            ));
         }
     }
 
@@ -136,7 +147,8 @@ pub fn events_from_log(records: &[LogRecord], cal: [&ArmCalibration; 2]) -> Vec<
         // dashboard would have shown it.
         let fill = |got: [Option<i32>; COUNT], prev: Ticks| std::array::from_fn(|i| got[i].unwrap_or(prev[i]));
         let complete = b.leader.iter().chain(&b.follower).all(Option::is_some) && b.goals.is_some();
-        let (leader, follower, goals) = (fill(b.leader, last[0]), fill(b.follower, last[1]), b.goals.unwrap_or(last[2]));
+        let (leader, follower, goals) =
+            (fill(b.leader, last[0]), fill(b.follower, last[1]), b.goals.unwrap_or(last[2]));
         last = [leader, follower, goals];
         if !complete {
             errors += 1;

@@ -3,10 +3,12 @@
 
 use std::time::Duration;
 
-use crate::error::{Error, Result};
-use crate::arm::so101::protocol::{ServoError, encode_instruction, parse_frame, Frame, Instruction, ParseError, BROADCAST_ID, MAX_SERVO_ID};
+use crate::arm::so101::protocol::{
+    encode_instruction, parse_frame, Frame, Instruction, ParseError, ServoError, BROADCAST_ID, MAX_SERVO_ID,
+};
 use crate::arm::so101::registers::{self, Register, LOCK, TORQUE_ENABLE};
 use crate::arm::so101::transport::{Transport, TransportError};
+use crate::error::{Error, Result};
 
 // How long to wait for the ack of a write that commits to non-volatile memory.
 // Up to ~40 ms has been measured; allow more than double.
@@ -57,7 +59,10 @@ impl Bus {
         let (frame, _) = match parse_frame(&buf) {
             Ok(ok) => ok,
             Err(ParseError::BadChecksum { expected, found }) => {
-                return Err(Error::Corrupt(format!("checksum expected {expected:02X} found {found:02X} in {}", hex(&buf))))
+                return Err(Error::Corrupt(format!(
+                    "checksum expected {expected:02X} found {found:02X} in {}",
+                    hex(&buf)
+                )))
             }
             Err(e) => return Err(Error::Corrupt(format!("{e:?} in {}", hex(&buf)))),
         };

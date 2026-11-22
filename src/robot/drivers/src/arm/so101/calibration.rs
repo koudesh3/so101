@@ -7,9 +7,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{Error, Result};
 use crate::arm::so101::joint::{Joint, Ticks, Unit, Values, COUNT};
 use crate::arm::so101::registers::TICKS_PER_TURN;
+use crate::error::{Error, Result};
 
 pub const DEGREES_PER_TICK: f64 = 360.0 / TICKS_PER_TURN as f64;
 
@@ -169,8 +169,11 @@ impl TryFrom<CalibrationFile> for ArmCalibration {
             if entry.range_min > entry.range_max {
                 return Err(format!("{} range is inverted", joint.name()));
             }
-            joints[joint.index()] =
-                JointCalibration { homing_offset: entry.homing_offset, range_min: entry.range_min, range_max: entry.range_max };
+            joints[joint.index()] = JointCalibration {
+                homing_offset: entry.homing_offset,
+                range_min: entry.range_min,
+                range_max: entry.range_max,
+            };
         }
         Ok(Self { arm_id: file.arm_id, joints })
     }

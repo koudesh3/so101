@@ -138,10 +138,7 @@ pub struct LogRecord {
 
 impl LogRecord {
     pub fn bytes(&self) -> Vec<u8> {
-        (0..self.hex.len())
-            .step_by(2)
-            .filter_map(|i| u8::from_str_radix(&self.hex[i..i + 2], 16).ok())
-            .collect()
+        (0..self.hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(&self.hex[i..i + 2], 16).ok()).collect()
     }
 }
 
@@ -219,9 +216,5 @@ impl<T: Transport> Transport for Recorder<T> {
 
 pub fn read_log(path: &Path) -> io::Result<Vec<LogRecord>> {
     let text = std::fs::read_to_string(path)?;
-    Ok(text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect())
+    Ok(text.lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect())
 }

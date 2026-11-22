@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use drivers::arm::so101::arm::{Arm, Telemetry};
-use drivers::arm::so101::protocol::ServoError;
-use drivers::arm::so101::joint::Joint;
-use drivers::error::{Error, Result};
-use drivers::arm::so101::joint::{Ticks, Values, COUNT};
 use crate::ticker::{Tick, Ticker};
+use drivers::arm::so101::arm::{Arm, Telemetry};
+use drivers::arm::so101::joint::Joint;
+use drivers::arm::so101::joint::{Ticks, Values, COUNT};
+use drivers::arm::so101::protocol::ServoError;
+use drivers::error::{Error, Result};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TeleopOptions {
@@ -106,7 +106,8 @@ fn run_loop(
         }
         let tick = ticker.wait();
         let work_started = Instant::now();
-        let outcome = one_tick(leader, follower, options, last_goal, &mut releases, &mut stalls, &mut predictor, stats.ticks);
+        let outcome =
+            one_tick(leader, follower, options, last_goal, &mut releases, &mut stalls, &mut predictor, stats.ticks);
         let work_time = work_started.elapsed();
         stats.ticks += 1;
         stats.worst_work_time = stats.worst_work_time.max(work_time);

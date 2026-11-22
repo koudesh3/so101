@@ -80,20 +80,14 @@ impl fmt::Display for ServoError {
             (Self::ANGLE_LIMIT, "angle-limit"),
             (Self::OVERLOAD, "overload"),
         ];
-        let set: Vec<&str> = names
-            .iter()
-            .filter(|(bit, _)| self.0 & bit != 0)
-            .map(|(_, name)| *name)
-            .collect();
+        let set: Vec<&str> = names.iter().filter(|(bit, _)| self.0 & bit != 0).map(|(_, name)| *name).collect();
         write!(f, "{}", set.join("+"))
     }
 }
 
 pub fn checksum(id: u8, length: u8, instruction_or_error: u8, params: &[u8]) -> u8 {
-    let sum: u32 = id as u32
-        + length as u32
-        + instruction_or_error as u32
-        + params.iter().map(|&b| b as u32).sum::<u32>();
+    let sum: u32 =
+        id as u32 + length as u32 + instruction_or_error as u32 + params.iter().map(|&b| b as u32).sum::<u32>();
     !(sum as u8)
 }
 
@@ -153,11 +147,7 @@ pub fn parse_frame(bytes: &[u8]) -> Result<(Frame, usize), ParseError> {
         return Err(ParseError::Incomplete(2 - bytes.len()));
     }
     if bytes[0..2] != HEADER {
-        let skip = bytes
-            .windows(2)
-            .position(|w| w == HEADER)
-            .unwrap_or(bytes.len() - 1)
-            .max(1);
+        let skip = bytes.windows(2).position(|w| w == HEADER).unwrap_or(bytes.len() - 1).max(1);
         return Err(ParseError::NoHeader { skip });
     }
     if bytes.len() < 4 {

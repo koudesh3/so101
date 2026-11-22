@@ -76,7 +76,14 @@ pub fn decode(records: &[LogRecord]) -> Decoded {
                         Direction::HostToBus => interpret_instruction(&frame, expectation, rec.t_us, series),
                         Direction::BusToHost => interpret_status(&frame, expectation, rec.t_us, series),
                     };
-                    out.frames.push(DecodedFrame { t_us: rec.t_us, port: rec.port.clone(), dir, bytes, frame, meaning });
+                    out.frames.push(DecodedFrame {
+                        t_us: rec.t_us,
+                        port: rec.port.clone(),
+                        dir,
+                        bytes,
+                        frame,
+                        meaning,
+                    });
                 }
                 Err(ParseError::NoHeader { skip }) => {
                     out.undecodable_bytes += skip;
@@ -181,7 +188,9 @@ fn interpret_status(frame: &Frame, expectation: &mut Expectation, t_us: u64, ser
 
 pub fn render_html(decoded: &Decoded, log_path: &Path, max_table_rows: usize) -> String {
     let mut h = String::new();
-    let _ = write!(h, r#"<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    let _ = write!(
+        h,
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>so101 log: {name}</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:1.5rem;color:#16202E;background:#F6F8FA;max-width:70rem}}
@@ -192,7 +201,11 @@ svg{{background:#fff;border:1px solid #D8DEE5;border-radius:4px;display:block;ma
 .small{{color:#51607A;font-size:.85rem}}
 </style></head><body>
 <h1>so101 byte log</h1><p class="small">{name}: {frames} frames decoded, {undec} undecodable bytes</p>
-"#, name = log_path.display(), frames = decoded.frames.len(), undec = decoded.undecodable_bytes);
+"#,
+        name = log_path.display(),
+        frames = decoded.frames.len(),
+        undec = decoded.undecodable_bytes
+    );
 
     for (port, series) in &decoded.series {
         let _ = write!(h, "<h2>Port: {port}</h2>");
@@ -252,7 +265,11 @@ fn chart(title: &str, present: Option<&Vec<Sample>>, goals: Option<&Vec<Sample>>
         v1 as i32
     );
     if let Some(g) = goals {
-        let _ = write!(svg, "<path d=\"{}\" fill=\"none\" stroke=\"#9D174D\" stroke-width=\"1.5\" stroke-dasharray=\"4 3\"/>", path(g));
+        let _ = write!(
+            svg,
+            "<path d=\"{}\" fill=\"none\" stroke=\"#9D174D\" stroke-width=\"1.5\" stroke-dasharray=\"4 3\"/>",
+            path(g)
+        );
     }
     if let Some(p) = present {
         let _ = write!(svg, "<path d=\"{}\" fill=\"none\" stroke=\"#1D4ED8\" stroke-width=\"1.8\"/>", path(p));
