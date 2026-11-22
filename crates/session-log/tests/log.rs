@@ -8,12 +8,15 @@ use std::time::{Duration, Instant};
 use contracts::{Camera, Clock, JointState, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 use session_log::sample::{self, joints};
 use session_log::{
-    recover, replay, Arm, Attachment, Bus, DropKind, Envelope, Event, Header, Log, Recorder, RecorderOptions,
+    recover, replay, Arm, Attachment, Bus, CameraInfo, DropKind, Envelope, Event, Header, Log, Recorder,
+    RecorderOptions,
 };
 
 const MS: u64 = 1_000_000;
 
-fn header() -> Header {
+const CALIBRATION: &[u8] = br#"{"shoulder_pan": {"homing_offset": 12, "range_min": 800, "range_max": 3300}}"#;
+
+fn header_fields() -> Header {
     let mut h = Header::now();
     // Fixed, so the header written and the header compared are the same.
     h.start_monotonic = Timestamp(4_000_000_000);
@@ -21,14 +24,34 @@ fn header() -> Header {
     h.git_commit = "0123abc".into();
     h.git_dirty = true;
     h.config.insert("servo_hz".into(), "120".into());
+    h.cameras.insert(
+        "wrist".into(),
+        CameraInfo {
+            device: "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0".into(),
+            settings: "auto_exposure=1 exposure_time_absolute=300 gain=0".into(),
+        },
+    );
     h
 }
 
+/// The header every test writes, with its attachments: a calibration file (its hash is in the
+/// header) and a config file.
+fn header_and_attachments() -> (Header, Vec<Attachment>) {
+    let mut h = header_fields();
+    let calibration = h.add_calibration("follower", CALIBRATION);
+    let config =
+        Attachment { name: "robot.toml".into(), media_type: "application/toml".into(), data: b"hz = 120\n".to_vec() };
+    (h, vec![calibration, config])
+}
+
+fn header() -> Header {
+    header_and_attachments().0
+}
+
 fn write(envelopes: &[Envelope], options: RecorderOptions) -> (Vec<u8>, session_log::RecordSummary) {
-    let attachments =
-        [Attachment { name: "robot.toml".into(), media_type: "application/toml".into(), data: b"hz = 120\n".to_vec() }];
+    let (header, attachments) = header_and_attachments();
     let recorder =
-        Recorder::start(Cursor::new(Vec::new()), &header(), &attachments, Arc::new(MonotonicClock), options).unwrap();
+        Recorder::start(Cursor::new(Vec::new()), &header, &attachments, Arc::new(MonotonicClock), options).unwrap();
     let bus = Bus::new();
     bus.attach(recorder.sink());
     for e in envelopes {
@@ -40,7 +63,10 @@ fn write(envelopes: &[Envelope], options: RecorderOptions) -> (Vec<u8>, session_
 
 fn state(slot: u32, t: u64) -> Envelope {
     Envelope::new(
-        Event::JointState(Arm::Follower, JointState { t: Timestamp(t), pos: joints(slot as f32) }),
+        Event::JointState(
+            Arm::Follower,
+            JointState { t: Timestamp(t), pos: joints(slot as f32), ticks: Some([2048; 6]) },
+        ),
         slot,
         Timestamp(t),
     )
@@ -61,8 +87,9 @@ fn round_trip_is_identical() {
     let end = log.end.clone().unwrap();
     assert!(end.complete);
     assert_eq!(end.messages_written as usize, envelopes.len());
-    assert_eq!(log.attachments.len(), 1);
-    assert_eq!(log.attachments[0].data, b"hz = 120\n");
+    assert_eq!(log.attachments.len(), 2);
+    assert_eq!(log.calibration("follower"), Some(CALIBRATION), "the calibration file itself is in the log");
+    assert_eq!(log.header.cameras["wrist"].settings, "auto_exposure=1 exposure_time_absolute=300 gain=0");
 
     // Contract 3: frame records carry receive time in log_time and capture time in publish_time.
     let frame = log.topic("/cam/wrist").next().unwrap();
@@ -146,7 +173,14 @@ impl Seek for StalledDisk {
 fn a_stalled_disk_drops_frames_not_the_session() {
     let disk = StalledDisk::new();
     let options = RecorderOptions { frame_queue: 8, queue: 10_000, chunk_size: 32 * 1024 };
-    let recorder = Recorder::start(disk.clone(), &header(), &[], Arc::new(MonotonicClock), options).unwrap();
+    let recorder = Recorder::start(
+        disk.clone(),
+        &header_and_attachments().0,
+        &header_and_attachments().1,
+        Arc::new(MonotonicClock),
+        options,
+    )
+    .unwrap();
     let bus = Bus::new();
     bus.attach(recorder.sink());
 
@@ -190,7 +224,14 @@ fn a_stalled_disk_drops_frames_not_the_session() {
 fn a_dead_disk_marks_the_log_incomplete() {
     let disk = StalledDisk::new();
     let options = RecorderOptions { frame_queue: 4, queue: 16, chunk_size: 1024 };
-    let recorder = Recorder::start(disk.clone(), &header(), &[], Arc::new(MonotonicClock), options).unwrap();
+    let recorder = Recorder::start(
+        disk.clone(),
+        &header_and_attachments().0,
+        &header_and_attachments().1,
+        Arc::new(MonotonicClock),
+        options,
+    )
+    .unwrap();
     let bus = Bus::new();
     bus.attach(recorder.sink());
     disk.set_open(false);
@@ -257,4 +298,24 @@ fn a_truncated_log_recovers_its_complete_chunks() {
     assert_eq!(log.envelopes[..], envelopes[..n], "recovered messages must be an exact prefix");
     assert_eq!(log.header, header());
     assert!(log.end.is_none(), "the session-end record was never written");
+}
+
+/// Degrees only mean something with their calibration: a log whose calibration file doesn't match
+/// the hash in its header is refused, not read.
+#[test]
+fn a_calibration_that_doesnt_match_its_hash_is_refused() {
+    let mut h = header_fields();
+    let mut calibration = h.add_calibration("follower", CALIBRATION);
+    calibration.data = b"{}".to_vec(); // a different file under the same name
+    let recorder = Recorder::start(
+        Cursor::new(Vec::new()),
+        &h,
+        &[calibration],
+        Arc::new(MonotonicClock),
+        RecorderOptions::default(),
+    )
+    .unwrap();
+    let (out, _) = recorder.finish().unwrap();
+    let err = Log::from_bytes(out.get_ref()).unwrap_err();
+    assert!(err.to_string().contains("doesn't match its hash"), "{err}");
 }

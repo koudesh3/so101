@@ -30,8 +30,9 @@ names come last, as the implementation of those promises.
   breaking changes go in `so101.v2`. A test compares the compiled schemas against a frozen snapshot
   in the repo, so a breaking change fails `just check`.
 - A log is immutable once written. Its header records the git commit, whether the tree was dirty,
-  the host, the clock source, a monotonic + wall-clock pair read together at session start, and the
-  config.
+  the host, the clock source, a monotonic + wall-clock pair read together at session start, the
+  config, every calibration file (contract 6), and each camera's device and read-back settings
+  (contract 7).
 - Only messages something produces get defined. Adding a message later is a non-breaking change;
   a premature one would be frozen by the snapshot.
 
@@ -42,6 +43,16 @@ the frame it used from each camera (by identity), the action it sent, and the so
 action. **Anything downstream (the LeRobot converter, analysis, probes) reads the loop's view of
 the world only from `Tick` and the messages it references. Nothing re-derives it from timestamps.**
 So a converted episode matches what the policy or operator actually acted on, by construction.
+
+"Action" means one thing everywhere. In a demo the source is the leader arm; in a run it's the
+policy; either can be clipped before it reaches the follower. So:
+- **`Tick.action` is the target actually sent to the follower, after clipping**, in demos and runs
+  alike. Training reads it, so a policy learns what was executed, not what was asked for.
+- **`Tick.requested`** is what the source asked for, before clipping.
+- **`Tick.clipped`** lists the joints where the two differ and which limit did it (the per-tick
+  step limit, LeRobot's `max_relative_target`, or the joint's range). Clipping is then countable
+  per episode: frequent clipping in demos means the step limit is fighting the operator, which is
+  worth knowing before training on them.
 
 ### 3. What the timestamps and sequence numbers mean
 
@@ -70,6 +81,11 @@ So a converted episode matches what the policy or operator actually acted on, by
   `JointTarget`. Nothing outside the policy ever sees normalized values.
 - A policy **owns its normalization.** The spec's export puts it inside the ONNX graph; if it ever
   lives in a separate stats file instead, that file (JSON) names the model it belongs to.
+- **Not true yet:** the ONNX spike's graph (`/projects/spikes/act-onnx`) takes and returns
+  normalized values, because LeRobot 0.7 keeps normalization in its processor pipeline, outside
+  `ACT`, and the spike's parity test compared normalized numbers. Phase 2's export must wrap the
+  network with the normalize and unnormalize steps, and its parity test must compare **degrees in
+  to degrees out**, so the check covers the whole path.
 - A policy **refuses to load** if its normalization doesn't match its model, so a model with the
   wrong stats (which moves the arm plausibly and wrongly) can't run.
 - Every `Chunk` carries the checkpoint ID that produced it.
@@ -109,10 +125,32 @@ telemetry on for a few minutes and count overruns. Under 1% means 120 Hz; otherw
 in this design depends on the answer; it needs the arms plugged in and their ports in
 `data/robot.conf`.
 
+### 6. Degrees are only meaningful with their calibration
+
+LeRobot turns a raw servo reading into degrees from the midpoint of that motor's calibrated range,
+so the same pose reads as different degrees after a recalibration (after a crash or a
+re-assembly), and older logs would describe slightly wrong poses relative to the new runtime.
+- Every log stores **each calibration file itself** (as the attachment `calibration/<name>.json`)
+  and **its SHA-256 in the header**. The reader refuses a log whose file doesn't match its hash.
+- `JointState` and `JointTarget` carry the **raw servo ticks** next to the degrees, so any log can
+  be recomputed under a different calibration.
+- The converter refuses to mix calibrations in one dataset unless told to convert (Phase 4).
+
+### 7. A policy runs at the camera settings it was trained at
+
+Camera 2 forgets its settings when unplugged; `act record` re-applies them, and the runtime must
+too, or a policy trained at one exposure runs at another.
+- Every log's header stores, per camera role, **the physical device** (its `/dev/v4l/by-id/` path
+  or serial) and **the settings read back from it** at session start, in recordings and runs
+  alike. Tying settings to the device makes a swapped wrist/scene config visible instead of
+  silently applying one camera's settings to the other.
+- The runtime refuses to start if a camera's read-back settings differ from the training data's
+  (Phase 4, when the runtime first drives real cameras).
+
 ### Units and names everywhere
 
 LeRobot's: degrees, gripper 0-100, joints `shoulder_pan` … `gripper`, cameras `wrist` and `scene`.
-Export to a LeRobot dataset is then a straight copy.
+Export to a LeRobot dataset is then a straight copy, given one calibration (contract 6).
 
 ## Behaviour under failure
 
@@ -124,21 +162,27 @@ Export to a LeRobot dataset is then a straight copy.
 | **A servo read overruns its slot** | The next slot is skipped and the loop resumes on the grid (contract 5) | One joint sample, visible as a sequence gap; the loop never drifts |
 | **Dropped camera frames** | Detected as defined in contract 3 (sequence gap, or long capture interval) | Reported per camera by the reader and the converter; never silently passed through |
 | **Mismatched model and stats** | The policy refuses to load (contract 4) | A failed start instead of a wrong-but-plausible run |
+| **The arm is recalibrated** | New logs carry the new calibration and its hash; raw ticks are logged throughout (contract 6) | Nothing lost: old logs can be recomputed; the converter won't silently mix them |
+| **Camera settings drift, or cameras swapped** | Each log records device and read-back settings; the runtime refuses to start on a mismatch (contract 7) | A failed start instead of a policy running at the wrong exposure |
+| **A target is clipped** | `Tick.action` is what was sent, `Tick.requested` what was asked, `Tick.clipped` which joints and why (contract 2) | Nothing hidden: clipping is countable per episode |
 
 ## Messages in Phase 0 (`so101.v1`)
 
 Only what Phases 0-2 write (the runtime on fakes, then the policy):
 
-- `JointState {t, pos[6]}`, 100 Hz: one sync read of all six positions
+- `JointState {t, pos[6], ticks[6]}`, 100 Hz: one sync read of all six positions, in degrees and
+  as the raw servo ticks behind them (contract 6)
 - `ServoTelemetry {t, joint, velocity, load, voltage, temperature}`: one per read. The driver reads
   one servo's telemetry block per tick, rotating, so each joint comes round at about 16.7 Hz with
   its own timestamp. A combined six-joint message would invent readings or blur their times. The
   spec's `JointState {pos, vel, current, temp}` is the logical view: a reader that wants it joins
   the latest telemetry per joint onto each position read
-- `JointTarget {t, pos[6], source}`, 30 Hz. `source` is teleop, script, or a policy ID
+- `JointTarget {t, pos[6], source, ticks[6]}`, 30 Hz. `source` is teleop, script, or a policy ID;
+  `ticks` are the raw goals actually written
 - Frame: `foxglove.CompressedImage {timestamp = t_capture, frame_id = camera, data = jpeg, format = "jpeg"}`,
   so Foxglove plays both cameras as video. A frame's identity is `(camera, sequence)`
-- `Tick {t, state[6], frame IDs (wrist, scene), action[6], source}`, 30 Hz
+- `Tick {t, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`, 30 Hz
+  (contract 2)
 - `Chunk {t_obs, k, actions[k][6], ckpt_id}`: every predicted chunk
 - `LogDrop {topic, first_sequence, last_sequence, count}`: what the recorder dropped
 
@@ -219,10 +263,20 @@ crates/session-log/
 4. Replay timing: a recorded run replayed on `ReplayClock` reproduces its inter-event times.
 5. Schema snapshot: the compiled descriptors match the frozen `so101.v1` snapshot.
 6. Recovery: a file truncated mid-write recovers every complete chunk.
+6b. Calibration: a log whose calibration file doesn't match the hash in its header is refused.
 7. Python: a small `uv run` script reads a test log with `mcap` + `mcap-protobuf-support`, without
    generated code.
 
 The policy's load-time check (contract 4) is tested in Phase 2, when the first policy exists.
+
+**Tests that belong to later phases, written into the spec:**
+- Phase 2: export parity in degrees (contract 4), and the image boundary test. At run time the
+  policy gets the camera's JPEG decoded in Rust; in training it gets LeRobot's MP4 re-encode
+  decoded in Python. Run one log through both paths and compare the tensors: channel order (RGB
+  vs BGR), value range (0-255 vs 0-1) and size/resize must match exactly; the pixel difference left
+  over is the compression's, measured against a tolerance (it can't be zero, the MP4 is lossy).
+- Phase 4: the converter refuses mixed calibrations (contract 6); the runtime refuses mismatched
+  camera settings (contract 7).
 
 ## Out of scope for Phase 0
 

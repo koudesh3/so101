@@ -46,7 +46,8 @@ message Source {
 // index (contract 5), so a skipped slot is a sequence gap.
 message JointState {
   uint64 t_ns = 1;
-  repeated float pos = 2;
+  repeated float pos = 2;  // degrees: only meaningful with the calibration in the log header
+  repeated int32 ticks = 3;  // the raw servo readings behind `pos`; empty if not from servos
 }
 
 // One servo's telemetry block. The driver reads one servo per slot, rotating, so each joint
@@ -67,6 +68,7 @@ message JointTarget {
   uint64 t_ns = 1;
   repeated float pos = 2;
   Source source = 3;
+  repeated int32 ticks = 4;  // the raw servo goals actually written; empty if not sent to servos
 }
 
 // A camera frame's identity: its camera and the kernel's frame number (the record's sequence).
@@ -81,8 +83,22 @@ message Tick {
   repeated float state = 2;
   FrameRef wrist = 3;
   FrameRef scene = 4;
-  repeated float action = 5;
+  repeated float action = 5;     // the target actually sent to the follower, after clipping
   Source source = 6;
+  repeated float requested = 7;  // what the source asked for, before clipping
+  repeated Clip clipped = 8;     // the joints where action differs from requested, and why
+}
+
+// Which limit made the sent target differ from the requested one.
+enum Limit {
+  LIMIT_UNSPECIFIED = 0;
+  STEP = 1;   // the per-tick step limit (LeRobot's max_relative_target)
+  RANGE = 2;  // the joint's allowed range
+}
+
+message Clip {
+  Joint joint = 1;
+  Limit limit = 2;
 }
 
 // A predicted action chunk: k rows of six positions, row-major.

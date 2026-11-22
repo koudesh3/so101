@@ -8,7 +8,7 @@ use std::path::Path;
 
 use contracts::Timestamp;
 
-use crate::header::{META_SESSION, META_SESSION_END};
+use crate::header::{calibration_attachment, sha256_hex, META_SESSION, META_SESSION_END};
 use crate::raw::RawLog;
 use crate::{Attachment, Envelope, Error, Event, Header, Result, SessionEnd};
 
@@ -67,7 +67,23 @@ impl Log {
             .iter()
             .map(|(h, d)| Attachment { name: h.name.clone(), media_type: h.media_type.clone(), data: d.to_vec() })
             .collect();
-        Ok(Log { header, end, envelopes, attachments })
+        let log = Log { header, end, envelopes, attachments };
+        // Every calibration the header names must be in the log, byte for byte.
+        for (name, hash) in &log.header.calibrations {
+            let file = log
+                .calibration(name)
+                .ok_or_else(|| Error::Format(format!("calibration {name:?} is named in the header but missing")))?;
+            if sha256_hex(file) != *hash {
+                return Err(Error::Format(format!("calibration {name:?} doesn't match its hash in the header")));
+            }
+        }
+        Ok(log)
+    }
+
+    /// The calibration file a named arm's degrees were computed with.
+    pub fn calibration(&self, name: &str) -> Option<&[u8]> {
+        let want = calibration_attachment(name);
+        self.attachments.iter().find(|a| a.name == want).map(|a| a.data.as_slice())
     }
 
     /// Envelopes ordered by `log_time` (ties keep file order): the order to replay them in.

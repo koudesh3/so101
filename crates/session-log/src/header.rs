@@ -10,6 +10,11 @@ use crate::{Error, Result};
 pub(crate) const META_SESSION: &str = "so101.session";
 pub(crate) const META_SESSION_END: &str = "so101.session_end";
 const CONFIG_PREFIX: &str = "config.";
+const CALIBRATION_PREFIX: &str = "calibration.";
+const CALIBRATION_SUFFIX: &str = ".sha256";
+const CAMERA_PREFIX: &str = "camera.";
+const CAMERA_DEVICE_SUFFIX: &str = ".device";
+const CAMERA_SETTINGS_SUFFIX: &str = ".settings";
 
 /// Who wrote the log, from which commit, on which machine and clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,6 +29,22 @@ pub struct Header {
     pub start_wall_unix_ns: u64,
     /// Flat config values; the full config file can go in as an [`Attachment`].
     pub config: BTreeMap<String, String>,
+    /// Calibration name ("leader", "follower") -> SHA-256 (hex) of the file, which is stored as
+    /// the attachment `calibration/<name>.json` and checked when the log is read. Degrees mean
+    /// something only with the calibration they were computed with.
+    pub calibrations: BTreeMap<String, String>,
+    /// Camera role ("wrist", "scene") -> which physical device filled it and its settings as
+    /// read back at session start. A policy must run at the settings it was trained at, on the
+    /// same camera; tying settings to the device shows a swapped config instead of hiding it.
+    pub cameras: BTreeMap<String, CameraInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CameraInfo {
+    /// The physical device: its USB path or serial, e.g. the `/dev/v4l/by-id/...` name.
+    pub device: String,
+    /// The controls as read back from the device, e.g. "auto_exposure=1 exposure_time_absolute=300".
+    pub settings: String,
 }
 
 impl Header {
@@ -40,7 +61,16 @@ impl Header {
             start_monotonic,
             start_wall_unix_ns,
             config: BTreeMap::new(),
+            calibrations: BTreeMap::new(),
+            cameras: BTreeMap::new(),
         }
+    }
+
+    /// Record a calibration file: its hash goes in the header, and the returned attachment
+    /// (pass it to `Recorder::start`) stores the file itself.
+    pub fn add_calibration(&mut self, name: &str, file: &[u8]) -> Attachment {
+        self.calibrations.insert(name.to_string(), sha256_hex(file));
+        Attachment { name: calibration_attachment(name), media_type: "application/json".into(), data: file.to_vec() }
     }
 
     /// The wall-clock time (Unix ns) of a monotonic timestamp in this log.
@@ -59,6 +89,13 @@ impl Header {
         for (k, v) in &self.config {
             m.insert(format!("{CONFIG_PREFIX}{k}"), v.clone());
         }
+        for (k, v) in &self.calibrations {
+            m.insert(format!("{CALIBRATION_PREFIX}{k}{CALIBRATION_SUFFIX}"), v.clone());
+        }
+        for (role, c) in &self.cameras {
+            m.insert(format!("{CAMERA_PREFIX}{role}{CAMERA_DEVICE_SUFFIX}"), c.device.clone());
+            m.insert(format!("{CAMERA_PREFIX}{role}{CAMERA_SETTINGS_SUFFIX}"), c.settings.clone());
+        }
         m
     }
 
@@ -76,6 +113,17 @@ impl Header {
                 .iter()
                 .filter_map(|(k, v)| k.strip_prefix(CONFIG_PREFIX).map(|k| (k.to_string(), v.clone())))
                 .collect(),
+            calibrations: between(m, CALIBRATION_PREFIX, CALIBRATION_SUFFIX),
+            cameras: {
+                let settings = between(m, CAMERA_PREFIX, CAMERA_SETTINGS_SUFFIX);
+                between(m, CAMERA_PREFIX, CAMERA_DEVICE_SUFFIX)
+                    .into_iter()
+                    .map(|(role, device)| {
+                        let settings = settings.get(&role).cloned().unwrap_or_default();
+                        (role, CameraInfo { device, settings })
+                    })
+                    .collect()
+            },
         })
     }
 }
@@ -119,6 +167,22 @@ pub struct Attachment {
     pub name: String,
     pub media_type: String,
     pub data: Vec<u8>,
+}
+
+/// Entries whose key is `<prefix><name><suffix>`, keyed by name.
+fn between(m: &BTreeMap<String, String>, prefix: &str, suffix: &str) -> BTreeMap<String, String> {
+    m.iter()
+        .filter_map(|(k, v)| k.strip_prefix(prefix)?.strip_suffix(suffix).map(|n| (n.to_string(), v.clone())))
+        .collect()
+}
+
+pub(crate) fn calibration_attachment(name: &str) -> String {
+    format!("calibration/{name}.json")
+}
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn hostname() -> String {

@@ -22,7 +22,7 @@ pub use bus::{Bus, Sink};
 pub use drops::{Drop, DropKind};
 pub use error::{Error, Result};
 pub use event::{Arm, Envelope, Event};
-pub use header::{Attachment, Header, SessionEnd};
+pub use header::{Attachment, CameraInfo, Header, SessionEnd};
 pub use reader::Log;
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
 pub use recover::{recover, RecoverSummary};

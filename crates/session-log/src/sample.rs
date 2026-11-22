@@ -2,7 +2,8 @@
 
 use bytes::Bytes;
 use contracts::{
-    Camera, Chunk, Frame, FrameRef, Joint, JointState, JointTarget, Joints, ServoTelemetry, Source, Tick, Timestamp,
+    Camera, Chunk, Clip, Frame, FrameRef, Joint, JointState, JointTarget, Joints, Limit, ServoTelemetry, Source, Tick,
+    Timestamp,
 };
 
 use crate::{Arm, Envelope, Event};
@@ -37,8 +38,13 @@ pub fn session(t0: Timestamp) -> Vec<Envelope> {
     for slot in 0..30u32 {
         let ms = slot as u64 * 10;
         let pos = joints(slot as f32 * 0.5);
-        out.push(Envelope::new(Event::JointState(Arm::Follower, JointState { t: t(ms), pos }), slot, t(ms + 1)));
-        out.push(Envelope::new(Event::JointState(Arm::Leader, JointState { t: t(ms), pos }), slot, t(ms + 1)));
+        let ticks = Some([2048 + slot as i32, 1900, 2100, 2048, 1024, 3000]);
+        out.push(Envelope::new(Event::JointState(Arm::Follower, JointState { t: t(ms), pos, ticks }), slot, t(ms + 1)));
+        out.push(Envelope::new(
+            Event::JointState(Arm::Leader, JointState { t: t(ms), pos, ticks: None }),
+            slot,
+            t(ms + 1),
+        ));
         let joint = Joint::ALL[slot as usize % 6];
         out.push(Envelope::new(
             Event::ServoTelemetry(
@@ -69,7 +75,7 @@ pub fn session(t0: Timestamp) -> Vec<Envelope> {
             out.push(Envelope::new(
                 Event::JointTarget(
                     Arm::Follower,
-                    JointTarget { t: t(ms + 3), pos: joints(1.0), source: Source::Teleop },
+                    JointTarget { t: t(ms + 3), pos: joints(1.0), source: Source::Teleop, ticks: Some([2060; 6]) },
                 ),
                 tick,
                 t(ms + 3),
@@ -82,6 +88,12 @@ pub fn session(t0: Timestamp) -> Vec<Envelope> {
                     scene: Some(FrameRef { camera: Camera::Scene, sequence: scene_id.sequence }),
                     action: joints(1.0),
                     source: Source::Policy("ckpt-0005000".into()),
+                    requested: joints(1.4),
+                    clipped: if tick % 2 == 0 {
+                        vec![Clip { joint: Joint::ElbowFlex, limit: Limit::Step }]
+                    } else {
+                        vec![]
+                    },
                 }),
                 tick,
                 t(ms + 3),
@@ -100,7 +112,7 @@ pub fn session(t0: Timestamp) -> Vec<Envelope> {
     out.push(Envelope::new(
         Event::JointTarget(
             Arm::Follower,
-            JointTarget { t: t(300), pos: joints(0.0), source: Source::Script("home".into()) },
+            JointTarget { t: t(300), pos: joints(0.0), source: Source::Script("home".into()), ticks: None },
         ),
         10,
         t(300),

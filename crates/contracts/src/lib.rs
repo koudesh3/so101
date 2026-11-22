@@ -22,10 +22,12 @@ pub mod time;
 
 pub use camera::{Camera, Frame, FrameRef, FrameSource};
 pub use error::ContractError;
-pub use joint::{ArmDriver, Joint, JointState, JointTarget, Joints, ServoTelemetry, Source, TargetSource, JOINT_COUNT};
+pub use joint::{
+    ArmDriver, Joint, JointState, JointTarget, Joints, ServoTelemetry, Source, TargetSource, Ticks, JOINT_COUNT,
+};
 pub use log::LogDrop;
 pub use policy::{Chunk, Obs, Policy};
-pub use tick::Tick;
+pub use tick::{Clip, Limit, Tick};
 pub use time::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 
 /// The error a trait implementation returns: whatever the hardware or model layer produced.

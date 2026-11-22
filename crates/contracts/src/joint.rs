@@ -58,11 +58,19 @@ pub enum Source {
     Policy(String),
 }
 
+/// Six raw servo values (ticks), before or after calibration is applied.
+pub type Ticks = [i32; JOINT_COUNT];
+
 /// All six positions from one sync read.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointState {
     pub t: Timestamp,
+    /// Degrees. Only meaningful together with the calibration in the log header: recalibrating
+    /// changes the degrees a pose reads as, but not its ticks.
     pub pos: Joints,
+    /// The raw servo readings behind `pos`, so a log survives a recalibration. `None` if the
+    /// state didn't come from servos (a mock or replay).
+    pub ticks: Option<Ticks>,
 }
 
 /// One servo's telemetry block. Each field is `None` when it wasn't read.
@@ -84,6 +92,8 @@ pub struct JointTarget {
     pub t: Timestamp,
     pub pos: Joints,
     pub source: Source,
+    /// The raw servo goals actually written, or `None` if this target wasn't sent to servos.
+    pub ticks: Option<Ticks>,
 }
 
 /// The one writer to an arm (behind the safety wrapper, from Phase 1).
@@ -107,6 +117,21 @@ pub(crate) fn joints_from_pb(v: &[f32], what: &str) -> Result<Joints> {
     Ok(Joints(a))
 }
 
+/// Optional raw ticks: an empty list means none; otherwise exactly six.
+pub(crate) fn ticks_from_pb(v: &[i32], what: &str) -> Result<Option<Ticks>> {
+    if v.is_empty() {
+        return Ok(None);
+    }
+    let a: Ticks = v
+        .try_into()
+        .map_err(|_| ContractError::new(format!("{what}: expected 0 or {JOINT_COUNT} ticks, got {}", v.len())))?;
+    Ok(Some(a))
+}
+
+fn ticks_to_pb(t: &Option<Ticks>) -> Vec<i32> {
+    t.map(|a| a.to_vec()).unwrap_or_default()
+}
+
 impl From<Joint> for pb::Joint {
     fn from(j: Joint) -> Self {
         match j {
@@ -120,7 +145,7 @@ impl From<Joint> for pb::Joint {
     }
 }
 
-fn joint_from_pb(v: i32) -> Result<Joint> {
+pub(crate) fn joint_from_pb(v: i32) -> Result<Joint> {
     match pb::Joint::try_from(v) {
         Ok(pb::Joint::ShoulderPan) => Ok(Joint::ShoulderPan),
         Ok(pb::Joint::ShoulderLift) => Ok(Joint::ShoulderLift),
@@ -158,14 +183,18 @@ impl TryFrom<Option<pb::Source>> for Source {
 
 impl From<&JointState> for pb::JointState {
     fn from(m: &JointState) -> Self {
-        pb::JointState { t_ns: m.t.0, pos: m.pos.0.to_vec() }
+        pb::JointState { t_ns: m.t.0, pos: m.pos.0.to_vec(), ticks: ticks_to_pb(&m.ticks) }
     }
 }
 
 impl TryFrom<pb::JointState> for JointState {
     type Error = ContractError;
     fn try_from(m: pb::JointState) -> Result<Self> {
-        Ok(JointState { t: Timestamp(m.t_ns), pos: joints_from_pb(&m.pos, "JointState.pos")? })
+        Ok(JointState {
+            t: Timestamp(m.t_ns),
+            pos: joints_from_pb(&m.pos, "JointState.pos")?,
+            ticks: ticks_from_pb(&m.ticks, "JointState.ticks")?,
+        })
     }
 }
 
@@ -204,7 +233,12 @@ impl TryFrom<pb::ServoTelemetry> for ServoTelemetry {
 
 impl From<&JointTarget> for pb::JointTarget {
     fn from(m: &JointTarget) -> Self {
-        pb::JointTarget { t_ns: m.t.0, pos: m.pos.0.to_vec(), source: Some((&m.source).into()) }
+        pb::JointTarget {
+            t_ns: m.t.0,
+            pos: m.pos.0.to_vec(),
+            source: Some((&m.source).into()),
+            ticks: ticks_to_pb(&m.ticks),
+        }
     }
 }
 
@@ -215,6 +249,7 @@ impl TryFrom<pb::JointTarget> for JointTarget {
             t: Timestamp(m.t_ns),
             pos: joints_from_pb(&m.pos, "JointTarget.pos")?,
             source: m.source.try_into()?,
+            ticks: ticks_from_pb(&m.ticks, "JointTarget.ticks")?,
         })
     }
 }
@@ -225,13 +260,21 @@ mod tests {
 
     #[test]
     fn wrong_joint_count_is_rejected() {
-        let err = JointState::try_from(pb::JointState { t_ns: 1, pos: vec![1.0; 5] }).unwrap_err();
+        let err = JointState::try_from(pb::JointState { t_ns: 1, pos: vec![1.0; 5], ticks: vec![] }).unwrap_err();
         assert!(err.0.contains("expected 6"), "{err}");
     }
 
     #[test]
     fn missing_source_is_rejected() {
-        let m = pb::JointTarget { t_ns: 0, pos: vec![0.0; 6], source: None };
+        let m = pb::JointTarget { t_ns: 0, pos: vec![0.0; 6], source: None, ticks: vec![] };
         assert!(JointTarget::try_from(m).is_err());
+    }
+
+    #[test]
+    fn ticks_are_absent_or_exactly_six() {
+        let m = |ticks: Vec<i32>| pb::JointState { t_ns: 1, pos: vec![0.0; 6], ticks };
+        assert_eq!(JointState::try_from(m(vec![])).unwrap().ticks, None);
+        assert_eq!(JointState::try_from(m(vec![2048; 6])).unwrap().ticks, Some([2048; 6]));
+        assert!(JointState::try_from(m(vec![2048; 3])).is_err());
     }
 }
