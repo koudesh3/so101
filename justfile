@@ -26,3 +26,13 @@ teleop:
 meshes so_arm100:
     uv run ui/tools/build_model.py {{so_arm100}}/Simulation/SO101
     uv run ui/tools/build_servo.py {{so_arm100}}/Simulation/SO101
+
+# Push this commit to the Spark and run a recipe there, e.g. `just spark check` (only committed work goes)
+spark *args:
+    @git diff --quiet HEAD || echo "note: uncommitted changes stay on this machine"
+    git push -q spark HEAD:main
+    ssh -t spark 'cd /projects/so101 && ~/.local/bin/mise exec -- just {{args}}'
+
+# Run the LeRobot wrapper on the Spark, e.g. `just act devices` (see ops/README.md)
+act *args:
+    ssh -t spark act {{args}}

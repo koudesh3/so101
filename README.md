@@ -22,7 +22,7 @@ ui/              what a person looks at in the browser; no build step
                      teleop events, replays a byte log as events, renders a byte log as an HTML report
 data/            what isn't code
   calibration/       the leader's and follower's calibration files (in git)
-  robot.conf         the Spark's arm ports and camera settings, as used by ops/spark/act
+  robot.conf         the Spark's arm ports and camera settings (the Spark reads it from its checkout)
   logs/              recorded byte logs from teleop runs (not in git)
 ops/             running the Spark, where the arms and cameras are plugged in: the `act` wrapper
                  around LeRobot, and the camera characterisation (see its README)
@@ -70,6 +70,9 @@ so101 calibrate --port <follower port> --arm-id follower --out follower.json
 so101 --log run.jsonl teleop --leader <port> --follower <port> \
   --leader-calibration leader.json --follower-calibration follower.json --serve
 ```
+
+The arms and cameras are plugged into the Spark: `just spark <recipe>` runs any of these there
+(see [ops/README.md](ops/README.md)).
 
 `just teleop` runs the last of these with the files in `data/calibration/`, logging to `data/logs/`, taking the ports from
 `LEADER` and `FOLLOWER`.
