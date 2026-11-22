@@ -1,8 +1,7 @@
 # so101
 
 A from-scratch Rust driver and teleoperation loop for the LeRobot SO-101 leader and follower arms,
-written to learn how they work. The post that goes with it:
-[Teleoperation from Zero](https://nofreelun.ch/posts/teleop-from-zero.html).
+written to learn how they work.
 
 ## Layout
 
@@ -16,8 +15,6 @@ src/
   main.rs        the `so101` command line
 tests/           end-to-end tests against the simulated servos
 calibration/     the leader's and follower's calibration files
-episodes/        grab1, the recorded episode the post's figures are drawn from (a gzipped byte log)
-figures/         scripts that draw the post's figures (see its README)
 tools/           build the dashboard's arm and servo meshes from the SO-ARM100 model
 ```
 
