@@ -1,6 +1,6 @@
 //! The contracts every part of the robot speaks (docs/phase0.md).
 //!
-//! - [`pb`]: the protobuf messages generated from `proto/`, the single definition of everything
+//! - [`pb`]: the protobuf messages generated from `src/proto/`, the single definition of everything
 //!   that lands in a log. Only the log (and later the Python bindings) should touch these.
 //! - The domain types ([`JointState`], [`Frame`], [`Tick`], ...): fixed arrays and validated
 //!   fields, with conversions to and from [`pb`]. Traits and the rest of the code use these.

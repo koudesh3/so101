@@ -628,6 +628,10 @@ fn a_late_eeprom_ack_does_not_leak_into_the_next_transaction() {
 fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
     // The leader's pan trembles 4 ticks (0.35 deg) at 8 Hz: a hand held still.
     // With 70 ms of lead the commanded goal must not shake more than without.
+    // Known flaky (about 1 run in 6 on a busy machine, seen 2026-11-22): the simulated hand
+    // trembles on wall-clock time while teleop ticks in real time, so how much tremor each tick
+    // samples depends on OS wake-ups. Phase 1 moves teleop onto the Clock trait; on a simulated
+    // clock this becomes deterministic. Don't loosen the assertion to hide it.
     let spread = |lead_ms: u64| {
         let hand: drivers::arm::so101::sim::Hand = Arc::new(|id: u8, t: f64| {
             Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 })

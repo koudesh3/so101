@@ -16,7 +16,7 @@ check-py:
     set -euo pipefail
     d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
     cargo run -q -p session-log --example write_sample -- "$d/sample.mcap" >/dev/null
-    uv run -q src/robot/log/tests/read_log.py "$d/sample.mcap"
+    uv run -q src/robot/session-log/tests/read_log.py "$d/sample.mcap"
 
 # Refresh the so101.v1 schema snapshot after an allowed (additive) .proto change
 proto-snapshot:

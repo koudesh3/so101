@@ -9,11 +9,13 @@ All code is under `src/`, split by what it does rather than by language:
 
 ```
 src/
+  proto/           the messages every part speaks, in protobuf (so101/v1), shared by every
+                   language; Foxglove's image message; the frozen schema snapshot
   robot/           runs the arm (Rust). Each crate depends only on the ones above it:
-    contracts/       the messages every part speaks (protobuf, proto/so101/v1), the monotonic
+    contracts/       the Rust side of the messages (generated from src/proto), the monotonic
                      clock, and the traits: ArmDriver, FrameSource, TargetSource, Policy
-    log/             the event bus and the session log (MCAP): recorder, reader with drop
-                     detection, replay, recovery (package `session-log`)
+    session-log/     the event bus and the session log (MCAP): recorder, reader with drop
+                     detection, replay, recovery
     drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
                      STS3215 control table, the serial transport and byte log, one servo bus (real
                      or simulated), the six joints, calibration, an arm

@@ -2,7 +2,7 @@
 
 Status: built, 2026-11-22. Implements Phase 0 of [part2-spec.md](part2-spec.md).
 
-Built as designed, in `src/robot/contracts` and `src/robot/log`, with three differences: the log
+Built as designed, in `src/robot/contracts` and `src/robot/session-log`, with three differences: the log
 crate's package is named `session-log` (`log` clashes with the widely used crate of that name);
 the reader loads a whole file into memory (streaming reads can come when logs get long); and
 recovery keeps whole messages from a truncated chunk too, so a cut file loses less than its last
@@ -25,7 +25,7 @@ names come last, as the implementation of those promises.
   message.
 - Every file embeds the exact schema each message was written with, so Python and Foxglove decode
   any log, old or new, without generated code.
-- The `.proto` files in `contracts` (package `so101.v1`) are the single definition of every logged
+- The `.proto` files in `src/proto` (package `so101.v1`) are the single definition of every logged
   message. Evolution rules: never reuse or renumber a field; removed fields become `reserved`;
   breaking changes go in `so101.v2`. A test compares the compiled schemas against a frozen snapshot
   in the repo, so a breaking change fails `just check`.
@@ -183,13 +183,15 @@ What we encode is only the log. Everything else is someone else's format, read w
 | Policy (`act.onnx`) | ONNX (itself protobuf, but `ort` reads it; it never touches our contracts) | ONNX |
 
 ```
+src/proto/                     shared by every language in the repo
+  so101/v1/*.proto             the messages
+  foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
+  so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
 src/robot/contracts/
-  proto/so101/v1/*.proto       the messages
-  proto/foxglove/              CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
   src/pb.rs                    generated types (only `log`, and later the PyO3 crate, use them)
   src/*.rs                     domain types, From/TryFrom conversions, Clock, traits
-src/robot/log/
+src/robot/session-log/
   bus, recorder, reader, replay clock, recover
 ```
 

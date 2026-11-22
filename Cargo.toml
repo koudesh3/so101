@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "src/robot/contracts",
-    "src/robot/log",
+    "src/robot/session-log",
     "src/robot/drivers",
     "src/robot/control",
     "src/robot/cli",
@@ -17,7 +17,7 @@ repository = "https://github.com/koudesh3/so101"
 
 [workspace.dependencies]
 contracts = { path = "src/robot/contracts" }
-session-log = { path = "src/robot/log" }
+session-log = { path = "src/robot/session-log" }
 drivers = { path = "src/robot/drivers" }
 control = { path = "src/robot/control" }
 web-server = { path = "src/web/server" }
