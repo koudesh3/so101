@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
-    "robot/drivers",
-    "robot/control",
-    "robot/cli",
-    "ui/server",
+    "src/robot/drivers",
+    "src/robot/control",
+    "src/robot/cli",
+    "src/web/server",
 ]
 
 [workspace.package]
@@ -14,9 +14,9 @@ license = "MIT"
 repository = "https://github.com/koudesh3/so101"
 
 [workspace.dependencies]
-drivers = { path = "robot/drivers" }
-control = { path = "robot/control" }
-ui-server = { path = "ui/server" }
+drivers = { path = "src/robot/drivers" }
+control = { path = "src/robot/control" }
+web-server = { path = "src/web/server" }
 serialport = { version = "4", default-features = false }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

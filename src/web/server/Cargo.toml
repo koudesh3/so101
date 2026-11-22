@@ -1,5 +1,5 @@
 [package]
-name = "ui-server"
+name = "web-server"
 description = "Backend for the browser apps: serves them, streams live teleop events, replays byte logs, renders HTML reports"
 version.workspace = true
 edition.workspace = true

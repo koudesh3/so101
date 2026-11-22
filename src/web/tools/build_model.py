@@ -8,15 +8,15 @@
 Reads TheRobotStudio's URDFs and STLs (Apache-2.0,
 https://github.com/TheRobotStudio/SO-ARM100, Simulation/SO101) and writes:
 
-  ui/assets/model.bin   every mesh, decimated, as interleaved vertices + indices
-  ui/assets/model.json  the kinematic tree of both arms and where each mesh sits
+  src/web/assets/model.bin   every mesh, decimated, as interleaved vertices + indices
+  src/web/assets/model.json  the kinematic tree of both arms and where each mesh sits
 
 Vertex layout, 20 bytes: position f32x3 | shading normal i8x3 + pad | hull normal i8x3 + pad.
 The shading normal is crease-aware (faces meeting at more than CREASE_DEG keep
 their own normal), so cel bands break cleanly at CAD edges. The hull normal is
 fully smoothed, so the outline pass can push the surface out without cracks.
 
-usage: uv run ui/tools/build_model.py path/to/SO-ARM100/Simulation/SO101
+usage: uv run src/web/tools/build_model.py path/to/SO-ARM100/Simulation/SO101
 needs: numpy, fast_simplification
 """
 import json

@@ -13,7 +13,7 @@ use drivers::arm::so101::registers;
 use drivers::arm::so101::sim::{SimClock, SimulatedBus};
 use control::teleop::{self, TeleopOptions};
 use drivers::arm::so101::transport::{read_log, ByteLog, Recorder};
-use ui_server::visualize;
+use web_server::visualize;
 use drivers::Error;
 
 fn sim_bus(name: &str) -> Bus {
@@ -279,7 +279,7 @@ fn teleop_with_telemetry_reports_one_servo_per_tick_in_rotation() {
 
 #[test]
 fn replay_rebuilds_the_ticks_the_live_loop_reported() {
-    use ui_server::replay::events_from_log;
+    use web_server::replay::events_from_log;
     let dir = std::env::temp_dir().join(format!("so101-replay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let log_path = dir.join("bytes.jsonl");
@@ -317,7 +317,7 @@ fn replay_rebuilds_the_ticks_the_live_loop_reported() {
 
 #[test]
 fn dashboard_serves_page_model_and_events() {
-    use ui_server::live::{serve, Hub};
+    use web_server::live::{serve, Hub};
     use std::io::{Read, Write};
     let hub = Hub::new();
     hub.set_hello(r#"{"k":"hello"}"#.to_string());

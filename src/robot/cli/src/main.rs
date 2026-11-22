@@ -17,8 +17,8 @@ use control::teleop::{self, TeleopOptions};
 use control::ticker::Ticker;
 use drivers::arm::so101::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
 use drivers::arm::so101::sim::demo;
-use ui_server::live::{self, Hub, Tap};
-use ui_server::{replay, visualize};
+use web_server::live::{self, Hub, Tap};
+use web_server::{replay, visualize};
 use drivers::{Error, Result};
 
 #[derive(Parser)]

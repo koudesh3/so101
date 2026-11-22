@@ -5,29 +5,32 @@ written to learn how they work.
 
 ## Layout
 
-Split by what each part does, not by language:
+All code is under `src/`, split by what it does rather than by language:
 
 ```
-robot/           runs the arm. Each crate depends only on the ones above it:
-  drivers/           hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
+src/
+  robot/           runs the arm (Rust). Each crate depends only on the ones above it:
+    drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
                      STS3215 control table, the serial transport and byte log, one servo bus (real
                      or simulated), the six joints, calibration, an arm
-  control/           the fixed-rate ticker, the calibration sweep, the teleop loop
-  cli/               the `so101` command line, and the end-to-end tests against the simulated servos
-ui/              what a person looks at in the browser; no build step
-  dashboard/         the live dashboard and its replay mode
-  viewer/            one arm, or the servo alone, in 3D
-  assets/            the arm and servo meshes, built by tools/ from the SO-ARM100 model
-  server/            the Rust backend: serves these apps (embedded in the binary), streams live
+    control/         the fixed-rate ticker, the calibration sweep, the teleop loop
+    cli/             the `so101` command line, and the end-to-end tests against the simulated servos
+  web/             what a person looks at in the browser; no build step
+    dashboard/       the live dashboard and its replay mode
+    viewer/          one arm, or the servo alone, in 3D
+    assets/          the arm and servo meshes, built by tools/ from the SO-ARM100 model
+    server/          the Rust backend: serves these apps (embedded in the binary), streams live
                      teleop events, replays a byte log as events, renders a byte log as an HTML report
+  ml/              the LeRobot side
+    act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
 data/            what isn't code
   calibration/       the leader's and follower's calibration files (in git)
-  robot.conf         the Spark's arm ports and camera settings (the Spark reads it from its checkout)
+  robot.conf         the Spark's arm ports and camera settings, read by `act`
   logs/              recorded byte logs from teleop runs (not in git)
-ops/             running the Spark, where the arms and cameras are plugged in: the `act` wrapper
-                 around LeRobot, and the camera characterisation (see its README)
-docs/            part2-spec.md, the plan for Part 2
-Cargo.toml       one Cargo workspace over robot/ and ui/server
+docs/
+  part2-spec.md      the plan for Part 2
+  devlog/            dated entries: what was tried, how, and what it showed
+Cargo.toml       one Cargo workspace over src/robot and src/web/server
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
 
@@ -37,17 +40,17 @@ Part 2 ([the spec](docs/part2-spec.md)) turns this into a single-arm robot that 
 grasp and place, scripted transits between pegs, and a sequencer over a catalog of skills. New
 parts arrive with the phase that needs them, not before:
 
-- `robot/contracts`: the message types (JointState, JointTarget, Frame, Obs, Chunk, ...),
+- `src/robot/contracts`: the message types (JointState, JointTarget, Frame, Obs, Chunk, ...),
   the clock, and the traits every module implements (ArmDriver, FrameSource, Policy, Skill,
   Check, Sequencer)
-- `robot/log`: the event bus, recorder and reader; everything is logged and replayable
+- `src/robot/log`: the event bus, recorder and reader; everything is logged and replayable
 - `drivers` grows mock and replay arms, the leader as a target source, and USB cameras (Linux only)
 - `control` grows the safety wrapper, the target mux and the action queue
-- `robot/runtime`: skills, checks, the step runner, and the Hanoi sequencer
-- `robot/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
+- `src/robot/runtime`: skills, checks, the step runner, and the Hanoi sequencer
+- `src/robot/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
   needs a GPU
-- `robot/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
-- `ml/`: training with LeRobot, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
+- `src/robot/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
+- `src/ml/` grows training, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
 
 The calibration moves to LeRobot's file format and units (degrees, gripper 0-100) at the same time.
 
@@ -61,7 +64,7 @@ just check        # clippy and the tests, against simulated servos
 just sim          # teleop the simulated arms, no hardware
 ```
 
-With hardware (`so101` is the binary `cargo install --path robot/cli` puts on your path),
+With hardware (`so101` is the binary `cargo install --path src/robot/cli` puts on your path),
 calibrate each arm, then teleoperate; `--serve` opens the dashboard at http://127.0.0.1:7878:
 
 ```
@@ -71,11 +74,22 @@ so101 --log run.jsonl teleop --leader <port> --follower <port> \
   --leader-calibration leader.json --follower-calibration follower.json --serve
 ```
 
-The arms and cameras are plugged into the Spark: `just spark <recipe>` runs any of these there
-(see [ops/README.md](ops/README.md)).
-
 `just teleop` runs the last of these with the files in `data/calibration/`, logging to `data/logs/`, taking the ports from
 `LEADER` and `FOLLOWER`.
+
+## The Spark
+
+The arms and cameras are plugged into a DGX Spark (Ubuntu aarch64), which also trains and runs
+ACT. It's driven from the laptop over SSH (`Host spark`); nothing is edited on it.
+
+- It has its own checkout at `/projects/so101`, updated by pushing from the laptop (the `spark`
+  git remote; the Spark needs no GitHub access). Commit, then `just spark <recipe>` pushes and runs
+  the recipe there, so every run on the Spark is at a known commit. The checkout refuses a push if
+  it has local edits.
+- `just act <command>` runs `src/ml/act` there (`just act help` lists the commands). On the Spark,
+  `~/.local/bin/act` and `/projects/robot.conf` are symlinks into the checkout.
+- Everything else lives under `/projects` too: `lerobot` (LeRobot and its environment), `datasets`
+  and `runs` (written by `act`), `spikes` (finished spikes, with their large files), `archive`.
 
 ## Licence
 
