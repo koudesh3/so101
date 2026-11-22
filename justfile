@@ -16,7 +16,7 @@ check-py:
     set -euo pipefail
     d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
     cargo run -q -p session-log --example write_sample -- "$d/sample.mcap" >/dev/null
-    uv run -q src/robot/session-log/tests/read_log.py "$d/sample.mcap"
+    uv run -q crates/session-log/tests/read_log.py "$d/sample.mcap"
 
 # Refresh the so101.v1 schema snapshot after an allowed (additive) .proto change
 proto-snapshot:
@@ -40,10 +40,10 @@ teleop:
       --leader "$LEADER" --follower "$FOLLOWER" \
       --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json --serve
 
-# Rebuild src/web/assets from a checkout of TheRobotStudio's SO-ARM100 repo
+# Rebuild web/assets from a checkout of TheRobotStudio's SO-ARM100 repo
 meshes so_arm100:
-    uv run src/web/tools/build_model.py {{so_arm100}}/Simulation/SO101
-    uv run src/web/tools/build_servo.py {{so_arm100}}/Simulation/SO101
+    uv run web/tools/build_model.py {{so_arm100}}/Simulation/SO101
+    uv run web/tools/build_servo.py {{so_arm100}}/Simulation/SO101
 
 # Push this commit to the Spark and run a recipe there, e.g. `just spark check` (only committed work goes)
 spark *args:

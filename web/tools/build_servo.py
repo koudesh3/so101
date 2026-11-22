@@ -12,10 +12,10 @@ This writes both shells undecimated, with the same vertex layout and the same
 crease-aware and hull normals as build_model.py, for the dashboard and the
 viewer to draw in place of model.bin's copies:
 
-  src/web/assets/servo.bin    each mesh's vertices then uint32 indices
-  src/web/assets/servo.json   {"stride", "meshes": {name: {v_off, v_count, i_off, i_count}}}
+  web/assets/servo.bin    each mesh's vertices then uint32 indices
+  web/assets/servo.json   {"stride", "meshes": {name: {v_off, v_count, i_off, i_count}}}
 
-usage: uv run src/web/tools/build_servo.py path/to/SO-ARM100/Simulation/SO101
+usage: uv run web/tools/build_servo.py path/to/SO-ARM100/Simulation/SO101
 needs: numpy
 """
 import json

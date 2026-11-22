@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-// The .proto files live in src/proto, shared by every language in the repo.
+// The .proto files live in proto/ at the repo root, shared by every language in the repo.
 const ROOT: &str = "../../proto";
 const PROTOS: [&str; 2] = ["../../proto/so101/v1/messages.proto", "../../proto/foxglove/CompressedImage.proto"];
 

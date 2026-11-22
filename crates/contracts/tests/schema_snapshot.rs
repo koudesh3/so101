@@ -1,5 +1,5 @@
 //! Contract 1: logs stay readable forever. The compiled so101.v1 schemas must stay
-//! wire-compatible with the frozen snapshot in `src/proto/so101.v1.snapshot.binpb`.
+//! wire-compatible with the frozen snapshot in `proto/so101.v1.snapshot.binpb`.
 //!
 //! Allowed: new messages, new fields, new enum values. Not allowed: changing a field's number,
 //! name, type or label; removing a field or enum value without reserving it.
@@ -109,7 +109,7 @@ fn so101_v1_stays_wire_compatible() {
         eprintln!("wrote {}", snapshot_path().display());
     }
     let bytes = std::fs::read(snapshot_path())
-        .expect("src/proto/so101.v1.snapshot.binpb is missing; create it with SO101_UPDATE_PROTO_SNAPSHOT=1");
+        .expect("proto/so101.v1.snapshot.binpb is missing; create it with SO101_UPDATE_PROTO_SNAPSHOT=1");
     let old = FileDescriptorSet::decode(bytes.as_slice()).expect("snapshot decodes");
 
     let mut problems = Vec::new();

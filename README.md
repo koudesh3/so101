@@ -5,38 +5,35 @@ written to learn how they work.
 
 ## Layout
 
-All code is under `src/`, split by what it does rather than by language:
-
 ```
-src/
-  proto/           the messages every part speaks, in protobuf (so101/v1), shared by every
-                   language; Foxglove's image message; the frozen schema snapshot
-  robot/           runs the arm (Rust). Each crate depends only on the ones above it:
-    contracts/       the Rust side of the messages (generated from src/proto), the monotonic
-                     clock, and the traits: ArmDriver, FrameSource, TargetSource, Policy
-    session-log/     the event bus and the session log (MCAP): recorder, reader with drop
-                     detection, replay, recovery
-    drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
-                     STS3215 control table, the serial transport and byte log, one servo bus (real
-                     or simulated), the six joints, calibration, an arm
-    control/         the fixed-rate ticker, the calibration sweep, the teleop loop
-    cli/             the `so101` command line, and the end-to-end tests against the simulated servos
-  web/             what a person looks at in the browser; no build step
-    dashboard/       the live dashboard and its replay mode
-    viewer/          one arm, or the servo alone, in 3D
-    assets/          the arm and servo meshes, built by tools/ from the SO-ARM100 model
-    server/          the Rust backend: serves these apps (embedded in the binary), streams live
-                     teleop events, replays a byte log as events, renders a byte log as an HTML report
-  ml/              the LeRobot side
-    act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
+crates/          the Rust code: one Cargo workspace. Each crate depends only on the ones above it:
+  contracts/       the Rust side of the messages (generated from proto/), the monotonic clock,
+                   and the traits: ArmDriver, FrameSource, TargetSource, Policy
+  session-log/     the event bus and the session log (MCAP): recorder, reader with drop
+                   detection, replay, recovery
+  drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
+                   STS3215 control table, the serial transport and byte log, one servo bus (real
+                   or simulated), the six joints, calibration, an arm
+  control/         the fixed-rate ticker, the calibration sweep, the teleop loop
+  web-server/      the backend for web/: serves the apps (embedded in the binary), streams live
+                   teleop events, replays a byte log as events, renders a byte log as an HTML report
+  cli/             the `so101` command line, and the end-to-end tests against the simulated servos
+web/             what a person looks at in the browser; no build step
+  dashboard/       the live dashboard and its replay mode
+  viewer/          one arm, or the servo alone, in 3D
+  assets/          the arm and servo meshes, built by tools/ from the SO-ARM100 model
+ml/              the LeRobot side
+  act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
+proto/           the messages every part speaks, in protobuf (so101/v1), shared by every
+                 language; Foxglove's image message; the frozen schema snapshot
 data/            what isn't code
-  calibration/       the leader's and follower's calibration files (in git)
-  robot.conf         the Spark's arm ports and camera settings, read by `act`
-  logs/              recorded byte logs from teleop runs (not in git)
+  calibration/     the leader's and follower's calibration files (in git)
+  robot.conf       the Spark's arm ports and camera settings, read by `act`
+  logs/            recorded logs from runs (not in git)
 docs/
-  part2-spec.md      the plan for Part 2
-  devlog/            dated entries: what was tried, how, and what it showed
-Cargo.toml       one Cargo workspace over src/robot and src/web/server
+  part2-spec.md    the plan for Part 2
+  phase0.md        the Phase 0 design: the contracts and the log
+  devlog/          dated entries: what was tried, how, and what it showed
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
 
@@ -50,11 +47,11 @@ parts arrive with the phase that needs them, not before:
   sequencer traits, and their messages, arrive in Phase 3
 - `drivers` grows mock and replay arms, the leader as a target source, and USB cameras (Linux only)
 - `control` grows the safety wrapper, the target mux and the action queue
-- `src/robot/runtime`: skills, checks, the step runner, and the Hanoi sequencer
-- `src/robot/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
+- `crates/runtime`: skills, checks, the step runner, and the Hanoi sequencer
+- `crates/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
   needs a GPU
-- `src/robot/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
-- `src/ml/` grows training, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
+- `crates/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
+- `ml/` grows training, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
 
 The calibration moves to LeRobot's file format and units (degrees, gripper 0-100) at the same time.
 
@@ -68,7 +65,7 @@ just check        # formatting, clippy, the tests (simulated servos), and Python
 just sim          # teleop the simulated arms, no hardware
 ```
 
-With hardware (`so101` is the binary `cargo install --path src/robot/cli` puts on your path),
+With hardware (`so101` is the binary `cargo install --path crates/cli` puts on your path),
 calibrate each arm, then teleoperate; `--serve` opens the dashboard at http://127.0.0.1:7878:
 
 ```
@@ -90,7 +87,7 @@ ACT. It's driven from the laptop over SSH (`Host spark`); nothing is edited on i
   git remote; the Spark needs no GitHub access). Commit, then `just spark <recipe>` pushes and runs
   the recipe there, so every run on the Spark is at a known commit. The checkout refuses a push if
   it has local edits.
-- `just act <command>` runs `src/ml/act` there (`just act help` lists the commands). On the Spark,
+- `just act <command>` runs `ml/act` there (`just act help` lists the commands). On the Spark,
   `~/.local/bin/act` and `/projects/robot.conf` are symlinks into the checkout.
 - Everything else lives under `/projects` too: `lerobot` (LeRobot and its environment), `datasets`
   and `runs` (written by `act`), `spikes` (finished spikes, with their large files), `archive`.

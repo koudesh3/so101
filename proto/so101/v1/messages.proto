@@ -4,7 +4,7 @@
 // - Positions are degrees, LeRobot's units; the gripper is 0-100.
 // - Joint arrays have exactly six entries, in LeRobot's order: shoulder_pan, shoulder_lift,
 //   elbow_flex, wrist_flex, wrist_roll, gripper.
-// - Camera frames are foxglove.CompressedImage (src/proto/foxglove), not a message here.
+// - Camera frames are foxglove.CompressedImage (proto/foxglove), not a message here.
 //
 // Evolution rules (contract 1): never reuse or renumber a field; removed fields become
 // `reserved`; breaking changes go in so101.v2. The schema snapshot test enforces this.

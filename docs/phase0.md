@@ -2,7 +2,7 @@
 
 Status: built, 2026-11-22. Implements Phase 0 of [part2-spec.md](part2-spec.md).
 
-Built as designed, in `src/robot/contracts` and `src/robot/session-log`, with three differences: the log
+Built as designed, in `crates/contracts` and `crates/session-log`, with three differences: the log
 crate's package is named `session-log` (`log` clashes with the widely used crate of that name);
 the reader loads a whole file into memory (streaming reads can come when logs get long); and
 recovery keeps whole messages from a truncated chunk too, so a cut file loses less than its last
@@ -25,7 +25,7 @@ names come last, as the implementation of those promises.
   message.
 - Every file embeds the exact schema each message was written with, so Python and Foxglove decode
   any log, old or new, without generated code.
-- The `.proto` files in `src/proto` (package `so101.v1`) are the single definition of every logged
+- The `.proto` files in `proto` (package `so101.v1`) are the single definition of every logged
   message. Evolution rules: never reuse or renumber a field; removed fields become `reserved`;
   breaking changes go in `so101.v2`. A test compares the compiled schemas against a frozen snapshot
   in the repo, so a breaking change fails `just check`.
@@ -86,7 +86,7 @@ So a converted episode matches what the policy or operator actually acted on, by
   sequence gap in the joint stream, and the log says exactly when it happened. The 30 Hz tick runs
   on every third or fourth slot of the same grid; if its slot is skipped, that `Tick` is skipped
   too, and shows up as a gap in the tick stream.
-- Today's `Ticker` (`src/robot/control`) is already grid-based but starts a slot late when the
+- Today's `Ticker` (`crates/control`) is already grid-based but starts a slot late when the
   work overruns into its window; Phase 1 changes it to this rule.
 
 ### Rates, as measured
@@ -171,7 +171,7 @@ header's host and clock source keep the two from being confused. Names follow
 | Encoding | Protobuf on every channel, frames as vendored `foxglove.CompressedImage` | Versioned messages shared by Rust and Python |
 | Rust types | A thin domain layer in `contracts` over the generated types | Fixed `[f32; 6]` arrays and validation; traits never see generated types |
 | Concurrency | Plain threads, blocking calls, no async | Matches the existing code; nothing needs async |
-| LeRobot | Our log, plus a converter to LeRobotDataset v3 (`src/ml/export`, Phase 4) | LeRobot's format can't hold real timestamps, servo-rate state, the original JPEGs or async events, and its writer isn't crash-safe |
+| LeRobot | Our log, plus a converter to LeRobotDataset v3 (`ml/export`, Phase 4) | LeRobot's format can't hold real timestamps, servo-rate state, the original JPEGs or async events, and its writer isn't crash-safe |
 
 What we encode is only the log. Everything else is someone else's format, read with their tools:
 
@@ -183,18 +183,18 @@ What we encode is only the log. Everything else is someone else's format, read w
 | Policy (`act.onnx`) | ONNX (itself protobuf, but `ort` reads it; it never touches our contracts) | ONNX |
 
 ```
-src/proto/                     shared by every language in the repo
+proto/                     shared by every language in the repo
   so101/v1/*.proto             the messages
   foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
-src/robot/contracts/
+crates/contracts/
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
   src/pb.rs                    generated types (only `log`, and later the PyO3 crate, use them)
   src/joint.rs, camera.rs,     one module per concept: its domain types, their protobuf conversions,
       tick.rs, policy.rs,      and the trait that produces or consumes them. A later phase adds
       log.rs                   modules (step.rs, check.rs, ...) rather than growing these
   src/time.rs                  Timestamp, MonotonicClock, ReplayClock
-src/robot/session-log/
+crates/session-log/
   bus, event (topics), recorder, raw (MCAP parsing), reader, drops, replay, recover
 ```
 

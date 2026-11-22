@@ -5,7 +5,7 @@
 """Contract 1: a log is readable from Python with no generated code. Decodes every message of
 the sample session (examples/write_sample.rs) using only the schemas embedded in the file.
 
-usage: uv run src/robot/session-log/tests/read_log.py SAMPLE.mcap
+usage: uv run crates/session-log/tests/read_log.py SAMPLE.mcap
 """
 import sys
 from collections import Counter

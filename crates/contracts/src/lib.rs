@@ -9,7 +9,7 @@
 //! - [`policy`]: observations, chunks; [`Policy`] (contract 4)
 //! - [`log`]: messages about the log itself
 //! - [`time`]: one monotonic time base, real or replayed
-//! - [`pb`]: the protobuf messages generated from `src/proto/`, the single definition of
+//! - [`pb`]: the protobuf messages generated from `proto/`, the single definition of
 //!   everything that lands in a log. Only the log (and later the Python bindings) use them.
 
 pub mod camera;
