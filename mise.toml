@@ -1,4 +1,4 @@
 [tools]
-rust = "1.90"
+rust = { version = "1.90", components = "clippy,rustfmt" }
 just = "latest"
 uv = "latest"
