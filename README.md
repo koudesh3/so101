@@ -21,7 +21,9 @@ ui/              what a person looks at in the browser; no build step
   dashboard/         the live dashboard and its replay mode
   viewer/            one arm, or the servo alone, in 3D
   assets/            the arm and servo meshes, built by tools/ from the SO-ARM100 model
-calibration/     the leader's and follower's calibration files
+data/            what isn't code
+  calibration/       the leader's and follower's calibration files (in git)
+  logs/              recorded byte logs from teleop runs (not in git)
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
 
@@ -65,7 +67,7 @@ so101 --log run.jsonl teleop --leader <port> --follower <port> \
   --leader-calibration leader.json --follower-calibration follower.json --serve
 ```
 
-`just teleop` runs the last of these with the files in `calibration/`, taking the ports from
+`just teleop` runs the last of these with the files in `data/calibration/`, logging to `data/logs/`, taking the ports from
 `LEADER` and `FOLLOWER`.
 
 ## Licence
