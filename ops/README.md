@@ -16,7 +16,7 @@ commit. The checkout refuses a push if it has local edits, so don't edit files o
   `ssh spark act help` lists the commands.
 - `camspike/`: the camera characterisation from 2026-11-21 (frame rate, drops, latency, exposure,
   control persistence), with the logs it produced. The C tools build with `gcc -O2`; compiled
-  binaries, captured frames and images stay on the Spark in `~/camspike`.
+  binaries, captured frames and images stay on the Spark in `/projects/spikes/camspike`.
   - `run.sh`, `sweep.sh`, `v4l2probe.c`: the wrist camera (Innomaker U20CAM), every mode, then 10-minute runs
   - `cam2/`: the scene camera (icSpring): modes, auto-exposure frame drops, the AE-priority probe
   - `both.sh`: both cameras streaming at once on one hub
