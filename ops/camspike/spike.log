@@ -1,0 +1,566 @@
+== host
+Linux spark 7.0.0-1025-nvidia #26~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue Nov  3 19:27:25 UTC 2 aarch64 aarch64 aarch64 GNU/Linux
+2026-11-21T21:39:00-07:00
+== device /dev/video0
+usb sysfs path: /sys/devices/platform/NVDA8000:00/usb1/1-1/1-1.4  (bus-port chain: 1-1.4)  speed: 480 Mb/s
+== lsusb -t
+/:  Bus 001.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+    |__ Port 001: Dev 002, If 0, Class=Hub, Driver=hub/4p, 480M
+        |__ Port 004: Dev 003, If 0, Class=Video, Driver=uvcvideo, 480M
+        |__ Port 004: Dev 003, If 1, Class=Video, Driver=uvcvideo, 480M
+/:  Bus 002.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+    |__ Port 001: Dev 002, If 0, Class=Hub, Driver=hub/4p, 5000M
+/:  Bus 003.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+/:  Bus 004.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+/:  Bus 005.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+/:  Bus 006.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+/:  Bus 007.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+/:  Bus 008.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+/:  Bus 009.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 480M
+/:  Bus 010.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+/:  Bus 011.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/2p, 480M
+    |__ Port 002: Dev 002, If 0, Class=Wireless, Driver=btusb, 480M
+    |__ Port 002: Dev 002, If 1, Class=Wireless, Driver=btusb, 480M
+    |__ Port 002: Dev 002, If 2, Class=Wireless, Driver=btusb, 480M
+/:  Bus 012.Port 001: Dev 001, Class=root_hub, Driver=xhci-hcd/1p, 20000M/x2
+== lsusb -v (camera)
+
+Bus 001 Device 003: ID 0c45:6366 Microdia Webcam Vitade AF
+Device Descriptor:
+  bLength                18
+  bDescriptorType         1
+  bcdUSB               2.00
+  bDeviceClass          239 Miscellaneous Device
+  bDeviceSubClass         2 [unknown]
+  bDeviceProtocol         1 Interface Association
+  bMaxPacketSize0        64
+  idVendor           0x0c45 Microdia
+  idProduct          0x6366 Webcam Vitade AF
+  bcdDevice            1.00
+  iManufacturer           2 Innomaker
+  iProduct                1 Innomaker-U20CAM-1080p-S1
+  iSerial                 3 SN0001
+  bNumConfigurations      1
+  Configuration Descriptor:
+    bLength                 9
+    bDescriptorType         2
+    wTotalLength       0x02b9
+    bNumInterfaces          2
+    bConfigurationValue     1
+    iConfiguration          0 
+    bmAttributes         0x80
+      (Bus Powered)
+    MaxPower              500mA
+    Interface Association:
+      bLength                 8
+      bDescriptorType        11
+      bFirstInterface         0
+      bInterfaceCount         2
+      bFunctionClass         14 Video
+      bFunctionSubClass       3 Video Interface Collection
+      bFunctionProtocol       0 
+      iFunction               5 
+    Interface Descriptor:
+      bLength                 9
+      bDescriptorType         4
+      bInterfaceNumber        0
+      bAlternateSetting       0
+      bNumEndpoints           1
+      bInterfaceClass        14 Video
+      bInterfaceSubClass      1 Video Control
+      bInterfaceProtocol      0 
+      iInterface              5 
+      VideoControl Interface Descriptor:
+        bLength                13
+        bDescriptorType        36
+        bDescriptorSubtype      1 (HEADER)
+        bcdUVC               1.00
+        wTotalLength       0x004f
+        dwClockFrequency       15.000000MHz
+        bInCollection           1
+        baInterfaceNr( 0)       1
+      VideoControl Interface Descriptor:
+        bLength                 9
+        bDescriptorType        36
+        bDescriptorSubtype      3 (OUTPUT_TERMINAL)
+        bTerminalID             4
+        wTerminalType      0x0101 USB Streaming
+        bAssocTerminal          0
+        bSourceID               3
+        iTerminal               0 
+      VideoControl Interface Descriptor:
+        bLength                28
+        bDescriptorType        36
+        bDescriptorSubtype      6 (EXTENSION_UNIT)
+        bUnitID                 3
+        guidExtensionCode         {28f03370-6311-4a2e-ba2c-6890eb334016}
+        bNumControls           24
+        bNrInPins               1
+        baSourceID( 0)          2
+        bControlSize            3
+        bmControls( 0)       0x9f
+        bmControls( 1)       0x00
+        bmControls( 2)       0x07
+        iExtension              0 
+      VideoControl Interface Descriptor:
+        bLength                18
+        bDescriptorType        36
+        bDescriptorSubtype      2 (INPUT_TERMINAL)
+        bTerminalID             1
+        wTerminalType      0x0201 Camera Sensor
+        bAssocTerminal          0
+        iTerminal               0 
+        wObjectiveFocalLengthMin      0
+        wObjectiveFocalLengthMax      0
+        wOcularFocalLength            0
+        bControlSize                  3
+        bmControls           0x0000600e
+          Auto-Exposure Mode
+          Auto-Exposure Priority
+          Exposure Time (Absolute)
+          Roll (Absolute)
+          Roll (Relative)
+      VideoControl Interface Descriptor:
+        bLength                11
+        bDescriptorType        36
+        bDescriptorSubtype      5 (PROCESSING_UNIT)
+      Warning: Descriptor too short
+        bUnitID                 2
+        bSourceID               1
+        wMaxMultiplier          0
+        bControlSize            2
+        bmControls     0x0000177f
+          Brightness
+          Contrast
+          Hue
+          Saturation
+          Sharpness
+          Gamma
+          White Balance Temperature
+          Backlight Compensation
+          Gain
+          Power Line Frequency
+          White Balance Temperature, Auto
+        iProcessing             0 
+        bmVideoStandards     0x00
+      Endpoint Descriptor:
+        bLength                 7
+        bDescriptorType         5
+        bEndpointAddress     0x83  EP 3 IN
+        bmAttributes            3
+          Transfer Type            Interrupt
+          Synch Type               None
+          Usage Type               Data
+        wMaxPacketSize     0x0010  1x 16 bytes
+        bInterval               6
+    Interface Descriptor:
+      bLength                 9
+      bDescriptorType         4
+      bInterfaceNumber        1
+      bAlternateSetting       0
+      bNumEndpoints           0
+      bInterfaceClass        14 Video
+      bInterfaceSubClass      2 Video Streaming
+      bInterfaceProtocol      0 
+      iInterface              0 
+      VideoStreaming Interface Descriptor:
+        bLength                            15
+        bDescriptorType                    36
+        bDescriptorSubtype                  1 (INPUT_HEADER)
+        bNumFormats                         2
+        wTotalLength                   0x01db
+        bEndpointAddress                 0x81  EP 1 IN
+        bmInfo                              0
+        bTerminalLink                       4
+        bStillCaptureMethod                 2
+        bTriggerSupport                     1
+        bTriggerUsage                       1
+        bControlSize                        1
+        bmaControls( 0)                     0
+        bmaControls( 1)                     0
+      VideoStreaming Interface Descriptor:
+        bLength                            11
+        bDescriptorType                    36
+        bDescriptorSubtype                  6 (FORMAT_MJPEG)
+        bFormatIndex                        1
+        bNumFrameDescriptors                8
+        bFlags                              0
+          Fixed-size samples: No
+        bDefaultFrameIndex                  1
+        bAspectRatioX                       0
+        bAspectRatioY                       0
+        bmInterlaceFlags                 0x00
+          Interlaced stream or variable: No
+          Fields per frame: 1 fields
+          Field 1 first: No
+          Field pattern: Field 1 only
+        bCopyProtect                        0
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         1
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           480
+        dwMinBitRate                147456000
+        dwMaxBitRate                147456000
+        dwMaxVideoFrameBufferSize      614989
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         2
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1920
+        wHeight                          1080
+        dwMinBitRate                995328000
+        dwMaxBitRate                995328000
+        dwMaxVideoFrameBufferSize     4147789
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         3
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1280
+        wHeight                           960
+        dwMinBitRate                589824000
+        dwMaxBitRate                589824000
+        dwMaxVideoFrameBufferSize     2458189
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         4
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1280
+        wHeight                           720
+        dwMinBitRate                442368000
+        dwMaxBitRate                442368000
+        dwMaxVideoFrameBufferSize     1843789
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         5
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1024
+        wHeight                           576
+        dwMinBitRate                283115520
+        dwMaxBitRate                283115520
+        dwMaxVideoFrameBufferSize     1180237
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         6
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            800
+        wHeight                           600
+        dwMinBitRate                230400000
+        dwMaxBitRate                230400000
+        dwMaxVideoFrameBufferSize      960589
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         7
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           360
+        dwMinBitRate                110592000
+        dwMaxBitRate                110592000
+        dwMaxVideoFrameBufferSize      461389
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  7 (FRAME_MJPEG)
+        bFrameIndex                         8
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           480
+        dwMinBitRate                147456000
+        dwMaxBitRate                147456000
+        dwMaxVideoFrameBufferSize      614989
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            22
+        bDescriptorType                    36
+        bDescriptorSubtype                  3 (STILL_IMAGE_FRAME)
+        bEndpointAddress                 0x00  EP 0 OUT
+        bNumImageSizePatterns               4
+        wWidth( 0)                        640
+        wHeight( 0)                       480
+        wWidth( 1)                       1920
+        wHeight( 1)                      1080
+        wWidth( 2)                       1280
+        wHeight( 2)                       720
+        wWidth( 3)                        352
+        wHeight( 3)                       288
+        bNumCompressionPatterns             0
+      VideoStreaming Interface Descriptor:
+        bLength                            27
+        bDescriptorType                    36
+        bDescriptorSubtype                  4 (FORMAT_UNCOMPRESSED)
+        bFormatIndex                        2
+        bNumFrameDescriptors                5
+        guidFormat                            {32595559-0000-0010-8000-00aa00389b71}
+        bBitsPerPixel                      16
+        bDefaultFrameIndex                  1
+        bAspectRatioX                       0
+        bAspectRatioY                       0
+        bmInterlaceFlags                 0x00
+          Interlaced stream or variable: No
+          Fields per frame: 2 fields
+          Field 1 first: No
+          Field pattern: Field 1 only
+        bCopyProtect                        0
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  5 (FRAME_UNCOMPRESSED)
+        bFrameIndex                         1
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           480
+        dwMinBitRate                147456000
+        dwMaxBitRate                147456000
+        dwMaxVideoFrameBufferSize      614400
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  5 (FRAME_UNCOMPRESSED)
+        bFrameIndex                         2
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1920
+        wHeight                          1080
+        dwMinBitRate                165888000
+        dwMaxBitRate                165888000
+        dwMaxVideoFrameBufferSize     4147200
+        dwDefaultFrameInterval        2000000
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)           2000000
+      VideoStreaming Interface Descriptor:
+        bLength                            34
+        bDescriptorType                    36
+        bDescriptorSubtype                  5 (FRAME_UNCOMPRESSED)
+        bFrameIndex                         3
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                           1280
+        wHeight                           720
+        dwMinBitRate                 73728000
+        dwMaxBitRate                147456000
+        dwMaxVideoFrameBufferSize     1843200
+        dwDefaultFrameInterval        1000000
+        bFrameIntervalType                  2
+        dwFrameInterval( 0)           1000000
+        dwFrameInterval( 1)           2000000
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  5 (FRAME_UNCOMPRESSED)
+        bFrameIndex                         4
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           360
+        dwMinBitRate                110592000
+        dwMaxBitRate                110592000
+        dwMaxVideoFrameBufferSize      460800
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+        bLength                            30
+        bDescriptorType                    36
+        bDescriptorSubtype                  5 (FRAME_UNCOMPRESSED)
+        bFrameIndex                         5
+        bmCapabilities                   0x00
+          Still image unsupported
+        wWidth                            640
+        wHeight                           480
+        dwMinBitRate                147456000
+        dwMaxBitRate                147456000
+        dwMaxVideoFrameBufferSize      614400
+        dwDefaultFrameInterval         333333
+        bFrameIntervalType                  1
+        dwFrameInterval( 0)            333333
+      VideoStreaming Interface Descriptor:
+== v4l2-ctl --list-devices
+Innomaker-U20CAM-1080p-S1: Inno (usb-NVDA8000:00-1.4):
+	/dev/video0
+	/dev/video1
+	/dev/media0
+
+== v4l2-ctl --list-formats-ext
+ioctl: VIDIOC_ENUM_FMT
+	Type: Video Capture
+
+	[0]: 'MJPG' (Motion-JPEG, compressed)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1920x1080
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1280x960
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1024x576
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 800x600
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+	[1]: 'YUYV' (YUYV 4:2:2)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 1920x1080
+			Interval: Discrete 0.200s (5.000 fps)
+		Size: Discrete 1280x720
+			Interval: Discrete 0.100s (10.000 fps)
+			Interval: Discrete 0.200s (5.000 fps)
+		Size: Discrete 640x360
+			Interval: Discrete 0.033s (30.000 fps)
+		Size: Discrete 640x480
+			Interval: Discrete 0.033s (30.000 fps)
+			Interval: Discrete 0.033s (30.000 fps)
+== v4l2-ctl --list-ctrls-menus
+
+User Controls
+
+                     brightness 0x00980900 (int)    : min=-64 max=64 step=1 default=0 value=0 flags=0x00001000
+                       contrast 0x00980901 (int)    : min=0 max=64 step=1 default=32 value=32 flags=0x00001000
+                     saturation 0x00980902 (int)    : min=0 max=128 step=1 default=64 value=64 flags=0x00001000
+                            hue 0x00980903 (int)    : min=-40 max=40 step=1 default=0 value=0 flags=0x00001000
+        white_balance_automatic 0x0098090c (bool)   : default=1 value=1
+                          gamma 0x00980910 (int)    : min=72 max=500 step=1 default=100 value=100 flags=0x00001000
+                           gain 0x00980913 (int)    : min=0 max=100 step=1 default=0 value=0 flags=0x00001000
+           power_line_frequency 0x00980918 (menu)   : min=0 max=2 default=1 value=1 (50 Hz)
+				0: Disabled
+				1: 50 Hz
+				2: 60 Hz
+      white_balance_temperature 0x0098091a (int)    : min=2800 max=6500 step=1 default=4600 value=4600 flags=inactive, 0x00001000
+                      sharpness 0x0098091b (int)    : min=0 max=6 step=1 default=3 value=3 flags=0x00001000
+         backlight_compensation 0x0098091c (int)    : min=0 max=160 step=1 default=12 value=12 flags=0x00001000
+
+Camera Controls
+
+                  auto_exposure 0x009a0901 (menu)   : min=0 max=3 default=3 value=3 (Aperture Priority Mode)
+				1: Manual Mode
+				3: Aperture Priority Mode
+         exposure_time_absolute 0x009a0902 (int)    : min=1 max=5000 step=1 default=157 value=157 flags=inactive, 0x00001000
+     exposure_dynamic_framerate 0x009a0903 (bool)   : default=0 value=0
+== per-mode sweep (8s each)
+-- 640 360 30 MJPG
+negotiated MJPG 640x360 @ 30.000 fps, sizeimage 461389
+RESULT MJPG 640x360 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 27 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 32.7  max 32.7
+DROPS_PER_MINUTE 0
+-- 640 480 30 MJPG
+negotiated MJPG 640x480 @ 30.000 fps, sizeimage 614989
+RESULT MJPG 640x480 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 69 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 31.5  p99 31.5  max 31.5
+DROPS_PER_MINUTE 0
+-- 800 600 30 MJPG
+negotiated MJPG 800x600 @ 30.000 fps, sizeimage 960589
+RESULT MJPG 800x600 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 101 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.4  p99 32.4  max 32.4
+DROPS_PER_MINUTE 0
+-- 1024 576 30 MJPG
+negotiated MJPG 1024x576 @ 30.000 fps, sizeimage 1180237
+RESULT MJPG 1024x576 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 53 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 32.7  max 32.7
+DROPS_PER_MINUTE 0
+-- 1280 720 30 MJPG
+negotiated MJPG 1280x720 @ 30.000 fps, sizeimage 1843789
+RESULT MJPG 1280x720 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 156 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.6  p99 32.6  max 32.6
+DROPS_PER_MINUTE 0
+-- 1280 960 30 MJPG
+negotiated MJPG 1280x960 @ 30.000 fps, sizeimage 2458189
+RESULT MJPG 1280x960 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 101 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 32.7  max 32.7
+DROPS_PER_MINUTE 0
+-- 1920 1080 30 MJPG
+negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 4147789
+RESULT MJPG 1920x1080 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 165 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 32.5  max 32.5
+DROPS_PER_MINUTE 0
+-- 640 360 30 YUYV
+negotiated MJPG 640x360 @ 30.000 fps, sizeimage 461389
+RESULT MJPG 640x360 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 27 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 32.7  max 32.7
+DROPS_PER_MINUTE 0
+-- 640 480 30 YUYV
+negotiated MJPG 640x480 @ 30.000 fps, sizeimage 614989
+RESULT MJPG 640x480 req 30 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 68 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.0  p99 32.0  max 32.0
+DROPS_PER_MINUTE 0
+-- 1280 720 10 YUYV
+negotiated MJPG 1280x720 @ 30.000 fps, sizeimage 1843789
+RESULT MJPG 1280x720 req 10 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 160 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.4  p99 32.4  max 32.4
+DROPS_PER_MINUTE 0
+-- 1280 720 5 YUYV
+negotiated MJPG 1280x720 @ 30.000 fps, sizeimage 1843789
+RESULT MJPG 1280x720 req 5 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 160 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.0  p99 32.0  max 32.0
+DROPS_PER_MINUTE 0
+-- 1920 1080 5 YUYV
+negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 4147789
+RESULT MJPG 1920x1080 req 5 fps | 0.0s: 1 frames, nan fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 0ms | avg frame 151 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.6  p99 32.6  max 32.6
+DROPS_PER_MINUTE 0
+== long run 600s: 1920 1080 30 MJPG
+negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 4147789
+RESULT MJPG 1920x1080 req 30 fps | 600.0s: 17703 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 180 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.4  p99 37.0  max 37.4
+DROPS_PER_MINUTE 0 0 0 0 0 0 0 0 0 0 0
+== long run 600s: 640 480 30 MJPG
+negotiated MJPG 640x480 @ 30.000 fps, sizeimage 614989
+RESULT MJPG 640x480 req 30 fps | 600.0s: 17701 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 70 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 37.3  max 37.6
+DROPS_PER_MINUTE 0 0 0 0 0 0 0 0 0 0 0

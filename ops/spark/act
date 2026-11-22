@@ -1,0 +1,371 @@
+#!/usr/bin/env bash
+# act: run ACT (LeRobot) training on the Spark, in tmux, driven over SSH.
+# From the Mac:  ssh spark act help
+set -euo pipefail
+
+LEROBOT=/projects/lerobot
+RUNS=/projects/runs
+DATASETS=/projects/datasets
+BIN=$LEROBOT/.venv/bin
+mkdir -p "$RUNS" "$DATASETS"
+
+die() { echo "act: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+act: ACT training on the Spark (runs keep going if your laptop sleeps)
+
+  act train <dataset> [--name NAME] [--lerobot.flag=value ...]
+        <dataset> is a Hugging Face repo id (user/name), or the name of a
+        folder you copied into /projects/datasets/.
+        Any --key=value flags go straight to lerobot-train, e.g.
+        --steps=20000 --batch_size=16 --policy.push_to_hub=true --policy.repo_id=me/act_x
+        Defaults: ACT policy, CUDA, 100k steps, no hub push, no trackio.
+  act status              all runs: state, step, loss; plus GPU
+  act logs NAME [-f]      last 40 log lines (-f to follow, Ctrl-C to quit)
+  act stop NAME           stop a run (it can be resumed)
+  act resume NAME         continue a stopped/crashed run from its last checkpoint
+  act path NAME           print the last checkpoint dir (for rsync)
+  act rm NAME             delete a finished run and its checkpoints
+
+Arms (SO-101, plugged into the Spark; ports/cameras live in /projects/robot.conf).
+Interactive commands need a terminal, so use: ssh -t spark act ...
+  act devices             list serial ports and cameras the Spark can see
+  act cameras             apply and verify CAMERA_CONTROLS (act record does this every start)
+  act calibrate leader|follower
+  act teleop              move the leader, the follower copies it (Ctrl-C to stop)
+  act record NAME "task description" [--episodes=N] [--lerobot.flag=value ...]
+        Records into /projects/datasets/NAME (adds episodes if it exists).
+        Keys while recording: n = next episode, r = redo episode, q = stop.
+        Runs in tmux: if SSH drops, nothing is lost; get back with act attach.
+        Useful flags: --dataset.episode_time_s=30 --dataset.reset_time_s=10
+  act attach              reattach to a recording in progress
+  act datasets            list recorded datasets and their episode counts
+  act update              pull the latest LeRobot and reinstall its environment
+
+From the Mac:
+  copy a local dataset up:
+    rsync -aL ~/.cache/huggingface/lerobot/USER/DATASET/ spark:/projects/datasets/DATASET/
+  pull the trained policy back:
+    rsync -a "spark:$(ssh spark act path NAME)/" ./NAME/
+EOF
+}
+
+valid_name() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "bad run name '$1' (use letters, digits, _ . -)"; }
+running() { tmux has-session -t "=act-$1" 2>/dev/null; }
+need_run() { valid_name "$1"; [[ -d $RUNS/$1 ]] || die "no run named '$1' (see: act status)"; }
+
+# Start script $2 of run $1 inside tmux; the script records its exit code.
+launch() {
+  local name=$1 script=$2
+  rm -f "$RUNS/$name/exit_code"
+  tmux new-session -d -s "act-$name" -c "$LEROBOT" "bash '$RUNS/$name/$script'"
+  echo "started run '$name'   (act logs $name -f  |  act status)"
+}
+
+write_script() {  # write_script NAME FILE ARGS...
+  local name=$1 file=$2; shift 2
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -o pipefail'
+    printf 'cd %q\n' "$LEROBOT"
+    printf '%q ' "$BIN/lerobot-train" "$@"
+    printf '2>&1 | tee -a %q\n' "$RUNS/$name/train.log"
+    printf 'echo "${PIPESTATUS[0]}" > %q\n' "$RUNS/$name/exit_code"
+  } > "$RUNS/$name/$file"
+}
+
+cmd_train() {
+  local dataset="" name="" extra=()
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --name) [[ $# -ge 2 ]] || die "--name needs a value"; name=$2; shift 2 ;;
+      --name=*) name=${1#--name=}; shift ;;
+      --*=*) extra+=("$1"); shift ;;
+      --*) die "pass lerobot flags as --key=value (got '$1')" ;;
+      *) [[ -z $dataset ]] || die "unexpected argument '$1'"; dataset=$1; shift ;;
+    esac
+  done
+  [[ -n $dataset ]] || die "usage: act train <dataset> [--name NAME] [--flag=value ...]"
+
+  local ds_args
+  if [[ -f $DATASETS/$dataset/meta/info.json ]]; then
+    ds_args=(--dataset.repo_id="local/$dataset" --dataset.root="$DATASETS/$dataset")
+  elif [[ $dataset == */* && ! -e $dataset ]]; then
+    ds_args=(--dataset.repo_id="$dataset")
+  else
+    die "dataset '$dataset' is neither a HF repo id (user/name) nor a folder in $DATASETS with meta/info.json"
+  fi
+
+  [[ -n $name ]] || name="${dataset##*/}-$(date +%m%d-%H%M)"
+  valid_name "$name"
+  [[ ! -e $RUNS/$name ]] || die "run '$name' already exists (act resume $name, or pick another --name)"
+  mkdir -p "$RUNS/$name"
+
+  write_script "$name" train.sh "${ds_args[@]}" \
+    --policy.type=act --policy.device=cuda --policy.push_to_hub=false \
+    --trackio.enable=false --output_dir="$RUNS/$name/output" --job_name="$name" \
+    "${extra[@]}"
+  launch "$name" train.sh
+}
+
+cmd_resume() {
+  local name=${1:-}; need_run "$name"
+  running "$name" && die "run '$name' is still running"
+  local c; c=$(latest_ckpt "$name") || die "run '$name' has no checkpoint yet; start over with: act rm $name, then act train ..."
+  local cfg=$c/pretrained_model/train_config.json
+  echo "---- resumed $(date) ----" >> "$RUNS/$name/train.log"
+  write_script "$name" resume.sh --config_path="$cfg" --resume=true
+  launch "$name" resume.sh
+}
+
+run_state() {
+  local name=$1
+  if running "$name"; then echo running
+  elif [[ -f $RUNS/$name/exit_code ]]; then
+    case $(<"$RUNS/$name/exit_code") in 0) echo done ;; stopped) echo stopped ;; *) echo "failed($(<"$RUNS/$name/exit_code"))" ;; esac
+  else echo "died"   # tmux gone without an exit code: reboot or killed
+  fi
+}
+
+cmd_status() {
+  local any=0 d name log last total step loss
+  printf '%-32s %-11s %-17s %s\n' RUN STATE STEP LOSS
+  for d in "$RUNS"/*/; do
+    [[ -d $d ]] || continue; any=1
+    name=$(basename "$d"); log=$d/train.log
+    total=$(grep -o 'cfg.steps=[0-9]*' "$log" 2>/dev/null | tail -1 | cut -d= -f2 || true)
+    last=$(grep -o 'step:[0-9.KM]* .*loss:[0-9.e+-]*' "$log" 2>/dev/null | tail -1 || true)
+    step=$(sed -n 's/^step:\([0-9.KM]*\).*/\1/p' <<<"$last")
+    loss=$(sed -n 's/.* loss:\([0-9.e+-]*\).*/\1/p' <<<"$last")
+    printf '%-32s %-11s %-17s %s\n' "$name" "$(run_state "$name")" "${step:--}/${total:-?}" "${loss:--}"
+  done
+  [[ $any == 1 ]] || echo "(no runs yet: act train <dataset>)"
+  echo
+  nvidia-smi --query-gpu=name,utilization.gpu,temperature.gpu --format=csv,noheader 2>/dev/null \
+    | awk -F', ' '{print "GPU: " $1 ", " $2 " busy, " $3 "C"}' || true
+}
+
+cmd_logs() {
+  local name=${1:-}; need_run "$name"
+  # Progress bars use \r; show only completed lines.
+  if [[ ${2:-} == -f ]]; then tail -n 40 -f "$RUNS/$name/train.log" | stdbuf -oL tr '\r' '\n' | grep --line-buffered -v '^Training: '
+  else tr '\r' '\n' < "$RUNS/$name/train.log" | grep -v '^Training: ' | tail -n 40
+  fi
+}
+
+cmd_stop() {
+  local name=${1:-}; need_run "$name"
+  running "$name" || die "run '$name' is not running"
+  tmux send-keys -t "=act-$name:" C-c
+  for _ in $(seq 20); do running "$name" || break; sleep 0.5; done
+  running "$name" && tmux kill-session -t "=act-$name"
+  echo stopped > "$RUNS/$name/exit_code"
+  echo "stopped '$name'   (act resume $name to continue)"
+}
+
+# Last complete checkpoint dir of run $1. lerobot repoints `last` only after a
+# save finishes, so a newer numbered dir without `last` may be half-written
+# (e.g. stopped mid-save) and is ignored.
+latest_ckpt() {
+  local l=$RUNS/$1/output/checkpoints/last
+  [[ -L $l && -f $l/pretrained_model/train_config.json ]] || return 1
+  readlink -f "$l"
+}
+
+cmd_path() {
+  local name=${1:-}; need_run "$name"
+  local c; c=$(latest_ckpt "$name") || die "run '$name' has no checkpoint yet"
+  echo "$c/pretrained_model"
+}
+
+cmd_rm() {
+  local name=${1:-}; need_run "$name"
+  running "$name" && die "run '$name' is running; act stop $name first"
+  rm -rf -- "${RUNS:?}/$name"
+  echo "removed '$name'"
+}
+
+# ---------------------------------------------------------------- arms ----
+CONF=/projects/robot.conf
+EXTRAS=(--extra training --extra hardware --extra feetech)
+
+load_conf() {
+  [[ -f $CONF ]] || die "no $CONF yet (it holds the arm ports and cameras)"
+  # shellcheck source=/dev/null
+  source "$CONF"
+  : "${LEADER_PORT:?set in $CONF}" "${FOLLOWER_PORT:?set in $CONF}"
+  : "${LEADER_ID:=leader}" "${FOLLOWER_ID:=follower}"
+  [[ -n ${CAMERAS:-} ]] || CAMERAS='{}'
+  [[ -e $LEADER_PORT ]] || die "leader arm not found at $LEADER_PORT (plugged in? act devices)"
+  [[ -e $FOLLOWER_PORT ]] || die "follower arm not found at $FOLLOWER_PORT (plugged in and powered? act devices)"
+}
+need_tty() { [[ -t 0 ]] || die "this one is interactive: run it as  ssh -t spark act $*"; }
+robot_args() { echo --robot.type=so101_follower --robot.port="$FOLLOWER_PORT" --robot.id="$FOLLOWER_ID"; }
+teleop_args() { echo --teleop.type=so101_leader --teleop.port="$LEADER_PORT" --teleop.id="$LEADER_ID"; }
+
+# Set the v4l2 controls listed in CAMERA_CONTROLS (robot.conf), one entry per camera:
+#   "DEVICE ctrl=value ctrl=value ..."
+# Auto switches (auto_*, *_automatic) go first: uvcvideo rejects a manual value while its auto
+# mode is on. Every control is then read back from the camera; any mismatch is fatal, so a
+# recording never starts with settings that didn't stick.
+apply_camera_controls() {
+  declare -p CAMERA_CONTROLS &>/dev/null && [[ ${#CAMERA_CONTROLS[@]} -gt 0 ]] || return 0
+  local entry dev c name want got autos manual fail=0
+  local -a ctrls
+  for entry in "${CAMERA_CONTROLS[@]}"; do
+    read -r dev entry <<<"$entry"
+    read -ra ctrls <<<"$entry"
+    [[ -e $dev ]] || die "camera $dev not found (plugged in? act devices)"
+    autos=""; manual=""
+    for c in "${ctrls[@]}"; do
+      name=${c%%=*}
+      if [[ $name == auto_* || $name == *_automatic ]]; then autos+=${autos:+,}$c; else manual+=${manual:+,}$c; fi
+    done
+    [[ -z $autos ]] || v4l2-ctl -d "$dev" -c "$autos" || die "$dev: could not set $autos"
+    [[ -z $manual ]] || v4l2-ctl -d "$dev" -c "$manual" || die "$dev: could not set $manual"
+    for c in "${ctrls[@]}"; do
+      name=${c%%=*}; want=${c#*=}
+      got=$(v4l2-ctl -d "$dev" -C "$name" 2>/dev/null | sed -n 's/^[^:]*: *\([^ ]*\).*/\1/p')
+      if [[ $got != "$want" ]]; then echo "act: $dev: $name is '$got', wanted '$want'" >&2; fail=1; fi
+      if [[ $name == exposure_time_absolute && $want -gt 330 ]]; then
+        echo "act: warning: $dev exposure $want (x100us) is longer than a 30 fps frame; frame rate may drop" >&2
+      fi
+    done
+    echo "camera $(basename "$dev"): ${ctrls[*]}"
+  done
+  [[ $fail == 0 ]] || die "camera settings did not stick; fix CAMERA_CONTROLS in $CONF"
+}
+
+cmd_devices() {
+  echo "Serial ports (arms):"
+  local p
+  for p in /dev/serial/by-id/*; do
+    [[ -e $p ]] && echo "  $p  ->  $(readlink -f "$p")"
+  done
+  [[ -d /dev/serial/by-id ]] || echo "  (none: are the arms plugged in?)"
+  echo "Cameras:"
+  local d any=0
+  for d in /dev/v4l/by-id/*-index0; do
+    [[ -e $d ]] || continue; any=1
+    echo "  $d  ($(cat "/sys/class/video4linux/$(basename "$(readlink -f "$d")")/name"))"
+  done
+  [[ $any == 1 ]] || echo "  (none)"
+  if [[ -f $CONF ]]; then echo; echo "Configured in $CONF:"; sed 's/^/  /' "$CONF"; fi
+}
+
+cmd_cameras() {  # apply CAMERA_CONTROLS now; needs no arms
+  [[ -f $CONF ]] || die "no $CONF yet (it holds the arm ports and cameras)"
+  # shellcheck source=/dev/null
+  source "$CONF"
+  declare -p CAMERA_CONTROLS &>/dev/null || die "no CAMERA_CONTROLS in $CONF"
+  apply_camera_controls
+}
+
+cmd_calibrate() {
+  local which=${1:-}; load_conf; need_tty calibrate "$which"
+  case $which in
+    leader) exec "$BIN/lerobot-calibrate" $(teleop_args) ;;
+    follower) exec "$BIN/lerobot-calibrate" $(robot_args) ;;
+    *) die "usage: act calibrate leader|follower" ;;
+  esac
+}
+
+cmd_teleop() {
+  load_conf; need_tty teleop
+  exec "$BIN/lerobot-teleoperate" $(robot_args) $(teleop_args) --display_data=false "$@"
+}
+
+cmd_record() {
+  local name=${1:-} task=${2:-}; shift 2 2>/dev/null || true
+  [[ -n $name && -n $task ]] || die 'usage: act record NAME "task description" [--episodes=N] [--flag=value ...]'
+  valid_name "$name"
+  load_conf; need_tty record "$name" "\"$task\""
+  tmux has-session -t "=act-rec" 2>/dev/null && die "a recording is already running (act attach)"
+  apply_camera_controls
+
+  local episodes=10 extra=() resume=false
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --episodes=*) episodes=${1#--episodes=}; shift ;;
+      --*=*) extra+=("$1"); shift ;;
+      *) die "pass flags as --key=value (got '$1')" ;;
+    esac
+  done
+  [[ -f $DATASETS/$name/meta/info.json ]] && resume=true
+  [[ -e $DATASETS/$name && $resume == false ]] && die "$DATASETS/$name exists but isn't a dataset; pick another name"
+
+  mkdir -p "$DATASETS/.logs"
+  local script=$DATASETS/.logs/$name.record.sh log=$DATASETS/.logs/$name.log
+  {
+    echo '#!/usr/bin/env bash'
+    printf 'cd %q\n' "$LEROBOT"
+    printf '%q ' "$BIN/lerobot-record" $(robot_args) --robot.cameras="$CAMERAS" $(teleop_args) \
+      --dataset.repo_id="local/$name" --dataset.root="$DATASETS/$name" \
+      --dataset.single_task="$task" --dataset.num_episodes="$episodes" \
+      --dataset.push_to_hub=false --display_data=false --play_sounds=false \
+      --resume="$resume" "${extra[@]}"
+    printf '2>&1 | tee -a %q\n' "$log"
+    echo 'echo; read -rp "Recording finished. Press Enter to close. " _'
+  } > "$script"
+  $resume && echo "adding $episodes episodes to existing dataset '$name'" || echo "new dataset '$name', $episodes episodes"
+  exec tmux new-session -s act-rec -c "$LEROBOT" "bash '$script'"
+}
+
+cmd_attach() {
+  need_tty attach
+  tmux has-session -t "=act-rec" 2>/dev/null || die "no recording running"
+  exec tmux attach -t "=act-rec"
+}
+
+cmd_datasets() {
+  local d any=0
+  printf '%-32s %-9s %-8s %s\n' DATASET EPISODES FRAMES TASK
+  for d in "$DATASETS"/*/; do
+    [[ -f $d/meta/info.json ]] || continue; any=1
+    "$BIN/python" - "$d" <<'PY'
+import json, sys, pathlib
+d = pathlib.Path(sys.argv[1]); i = json.loads((d / "meta/info.json").read_text())
+task = ""
+for f in ("tasks.jsonl", "tasks.parquet"):
+    p = d / "meta" / f
+    if p.exists() and f.endswith(".jsonl"):
+        task = json.loads(p.read_text().splitlines()[0]).get("task", "")
+    elif p.exists():
+        import pandas as pd; df = pd.read_parquet(p); task = str(df.index[0]) if len(df) else ""
+    if task: break
+print(f"{d.name:<32} {i.get('total_episodes', '?'):<9} {i.get('total_frames', '?'):<8} {task}")
+PY
+  done
+  [[ $any == 1 ]] || echo "(none yet: act record NAME \"task\")"
+}
+
+cmd_update() {
+  running_any=$(tmux ls 2>/dev/null | grep -c '^act-' || true)
+  [[ $running_any == 0 ]] || die "a training run or recording is active; stop it first"
+  cd "$LEROBOT"
+  git pull --ff-only
+  "$HOME/.local/bin/uv" sync --locked "${EXTRAS[@]}"
+  echo "LeRobot now at $(git log -1 --format='%h %s')"
+}
+
+sub=${1:-help}; shift || true
+case $sub in
+  train) cmd_train "$@" ;;
+  status|ls) cmd_status ;;
+  logs|log) cmd_logs "$@" ;;
+  stop) cmd_stop "$@" ;;
+  resume) cmd_resume "$@" ;;
+  path) cmd_path "$@" ;;
+  rm) cmd_rm "$@" ;;
+  devices) cmd_devices ;;
+  cameras) cmd_cameras ;;
+  calibrate) cmd_calibrate "$@" ;;
+  teleop) cmd_teleop "$@" ;;
+  record) cmd_record "$@" ;;
+  attach) cmd_attach ;;
+  datasets) cmd_datasets ;;
+  update) cmd_update ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac

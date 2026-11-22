@@ -1,0 +1,30 @@
+-- MJPG 1920x1080
+negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 1036800
+RESULT MJPG 1920x1080 req 30 fps | 8.0s: 154 frames, 19.19 fps delivered | dropped: 0 by driver sequence, 95 by timestamp gaps, 0 error-flagged | maxgap 61ms | avg frame 172 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 52.5  p99 60.6  max 61.1
+DROPS_PER_MINUTE 0
+-- MJPG 1280x720
+negotiated MJPG 1280x720 @ 30.000 fps, sizeimage 460800
+RESULT MJPG 1280x720 req 30 fps | 8.0s: 134 frames, 16.65 fps delivered | dropped: 0 by driver sequence, 133 by timestamp gaps, 0 error-flagged | maxgap 64ms | avg frame 103 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 60.4  p99 61.0  max 61.1
+DROPS_PER_MINUTE 0
+-- MJPG 800x600
+negotiated MJPG 800x600 @ 30.000 fps, sizeimage 240000
+RESULT MJPG 800x600 req 30 fps | 8.0s: 161 frames, 19.97 fps delivered | dropped: 0 by driver sequence, 83 by timestamp gaps, 0 error-flagged | maxgap 53ms | avg frame 67 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 48.6  p99 52.8  max 52.9
+DROPS_PER_MINUTE 0
+-- MJPG 640x480
+negotiated MJPG 640x480 @ 30.000 fps, sizeimage 153600
+RESULT MJPG 640x480 req 30 fps | 8.0s: 134 frames, 16.65 fps delivered | dropped: 0 by driver sequence, 133 by timestamp gaps, 0 error-flagged | maxgap 64ms | avg frame 45 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 60.3  p99 60.7  max 60.9
+DROPS_PER_MINUTE 0
+-- MJPG 608x1024
+negotiated MJPG 608x1024 @ 30.000 fps, sizeimage 311296
+RESULT MJPG 608x1024 req 30 fps | 8.1s: 135 frames, 16.64 fps delivered | dropped: 0 by driver sequence, 134 by timestamp gaps, 0 error-flagged | maxgap 64ms | avg frame 80 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 60.3  p99 60.9  max 60.9
+DROPS_PER_MINUTE 0
+-- MJPG 640x1024
+negotiated MJPG 640x1024 @ 30.000 fps, sizeimage 327680
+RESULT MJPG 640x1024 req 30 fps | 8.0s: 161 frames, 19.97 fps delivered | dropped: 0 by driver sequence, 83 by timestamp gaps, 0 error-flagged | maxgap 53ms | avg frame 86 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 48.5  p99 52.9  max 53.0
+DROPS_PER_MINUTE 0

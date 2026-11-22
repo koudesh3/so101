@@ -1,0 +1,11 @@
+auto_exposure: 1 (Manual Mode) exposure_time_absolute: 100 
+RESULT MJPG 1920x1080 req 30 fps | 8.0s: 240 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 45 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.4  p99 36.6  max 36.9
+RESULT MJPG 640x480 req 30 fps | 8.0s: 240 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 9 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.3  p99 36.6  max 36.7
+auto_exposure: 1 (Manual Mode) exposure_time_absolute: 300 
+RESULT MJPG 1920x1080 req 30 fps | 8.0s: 239 frames, 29.79 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 77 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 36.9  max 37.0
+RESULT MJPG 640x480 req 30 fps | 8.0s: 240 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 16 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 36.6  max 37.0
+auto_exposure: 3 (Aperture Priority Mode)

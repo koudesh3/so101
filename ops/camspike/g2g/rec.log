@@ -1,0 +1,29 @@
+recording
+/dev/video2: MJPG 640x480 @ 1/30 s
+/dev/video0: MJPG 640x480 @ 1/30 s
+cam2: 300 frames
+cam1: 300 frames
+cam2: 600 frames
+cam1: 600 frames
+cam2: 900 frames
+cam1: 900 frames
+cam2: 1200 frames
+cam1: 1200 frames
+cam2: 1500 frames
+cam1: 1500 frames
+cam2: 1800 frames
+cam1: 1800 frames
+cam2: 2100 frames
+cam1: 2100 frames
+cam2: 2400 frames
+cam1: 2400 frames
+cam2: 2700 frames
+cam1: 2700 frames
+cam2: 3000 frames
+cam1: 3000 frames
+cam2: 3300 frames
+cam1: 3300 frames
+cam2: 3600 frames
+cam1: 3600 frames
+cam2: 3900 frames
+stopped

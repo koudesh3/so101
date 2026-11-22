@@ -1,0 +1,7 @@
+v4l2probe
+g2g/g2g_cap
+cam2/aeprio
+cam2/xuread
+*.mjpg
+*.png
+frames.jsonl

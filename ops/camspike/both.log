@@ -1,0 +1,53 @@
+=== cam1 1920x1080 + cam2 1920x1080, 60s
+cam1 (exit 0):
+  negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 4147789
+  RESULT MJPG 1920x1080 req 30 fps | 60.0s: 1772 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 158 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 33.0  p99 37.7  max 37.8
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+cam2 (exit 0):
+  negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 1036800
+  RESULT MJPG 1920x1080 req 30 fps | 60.0s: 1789 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 65 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 37.0  max 37.1
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+=== cam1 640x480 + cam2 640x480, 60s
+cam1 (exit 0):
+  negotiated MJPG 640x480 @ 30.000 fps, sizeimage 614989
+  RESULT MJPG 640x480 req 30 fps | 60.0s: 1772 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 36ms | avg frame 44 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 36.9  max 37.2
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+cam2 (exit 0):
+  negotiated MJPG 640x480 @ 30.000 fps, sizeimage 153600
+  RESULT MJPG 640x480 req 30 fps | 60.0s: 1789 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 16 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 36.8  max 37.1
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+=== cam1 1920x1080 + cam2 640x480, 60s
+cam1 (exit 0):
+  negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 4147789
+  RESULT MJPG 1920x1080 req 30 fps | 60.0s: 1772 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 163 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.9  p99 37.2  max 37.4
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+cam2 (exit 0):
+  negotiated MJPG 640x480 @ 30.000 fps, sizeimage 153600
+  RESULT MJPG 640x480 req 30 fps | 60.0s: 1789 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 16 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 37.3  max 37.3
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+=== cam1 640x480 + cam2 1920x1080, 60s
+cam1 (exit 0):
+  negotiated MJPG 640x480 @ 30.000 fps, sizeimage 614989
+  RESULT MJPG 640x480 req 30 fps | 60.0s: 1772 frames, 29.50 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 42 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.9  p99 37.2  max 37.3
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+cam2 (exit 0):
+  negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 1036800
+  RESULT MJPG 1920x1080 req 30 fps | 60.0s: 1789 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 77 KB
+  LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 36.9  max 37.1
+  DROPS_PER_MINUTE 0 0
+  gap lines: 0
+restored cam2: auto_exposure: 3 (Aperture Priority Mode)

@@ -1,0 +1,12 @@
+== controls during run: auto_exposure: 1 (Manual Mode) exposure_time_absolute: 300 
+== long run 600s: MJPG 1920x1080
+negotiated MJPG 1920x1080 @ 30.000 fps, sizeimage 1036800
+RESULT MJPG 1920x1080 req 30 fps | 600.0s: 17879 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 64 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.5  p99 36.7  max 37.3
+DROPS_PER_MINUTE 0 0 0 0 0 0 0 0 0 0
+== long run 600s: MJPG 640x480
+negotiated MJPG 640x480 @ 30.000 fps, sizeimage 153600
+RESULT MJPG 640x480 req 30 fps | 600.0s: 17880 frames, 29.80 fps delivered | dropped: 0 by driver sequence, 0 by timestamp gaps, 0 error-flagged | maxgap 37ms | avg frame 16 KB
+LATENCY buffer timestamp (start-of-exposure/first packet) -> app dequeue, ms: p50 32.7  p99 37.0  max 37.6
+DROPS_PER_MINUTE 0 0 0 0 0 0 0 0 0 0
+== restored: auto_exposure: 3 (Aperture Priority Mode)

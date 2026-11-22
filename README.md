@@ -22,14 +22,18 @@ ui/              what a person looks at in the browser; no build step
                      teleop events, replays a byte log as events, renders a byte log as an HTML report
 data/            what isn't code
   calibration/       the leader's and follower's calibration files (in git)
+  robot.conf         the Spark's arm ports and camera settings, as used by ops/spark/act
   logs/              recorded byte logs from teleop runs (not in git)
+ops/             running the Spark, where the arms and cameras are plugged in: the `act` wrapper
+                 around LeRobot, and the camera characterisation (see its README)
+docs/            part2-spec.md, the plan for Part 2
 Cargo.toml       one Cargo workspace over robot/ and ui/server
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
 
 ## Where it's going
 
-Part 2 turns this into a single-arm robot that solves 4-disc Tower of Hanoi: ACT policies for
+Part 2 ([the spec](docs/part2-spec.md)) turns this into a single-arm robot that solves 4-disc Tower of Hanoi: ACT policies for
 grasp and place, scripted transits between pegs, and a sequencer over a catalog of skills. New
 parts arrive with the phase that needs them, not before:
 
