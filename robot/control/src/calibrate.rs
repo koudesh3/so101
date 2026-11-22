@@ -2,9 +2,9 @@
 
 use crate::ticker::Ticker;
 use drivers::error::{Error, Result};
-use drivers::so101::robot::arm::Arm;
-use drivers::so101::robot::joint::{Joint, Ticks, COUNT};
-use drivers::so101::wire::registers::{CENTER_TICK, TICKS_PER_TURN};
+use drivers::arm::so101::arm::Arm;
+use drivers::arm::so101::joint::{Joint, Ticks, COUNT};
+use drivers::arm::so101::registers::{CENTER_TICK, TICKS_PER_TURN};
 
 pub struct Sweep {
     pub min: Ticks,

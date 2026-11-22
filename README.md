@@ -9,12 +9,11 @@ Split by what each part does, not by language:
 
 ```
 robot/           runs the arm. Each crate depends only on the ones above it:
-  crates/drivers/    hardware drivers; today the SO-101's servo stack:
-                       so101::wire    servo protocol frames, the STS3215 control table, the serial transport and byte log
-                       so101::device  one servo bus: ping, read, write, sync read, sync write; real or simulated
-                       so101::robot   the six joints, calibration, an arm
-  crates/control/    the fixed-rate ticker, the calibration sweep, the teleop loop
-  crates/so101/      the `so101` command line, and the end-to-end tests against the simulated servos
+  drivers/           hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
+                     STS3215 control table, the serial transport and byte log, one servo bus (real
+                     or simulated), the six joints, calibration, an arm
+  control/           the fixed-rate ticker, the calibration sweep, the teleop loop
+  cli/               the `so101` command line, and the end-to-end tests against the simulated servos
 ui/              what a person looks at in the browser; no build step
   dashboard/         the live dashboard and its replay mode
   viewer/            one arm, or the servo alone, in 3D
@@ -34,16 +33,16 @@ Part 2 turns this into a single-arm robot that solves 4-disc Tower of Hanoi: ACT
 grasp and place, scripted transits between pegs, and a sequencer over a catalog of skills. New
 parts arrive with the phase that needs them, not before:
 
-- `robot/crates/contracts`: the message types (JointState, JointTarget, Frame, Obs, Chunk, ...),
+- `robot/contracts`: the message types (JointState, JointTarget, Frame, Obs, Chunk, ...),
   the clock, and the traits every module implements (ArmDriver, FrameSource, Policy, Skill,
   Check, Sequencer)
-- `robot/crates/log`: the event bus, recorder and reader; everything is logged and replayable
+- `robot/log`: the event bus, recorder and reader; everything is logged and replayable
 - `drivers` grows mock and replay arms, the leader as a target source, and USB cameras (Linux only)
 - `control` grows the safety wrapper, the target mux and the action queue
-- `robot/crates/runtime`: skills, checks, the step runner, and the Hanoi sequencer
-- `robot/crates/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
+- `robot/runtime`: skills, checks, the step runner, and the Hanoi sequencer
+- `robot/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
   needs a GPU
-- `robot/crates/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
+- `robot/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
 - `ml/`: training with LeRobot, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
 
 The calibration moves to LeRobot's file format and units (degrees, gripper 0-100) at the same time.
@@ -58,7 +57,7 @@ just check        # clippy and the tests, against simulated servos
 just sim          # teleop the simulated arms, no hardware
 ```
 
-With hardware (`so101` is the binary `cargo install --path robot/crates/so101` puts on your path),
+With hardware (`so101` is the binary `cargo install --path robot/cli` puts on your path),
 calibrate each arm, then teleoperate; `--serve` opens the dashboard at http://127.0.0.1:7878:
 
 ```

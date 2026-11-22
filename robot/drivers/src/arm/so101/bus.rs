@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use crate::error::{Error, Result};
-use crate::so101::wire::protocol::{ServoError, encode_instruction, parse_frame, Frame, Instruction, ParseError, BROADCAST_ID, MAX_SERVO_ID};
-use crate::so101::wire::registers::{self, Register, LOCK, TORQUE_ENABLE};
-use crate::so101::wire::transport::{Transport, TransportError};
+use crate::arm::so101::protocol::{ServoError, encode_instruction, parse_frame, Frame, Instruction, ParseError, BROADCAST_ID, MAX_SERVO_ID};
+use crate::arm::so101::registers::{self, Register, LOCK, TORQUE_ENABLE};
+use crate::arm::so101::transport::{Transport, TransportError};
 
 // How long to wait for the ack of a write that commits to non-volatile memory.
 // Up to ~40 ms has been measured; allow more than double.

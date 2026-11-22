@@ -14,12 +14,12 @@ use control::teleop::TickReport;
 use control::ticker::Tick;
 use crate::live::{hello_json, tick_json, wire_json};
 use crate::visualize::decode;
-use drivers::so101::robot::arm::{Telemetry, TELEMETRY_LEN, TELEMETRY_START};
-use drivers::so101::robot::calibration::ArmCalibration;
-use drivers::so101::robot::joint::{Joint, Ticks, COUNT};
-use drivers::so101::wire::protocol::{Instruction, ServoError};
-use drivers::so101::wire::registers;
-use drivers::so101::wire::transport::{Direction, LogRecord};
+use drivers::arm::so101::arm::{Telemetry, TELEMETRY_LEN, TELEMETRY_START};
+use drivers::arm::so101::calibration::ArmCalibration;
+use drivers::arm::so101::joint::{Joint, Ticks, COUNT};
+use drivers::arm::so101::protocol::{Instruction, ServoError};
+use drivers::arm::so101::registers;
+use drivers::arm::so101::transport::{Direction, LogRecord};
 
 /// What the host last asked on a port, which says what a reply means.
 #[derive(Clone, Copy, PartialEq)]

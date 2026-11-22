@@ -5,10 +5,10 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::so101::robot::joint::IDS;
-use crate::so101::wire::protocol::{encode_status, parse_frame, Instruction, ParseError, ServoError, BROADCAST_ID};
-use crate::so101::wire::registers::{self, Register, CENTER_TICK, TICKS_PER_TURN};
-use crate::so101::wire::transport::{Transport, TransportError};
+use crate::arm::so101::joint::IDS;
+use crate::arm::so101::protocol::{encode_status, parse_frame, Instruction, ParseError, ServoError, BROADCAST_ID};
+use crate::arm::so101::registers::{self, Register, CENTER_TICK, TICKS_PER_TURN};
+use crate::arm::so101::transport::{Transport, TransportError};
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 ticks/s.
 pub const MAX_SPEED_TICKS_PER_S: f64 = 3100.0;
@@ -396,8 +396,8 @@ pub mod demo {
     use std::sync::Arc;
 
     use super::{Hand, Obstacle};
-    use crate::so101::robot::calibration::{ArmCalibration, JointCalibration};
-    use crate::so101::robot::joint::{Joint, COUNT};
+    use crate::arm::so101::calibration::{ArmCalibration, JointCalibration};
+    use crate::arm::so101::joint::{Joint, COUNT};
 
     pub const LOOP_S: f64 = 14.0;
     // Joint half-range in ticks for the demo calibration (about +-97 degrees).

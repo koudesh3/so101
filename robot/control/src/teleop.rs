@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use drivers::so101::robot::arm::{Arm, Telemetry};
-use drivers::so101::wire::protocol::ServoError;
-use drivers::so101::robot::joint::Joint;
+use drivers::arm::so101::arm::{Arm, Telemetry};
+use drivers::arm::so101::protocol::ServoError;
+use drivers::arm::so101::joint::Joint;
 use drivers::error::{Error, Result};
-use drivers::so101::robot::joint::{Ticks, Values, COUNT};
+use drivers::arm::so101::joint::{Ticks, Values, COUNT};
 use crate::ticker::{Tick, Ticker};
 
 #[derive(Clone, Copy, Debug)]

@@ -19,9 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use control::teleop::TickReport;
-use drivers::so101::robot::calibration::ArmCalibration;
-use drivers::so101::robot::joint::{Joint, Values};
-use drivers::so101::wire::transport::{Transport, TransportError};
+use drivers::arm::so101::calibration::ArmCalibration;
+use drivers::arm::so101::joint::{Joint, Values};
+use drivers::arm::so101::transport::{Transport, TransportError};
 
 const PAGE: &str = include_str!("../../dashboard/index.html");
 /// One arm, or the servo alone, drawn by the dashboard's renderer (?show=).

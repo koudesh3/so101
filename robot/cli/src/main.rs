@@ -7,16 +7,16 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 
-use drivers::so101::robot::arm::{Arm, FollowerGains};
-use drivers::so101::device::bus::Bus;
+use drivers::arm::so101::arm::{Arm, FollowerGains};
+use drivers::arm::so101::bus::Bus;
 use control::calibrate;
-use drivers::so101::robot::calibration::ArmCalibration;
-use drivers::so101::robot::joint::{Joint, Values, IDS};
-use drivers::so101::device::sim::SimulatedBus;
+use drivers::arm::so101::calibration::ArmCalibration;
+use drivers::arm::so101::joint::{Joint, Values, IDS};
+use drivers::arm::so101::sim::SimulatedBus;
 use control::teleop::{self, TeleopOptions};
 use control::ticker::Ticker;
-use drivers::so101::wire::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
-use drivers::so101::device::sim::demo;
+use drivers::arm::so101::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
+use drivers::arm::so101::sim::demo;
 use ui_server::live::{self, Hub, Tap};
 use ui_server::{replay, visualize};
 use drivers::{Error, Result};
@@ -372,7 +372,7 @@ fn cmd_teleop(
     hz: f64,
     max_step: i32,
     ticks: u64,
-    (gains, lead): (FollowerGains, [std::time::Duration; drivers::so101::robot::joint::COUNT]),
+    (gains, lead): (FollowerGains, [std::time::Duration; drivers::arm::so101::joint::COUNT]),
     sim: bool,
     dash: Option<(Arc<Hub>, [String; 2])>,
 ) -> Result<()> {
@@ -406,7 +406,7 @@ fn cmd_teleop(
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
-    let mut was_released = [false; drivers::so101::robot::joint::COUNT];
+    let mut was_released = [false; drivers::arm::so101::joint::COUNT];
     let stats = teleop::run(&mut leader, &mut follower, options, stop, |r| {
         for joint in Joint::ALL {
             let i = joint.index();

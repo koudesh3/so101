@@ -126,6 +126,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "control",
+ "ctrlc",
+ "drivers",
+ "serde_json",
+ "ui-server",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,18 +374,6 @@ dependencies = [
  "scopeguard",
  "unescaper",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "so101"
-version = "0.1.0"
-dependencies = [
- "clap",
- "control",
- "ctrlc",
- "drivers",
- "serde_json",
- "ui-server",
 ]
 
 [[package]]
