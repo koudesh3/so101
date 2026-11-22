@@ -8,8 +8,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::robot::joint::{Joint, Ticks, Unit, Values, COUNT};
-use crate::wire::registers::TICKS_PER_TURN;
+use crate::so101::robot::joint::{Joint, Ticks, Unit, Values, COUNT};
+use crate::so101::wire::registers::TICKS_PER_TURN;
 
 pub const DEGREES_PER_TICK: f64 = 360.0 / TICKS_PER_TURN as f64;
 
@@ -179,7 +179,7 @@ impl TryFrom<CalibrationFile> for ArmCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::registers::CENTER_TICK;
+    use crate::so101::wire::registers::CENTER_TICK;
 
     fn cal() -> JointCalibration {
         JointCalibration { homing_offset: 0, range_min: 769, range_max: 3156 }

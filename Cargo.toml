@@ -1,12 +1,17 @@
-[package]
-name = "so101"
+[workspace]
+resolver = "2"
+members = ["crates/drivers", "crates/control", "crates/dashboard", "crates/so101"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-description = "Bare-metal-minded driver, calibrator, monitor and 1:1 teleop for the LeRobot SO-101 arm"
 license = "MIT"
 repository = "https://github.com/koudesh3/so101"
 
-[dependencies]
+[workspace.dependencies]
+drivers = { path = "crates/drivers" }
+control = { path = "crates/control" }
+dashboard = { path = "crates/dashboard" }
 serialport = { version = "4", default-features = false }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

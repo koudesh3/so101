@@ -1,0 +1,12 @@
+[package]
+name = "dashboard"
+description = "Live teleop dashboard, replay, the 3D viewer, and byte log -> HTML reports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+drivers.workspace = true
+control.workspace = true
+serde_json.workspace = true

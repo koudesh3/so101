@@ -10,16 +10,16 @@
 
 use std::time::Duration;
 
-use crate::control::teleop::TickReport;
-use crate::control::ticker::Tick;
-use crate::report::dashboard::{hello_json, tick_json, wire_json};
-use crate::report::visualize::decode;
-use crate::robot::arm::{Telemetry, TELEMETRY_LEN, TELEMETRY_START};
-use crate::robot::calibration::ArmCalibration;
-use crate::robot::joint::{Joint, Ticks, COUNT};
-use crate::wire::protocol::{Instruction, ServoError};
-use crate::wire::registers;
-use crate::wire::transport::{Direction, LogRecord};
+use control::teleop::TickReport;
+use control::ticker::Tick;
+use crate::live::{hello_json, tick_json, wire_json};
+use crate::visualize::decode;
+use drivers::so101::robot::arm::{Telemetry, TELEMETRY_LEN, TELEMETRY_START};
+use drivers::so101::robot::calibration::ArmCalibration;
+use drivers::so101::robot::joint::{Joint, Ticks, COUNT};
+use drivers::so101::wire::protocol::{Instruction, ServoError};
+use drivers::so101::wire::registers;
+use drivers::so101::wire::transport::{Direction, LogRecord};
 
 /// What the host last asked on a port, which says what a reply means.
 #[derive(Clone, Copy, PartialEq)]

@@ -18,10 +18,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::control::teleop::TickReport;
-use crate::robot::calibration::ArmCalibration;
-use crate::robot::joint::{Joint, Values};
-use crate::wire::transport::{Transport, TransportError};
+use control::teleop::TickReport;
+use drivers::so101::robot::calibration::ArmCalibration;
+use drivers::so101::robot::joint::{Joint, Values};
+use drivers::so101::wire::transport::{Transport, TransportError};
 
 const PAGE: &str = include_str!("dashboard.html");
 /// One arm, or the servo alone, drawn by the dashboard's renderer (?show=).

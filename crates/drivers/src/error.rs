@@ -3,8 +3,8 @@
 use std::fmt;
 use std::io;
 
-use crate::wire::protocol::ServoError;
-use crate::wire::transport::TransportError;
+use crate::so101::wire::protocol::ServoError;
+use crate::so101::wire::transport::TransportError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

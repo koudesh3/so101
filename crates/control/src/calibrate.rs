@@ -1,10 +1,10 @@
 //! The range sweep: poll positions until told to stop, keeping each joint's extremes.
 
-use crate::control::ticker::Ticker;
-use crate::error::{Error, Result};
-use crate::robot::arm::Arm;
-use crate::robot::joint::{Joint, Ticks, COUNT};
-use crate::wire::registers::{CENTER_TICK, TICKS_PER_TURN};
+use crate::ticker::Ticker;
+use drivers::error::{Error, Result};
+use drivers::so101::robot::arm::Arm;
+use drivers::so101::robot::joint::{Joint, Ticks, COUNT};
+use drivers::so101::wire::registers::{CENTER_TICK, TICKS_PER_TURN};
 
 pub struct Sweep {
     pub min: Ticks,

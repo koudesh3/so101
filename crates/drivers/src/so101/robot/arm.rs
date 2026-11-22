@@ -3,12 +3,12 @@
 
 use std::time::Duration;
 
-use crate::device::bus::Bus;
-use crate::robot::calibration::ArmCalibration;
+use crate::so101::device::bus::Bus;
+use crate::so101::robot::calibration::ArmCalibration;
 use crate::error::{Error, Result};
-use crate::robot::joint::{Joint, Ticks, Values, COUNT, IDS};
-use crate::wire::protocol::ServoError;
-use crate::wire::registers;
+use crate::so101::robot::joint::{Joint, Ticks, Values, COUNT, IDS};
+use crate::so101::wire::protocol::ServoError;
+use crate::so101::wire::registers;
 
 // The follower's position-loop gains. LeRobot halves P from the factory 32 to
 // 16 to avoid shake; higher P is stiffer and quicker to close a gap.

@@ -7,19 +7,19 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 
-use so101::robot::arm::{Arm, FollowerGains};
-use so101::device::bus::Bus;
-use so101::control::calibrate;
-use so101::robot::calibration::ArmCalibration;
-use so101::robot::joint::{Joint, Values, IDS};
-use so101::device::sim::SimulatedBus;
-use so101::control::teleop::{self, TeleopOptions};
-use so101::control::ticker::Ticker;
-use so101::wire::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
-use so101::device::sim::demo;
-use so101::report::dashboard::{self, Hub, Tap};
-use so101::report::{replay, visualize};
-use so101::{Error, Result};
+use drivers::so101::robot::arm::{Arm, FollowerGains};
+use drivers::so101::device::bus::Bus;
+use control::calibrate;
+use drivers::so101::robot::calibration::ArmCalibration;
+use drivers::so101::robot::joint::{Joint, Values, IDS};
+use drivers::so101::device::sim::SimulatedBus;
+use control::teleop::{self, TeleopOptions};
+use control::ticker::Ticker;
+use drivers::so101::wire::transport::{read_log, ByteLog, Recorder, SerialTransport, Transport};
+use drivers::so101::device::sim::demo;
+use dashboard::live::{self, Hub, Tap};
+use dashboard::{replay, visualize};
+use drivers::{Error, Result};
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -174,7 +174,7 @@ fn main() {
             let follower_bus = open_bus(Role::Follower, follower, cli.sim, &log, hub.clone());
             let dash = match (serve, hub) {
                 (Some(addr), Some(hub)) => {
-                    let bound = dashboard::serve(hub.clone(), &addr).unwrap_or_else(|e| fail(&format!("serve {addr}: {e}")));
+                    let bound = live::serve(hub.clone(), &addr).unwrap_or_else(|e| fail(&format!("serve {addr}: {e}")));
                     println!("dashboard: http://{bound}/");
                     Some((hub, ports))
                 }
@@ -372,7 +372,7 @@ fn cmd_teleop(
     hz: f64,
     max_step: i32,
     ticks: u64,
-    (gains, lead): (FollowerGains, [std::time::Duration; so101::robot::joint::COUNT]),
+    (gains, lead): (FollowerGains, [std::time::Duration; drivers::so101::robot::joint::COUNT]),
     sim: bool,
     dash: Option<(Arc<Hub>, [String; 2])>,
 ) -> Result<()> {
@@ -396,7 +396,7 @@ fn cmd_teleop(
         lead,
     };
     if let Some((hub, ports)) = &dash {
-        hub.set_hello(dashboard::hello_json(hz, max_step, sim, ports, [leader.calibration(), follower.calibration()]));
+        hub.set_hello(live::hello_json(hz, max_step, sim, ports, [leader.calibration(), follower.calibration()]));
     }
     let stop = ctrl_c_flag();
     println!(
@@ -406,7 +406,7 @@ fn cmd_teleop(
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
-    let mut was_released = [false; so101::robot::joint::COUNT];
+    let mut was_released = [false; drivers::so101::robot::joint::COUNT];
     let stats = teleop::run(&mut leader, &mut follower, options, stop, |r| {
         for joint in Joint::ALL {
             let i = joint.index();
@@ -418,7 +418,7 @@ fn cmd_teleop(
         }
         was_released = r.released;
         if let Some((hub, _)) = &dash {
-            hub.publish(dashboard::tick_json(hub.t_us(), r));
+            hub.publish(live::tick_json(hub.t_us(), r));
         }
         if r.tick.index % (hz as u64).max(1) == 0 || r.error.is_some() {
             match &r.error {

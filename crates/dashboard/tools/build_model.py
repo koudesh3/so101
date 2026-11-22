@@ -4,8 +4,8 @@
 Reads TheRobotStudio's URDFs and STLs (Apache-2.0,
 https://github.com/TheRobotStudio/SO-ARM100, Simulation/SO101) and writes:
 
-  src/report/assets/model.bin   every mesh, decimated, as interleaved vertices + indices
-  src/report/assets/model.json  the kinematic tree of both arms and where each mesh sits
+  crates/dashboard/src/assets/model.bin   every mesh, decimated, as interleaved vertices + indices
+  crates/dashboard/src/assets/model.json  the kinematic tree of both arms and where each mesh sits
 
 Vertex layout, 20 bytes: position f32x3 | shading normal i8x3 + pad | hull normal i8x3 + pad.
 The shading normal is crease-aware (faces meeting at more than CREASE_DEG keep
@@ -138,7 +138,7 @@ def parse_urdf(path):
 
 def main():
     src = pathlib.Path(sys.argv[1])
-    out_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "report" / "assets"
+    out_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "assets"
     out_dir.mkdir(parents=True, exist_ok=True)
     arms = {"follower": parse_urdf(src / "so101_new_calib.urdf"), "leader": parse_urdf(src / "so101_leader_new_calib.urdf")}
     names = sorted({v["mesh"] for arm in arms.values() for vs in arm["links"].values() for v in vs})

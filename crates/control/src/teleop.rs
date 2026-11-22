@@ -5,12 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::robot::arm::{Arm, Telemetry};
-use crate::wire::protocol::ServoError;
-use crate::robot::joint::Joint;
-use crate::error::{Error, Result};
-use crate::robot::joint::{Ticks, Values, COUNT};
-use crate::control::ticker::{Tick, Ticker};
+use drivers::so101::robot::arm::{Arm, Telemetry};
+use drivers::so101::wire::protocol::ServoError;
+use drivers::so101::robot::joint::Joint;
+use drivers::error::{Error, Result};
+use drivers::so101::robot::joint::{Ticks, Values, COUNT};
+use crate::ticker::{Tick, Ticker};
 
 #[derive(Clone, Copy, Debug)]
 pub struct TeleopOptions {

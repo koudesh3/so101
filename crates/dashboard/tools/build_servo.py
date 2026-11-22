@@ -8,8 +8,8 @@ This writes both shells undecimated, with the same vertex layout and the same
 crease-aware and hull normals as build_model.py, for the dashboard and the
 viewer to draw in place of model.bin's copies:
 
-  src/report/assets/servo.bin    each mesh's vertices then uint32 indices
-  src/report/assets/servo.json   {"stride", "meshes": {name: {v_off, v_count, i_off, i_count}}}
+  crates/dashboard/src/assets/servo.bin    each mesh's vertices then uint32 indices
+  crates/dashboard/src/assets/servo.json   {"stride", "meshes": {name: {v_off, v_count, i_off, i_count}}}
 
 usage: tools/build_servo.py path/to/SO-ARM100/Simulation/SO101
 needs: numpy
@@ -27,7 +27,7 @@ NAMES = ["sts3215_03a_v1.stl", "sts3215_03a_no_horn_v1.stl"]
 
 def main():
     src = pathlib.Path(sys.argv[1])
-    out_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "report" / "assets"
+    out_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "assets"
     blob, meshes = bytearray(), {}
     for name in NAMES:
         points, faces = build_model.load_stl(src / "assets" / name)

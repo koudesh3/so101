@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::robot::joint::Joint;
-use crate::wire::protocol::{parse_frame, Frame, Instruction, ParseError, BROADCAST_ID};
-use crate::wire::registers::{self, Register};
-use crate::wire::transport::{read_log, Direction, LogRecord};
+use drivers::so101::robot::joint::Joint;
+use drivers::so101::wire::protocol::{parse_frame, Frame, Instruction, ParseError, BROADCAST_ID};
+use drivers::so101::wire::registers::{self, Register};
+use drivers::so101::wire::transport::{read_log, Direction, LogRecord};
 
 #[derive(Clone, Debug)]
 pub struct DecodedFrame {
