@@ -56,6 +56,9 @@ impl Ticker {
 mod tests {
     use super::*;
 
+    // Known flaky under heavy parallel load (seen once on 2026-11-22, 15/15 passes alone): it
+    // asserts real OS wake-up lateness under 3 ms. Phase 1 moves the ticker onto the Clock
+    // trait, where this can be tested on a simulated clock.
     #[test]
     fn ticks_land_on_the_grid_not_after_the_work() {
         let mut t = Ticker::new(200.0);

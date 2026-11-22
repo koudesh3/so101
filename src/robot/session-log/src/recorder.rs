@@ -17,7 +17,6 @@ use contracts::{Clock, LogDrop, DESCRIPTOR_SET};
 use mcap::records::{MessageHeader, Metadata};
 use mcap::{WriteOptions, Writer};
 
-use crate::event::TOPIC_LOG_DROPS;
 use crate::header::{META_SESSION, META_SESSION_END};
 use crate::{Attachment, Envelope, Error, Event, Header, Result, SessionEnd, Sink};
 
@@ -287,9 +286,4 @@ impl<W: Write + Seek> LogWriter<W> {
         self.written += 1;
         Ok(())
     }
-}
-
-/// Topic names that hold recorder drops (used by the reader).
-pub(crate) fn is_drop_topic(topic: &str) -> bool {
-    topic == TOPIC_LOG_DROPS
 }

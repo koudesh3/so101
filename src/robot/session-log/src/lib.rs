@@ -6,9 +6,11 @@
 //! `sequence` (the producer's counter), so channels line up and drops show without decoding.
 
 mod bus;
+mod drops;
 mod error;
 mod event;
 mod header;
+mod raw;
 mod reader;
 mod recorder;
 mod recover;
@@ -17,10 +19,11 @@ mod replay;
 pub mod sample;
 
 pub use bus::{Bus, Sink};
+pub use drops::{Drop, DropKind};
 pub use error::{Error, Result};
 pub use event::{Arm, Envelope, Event};
 pub use header::{Attachment, Header, SessionEnd};
-pub use reader::{Drop, DropKind, Log};
+pub use reader::Log;
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
 pub use recover::{recover, RecoverSummary};
 pub use replay::replay;

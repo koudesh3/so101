@@ -190,9 +190,12 @@ src/proto/                     shared by every language in the repo
 src/robot/contracts/
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
   src/pb.rs                    generated types (only `log`, and later the PyO3 crate, use them)
-  src/*.rs                     domain types, From/TryFrom conversions, Clock, traits
+  src/joint.rs, camera.rs,     one module per concept: its domain types, their protobuf conversions,
+      tick.rs, policy.rs,      and the trait that produces or consumes them. A later phase adds
+      log.rs                   modules (step.rs, check.rs, ...) rather than growing these
+  src/time.rs                  Timestamp, MonotonicClock, ReplayClock
 src/robot/session-log/
-  bus, recorder, reader, replay clock, recover
+  bus, event (topics), recorder, raw (MCAP parsing), reader, drops, replay, recover
 ```
 
 - **Bus:** in-process fan-out of `Event` (an enum over every message, with its topic). Publishing

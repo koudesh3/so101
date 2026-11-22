@@ -1,26 +1,35 @@
 //! The contracts every part of the robot speaks (docs/phase0.md).
 //!
-//! - [`pb`]: the protobuf messages generated from `src/proto/`, the single definition of everything
-//!   that lands in a log. Only the log (and later the Python bindings) should touch these.
-//! - The domain types ([`JointState`], [`Frame`], [`Tick`], ...): fixed arrays and validated
-//!   fields, with conversions to and from [`pb`]. Traits and the rest of the code use these.
-//! - [`Clock`]: one monotonic time base, real or replayed.
-//! - The traits the runtime is built from: [`ArmDriver`], [`FrameSource`], [`TargetSource`],
-//!   [`Policy`].
+//! One module per concept, each holding its domain types, their protobuf conversions and the
+//! trait that produces or consumes them. A new phase adds modules rather than growing these.
+//!
+//! - [`joint`]: joints, positions, telemetry, targets; [`ArmDriver`], [`TargetSource`]
+//! - [`camera`]: cameras and frames; [`FrameSource`]
+//! - [`tick`]: what the control loop used at each tick (contract 2)
+//! - [`policy`]: observations, chunks; [`Policy`] (contract 4)
+//! - [`log`]: messages about the log itself
+//! - [`time`]: one monotonic time base, real or replayed
+//! - [`pb`]: the protobuf messages generated from `src/proto/`, the single definition of
+//!   everything that lands in a log. Only the log (and later the Python bindings) use them.
 
-mod convert;
+pub mod camera;
 mod error;
-mod time;
-mod traits;
-mod types;
+pub mod joint;
+pub mod log;
+pub mod policy;
+pub mod tick;
+pub mod time;
 
+pub use camera::{Camera, Frame, FrameRef, FrameSource};
 pub use error::ContractError;
+pub use joint::{ArmDriver, Joint, JointState, JointTarget, Joints, ServoTelemetry, Source, TargetSource, JOINT_COUNT};
+pub use log::LogDrop;
+pub use policy::{Chunk, Obs, Policy};
+pub use tick::Tick;
 pub use time::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
-pub use traits::{ArmDriver, DynError, FrameSource, Obs, Policy, TargetSource};
-pub use types::{
-    Camera, Chunk, Frame, FrameRef, Joint, JointState, JointTarget, Joints, LogDrop, ServoTelemetry, Source, Tick,
-    JOINT_COUNT,
-};
+
+/// The error a trait implementation returns: whatever the hardware or model layer produced.
+pub type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 /// The generated protobuf types.
 pub mod pb {

@@ -7,7 +7,7 @@ use std::io::{Seek, Write};
 use mcap::records::{MessageHeader, Metadata};
 use mcap::WriteOptions;
 
-use crate::reader::RawLog;
+use crate::raw::RawLog;
 use crate::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
