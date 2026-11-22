@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 drivers.workspace = true
+session-log.workspace = true
 control.workspace = true
 web-server.workspace = true
 clap.workspace = true

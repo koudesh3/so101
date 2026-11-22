@@ -177,7 +177,7 @@ Why the checkpoint probes matter: saving all checkpoints and running a fixed pro
 
 Each phase leaves a working system and produces one dev-log result. Later phases only start once the earlier one meets its exit criterion. Phases 0–3 need no hardware; stop after phase 3 until the Hanoi set and cameras are set up.
 
-- **Phase 0: contracts and log.** The contracts crate (message types, Clock, and the traits for arm, camera, policy, skill, check, and sequencer), the event bus, and a log writer and reader.
+- **Phase 0: contracts and log.** The contracts crate (message types, Clock, and the traits for arm, camera, target source and policy; skill, check and sequencer arrive in Phase 3), the event bus, and a log writer and reader. Design: [phase0.md](phase0.md).
   - Exit: a log written and read back gives identical records; the replay clock reproduces a run's timing.
 - **Phase 1: runtime on fakes.** Tick loop at 30 fps with the mock arm (follows targets with a lag), a replay camera reading dataset video, the action queue, mux, and safety wrapper.
   - Exit: unit tests on the action queue and the safety clamps (joint limits, rate limits, e-stop); a tick-jitter histogram from a 10-minute run.

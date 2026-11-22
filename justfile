@@ -3,11 +3,24 @@
 default:
     @just --list
 
-# Rust: formatting, clippy (warnings fail) and the tests (simulated servos, no hardware)
+# Formatting, clippy (warnings fail), the tests (simulated servos, no hardware), and the Python log check
 check:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+    @just check-py
+
+# Python reads a session log with no generated code (docs/phase0.md, contract 1)
+check-py:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
+    cargo run -q -p session-log --example write_sample -- "$d/sample.mcap" >/dev/null
+    uv run -q src/robot/log/tests/read_log.py "$d/sample.mcap"
+
+# Refresh the so101.v1 schema snapshot after an allowed (additive) .proto change
+proto-snapshot:
+    SO101_UPDATE_PROTO_SNAPSHOT=1 cargo test -q -p contracts --test schema_snapshot
 
 # Format the Rust code
 fmt:

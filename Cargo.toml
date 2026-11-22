@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
+    "src/robot/contracts",
+    "src/robot/log",
     "src/robot/drivers",
     "src/robot/control",
     "src/robot/cli",
@@ -14,6 +16,8 @@ license = "MIT"
 repository = "https://github.com/koudesh3/so101"
 
 [workspace.dependencies]
+contracts = { path = "src/robot/contracts" }
+session-log = { path = "src/robot/log" }
 drivers = { path = "src/robot/drivers" }
 control = { path = "src/robot/control" }
 web-server = { path = "src/web/server" }
@@ -22,6 +26,13 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ctrlc = "3"
+prost = "0.14"
+prost-types = "0.14"
+prost-build = "0.14"
+protox = "0.10"
+bytes = "1"
+libc = "0.2"
+mcap = { version = "0.26", default-features = false }
 
 [profile.release]
 debug = 1

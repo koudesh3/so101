@@ -1,0 +1,103 @@
+// The messages the robot writes into its session logs. See docs/phase0.md.
+//
+// - Times are nanoseconds of the host's CLOCK_MONOTONIC (contract 3).
+// - Positions are degrees, LeRobot's units; the gripper is 0-100.
+// - Joint arrays have exactly six entries, in LeRobot's order: shoulder_pan, shoulder_lift,
+//   elbow_flex, wrist_flex, wrist_roll, gripper.
+// - Camera frames are foxglove.CompressedImage (proto/foxglove), not a message here.
+//
+// Evolution rules (contract 1): never reuse or renumber a field; removed fields become
+// `reserved`; breaking changes go in so101.v2. The schema snapshot test enforces this.
+
+syntax = "proto3";
+
+package so101.v1;
+
+enum Joint {
+  JOINT_UNSPECIFIED = 0;
+  SHOULDER_PAN = 1;
+  SHOULDER_LIFT = 2;
+  ELBOW_FLEX = 3;
+  WRIST_FLEX = 4;
+  WRIST_ROLL = 5;
+  GRIPPER = 6;
+}
+
+enum Camera {
+  CAMERA_UNSPECIFIED = 0;
+  WRIST = 1;
+  SCENE = 2;
+}
+
+enum SourceKind {
+  SOURCE_KIND_UNSPECIFIED = 0;
+  TELEOP = 1;
+  SCRIPT = 2;
+  POLICY = 3;
+}
+
+// Who produced a target or action. `name` is the script's name or the policy's checkpoint ID.
+message Source {
+  SourceKind kind = 1;
+  string name = 2;
+}
+
+// All six positions from one sync read. In the servo loop, the record's sequence is the slot
+// index (contract 5), so a skipped slot is a sequence gap.
+message JointState {
+  uint64 t_ns = 1;
+  repeated float pos = 2;
+}
+
+// One servo's telemetry block. The driver reads one servo per slot, rotating, so each joint
+// has its own time. Fields are optional because 0 is a valid reading.
+message ServoTelemetry {
+  uint64 t_ns = 1;
+  Joint joint = 2;
+  optional float velocity_deg_s = 3;
+  optional float load_percent = 4;  // of maximum torque, signed
+  optional float voltage_v = 5;
+  optional float temperature_c = 6;
+  optional uint32 current_raw = 7;  // Present_Current, raw register counts
+  uint32 status = 8;                // the servo's status (error) byte
+  bool moving = 9;
+}
+
+message JointTarget {
+  uint64 t_ns = 1;
+  repeated float pos = 2;
+  Source source = 3;
+}
+
+// A camera frame's identity: its camera and the kernel's frame number (the record's sequence).
+message FrameRef {
+  Camera camera = 1;
+  uint32 sequence = 2;
+}
+
+// What the control loop used at one 30 Hz tick (contract 2): the truth downstream reads.
+message Tick {
+  uint64 t_ns = 1;
+  repeated float state = 2;
+  FrameRef wrist = 3;
+  FrameRef scene = 4;
+  repeated float action = 5;
+  Source source = 6;
+}
+
+// A predicted action chunk: k rows of six positions, row-major.
+message Chunk {
+  uint64 t_obs_ns = 1;
+  uint32 k = 2;
+  repeated float actions = 3;
+  string ckpt_id = 4;
+}
+
+// A contiguous run of messages the recorder dropped because it fell behind.
+message LogDrop {
+  uint64 t_ns = 1;
+  string topic = 2;
+  uint32 first_sequence = 3;
+  uint32 last_sequence = 4;
+  uint32 count = 5;
+}

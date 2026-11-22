@@ -1,0 +1,133 @@
+//! The session header (contract 1) and the end-of-session record, stored as MCAP metadata.
+
+use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use contracts::{MonotonicClock, Timestamp};
+
+use crate::{Error, Result};
+
+pub(crate) const META_SESSION: &str = "so101.session";
+pub(crate) const META_SESSION_END: &str = "so101.session_end";
+const CONFIG_PREFIX: &str = "config.";
+
+/// Who wrote the log, from which commit, on which machine and clock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    pub git_commit: String,
+    pub git_dirty: bool,
+    pub host: String,
+    /// What capture and event times mean in this log, e.g. "CLOCK_MONOTONIC" (contract 3).
+    pub clock_source: String,
+    /// Read together at session start: converts any timestamp in the log to a real date.
+    pub start_monotonic: Timestamp,
+    pub start_wall_unix_ns: u64,
+    /// Flat config values; the full config file can go in as an [`Attachment`].
+    pub config: BTreeMap<String, String>,
+}
+
+impl Header {
+    /// A header stamped now on this host's monotonic clock. The caller fills in the git fields
+    /// and config.
+    pub fn now() -> Self {
+        let start_monotonic = MonotonicClock::read();
+        let start_wall_unix_ns = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        Header {
+            git_commit: String::new(),
+            git_dirty: false,
+            host: hostname(),
+            clock_source: "CLOCK_MONOTONIC".to_string(),
+            start_monotonic,
+            start_wall_unix_ns,
+            config: BTreeMap::new(),
+        }
+    }
+
+    /// The wall-clock time (Unix ns) of a monotonic timestamp in this log.
+    pub fn wall_time_ns(&self, t: Timestamp) -> i128 {
+        self.start_wall_unix_ns as i128 + (t.0 as i128 - self.start_monotonic.0 as i128)
+    }
+
+    pub(crate) fn to_metadata(&self) -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        m.insert("git_commit".into(), self.git_commit.clone());
+        m.insert("git_dirty".into(), self.git_dirty.to_string());
+        m.insert("host".into(), self.host.clone());
+        m.insert("clock_source".into(), self.clock_source.clone());
+        m.insert("start_monotonic_ns".into(), self.start_monotonic.0.to_string());
+        m.insert("start_wall_unix_ns".into(), self.start_wall_unix_ns.to_string());
+        for (k, v) in &self.config {
+            m.insert(format!("{CONFIG_PREFIX}{k}"), v.clone());
+        }
+        m
+    }
+
+    pub(crate) fn from_metadata(m: &BTreeMap<String, String>) -> Result<Self> {
+        let get = |k: &str| m.get(k).cloned().ok_or_else(|| Error::Format(format!("session header lacks {k}")));
+        let num = |k: &str| get(k)?.parse::<u64>().map_err(|_| Error::Format(format!("session header: bad {k}")));
+        Ok(Header {
+            git_commit: get("git_commit")?,
+            git_dirty: get("git_dirty")? == "true",
+            host: get("host")?,
+            clock_source: get("clock_source")?,
+            start_monotonic: Timestamp(num("start_monotonic_ns")?),
+            start_wall_unix_ns: num("start_wall_unix_ns")?,
+            config: m
+                .iter()
+                .filter_map(|(k, v)| k.strip_prefix(CONFIG_PREFIX).map(|k| (k.to_string(), v.clone())))
+                .collect(),
+        })
+    }
+}
+
+/// Written when the recorder finishes. Missing if the process was killed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEnd {
+    /// False if the recorder overflowed and stopped writing (the disk was effectively dead).
+    pub complete: bool,
+    pub messages_written: u64,
+    pub frames_dropped: u64,
+    pub messages_lost: u64,
+}
+
+impl SessionEnd {
+    pub(crate) fn to_metadata(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("complete".to_string(), self.complete.to_string()),
+            ("messages_written".to_string(), self.messages_written.to_string()),
+            ("frames_dropped".to_string(), self.frames_dropped.to_string()),
+            ("messages_lost".to_string(), self.messages_lost.to_string()),
+        ])
+    }
+
+    pub(crate) fn from_metadata(m: &BTreeMap<String, String>) -> Result<Self> {
+        let num = |k: &str| {
+            m.get(k).and_then(|v| v.parse::<u64>().ok()).ok_or_else(|| Error::Format(format!("session end: bad {k}")))
+        };
+        Ok(SessionEnd {
+            complete: m.get("complete").map(String::as_str) == Some("true"),
+            messages_written: num("messages_written")?,
+            frames_dropped: num("frames_dropped")?,
+            messages_lost: num("messages_lost")?,
+        })
+    }
+}
+
+/// A file stored inside the log, such as the full config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+fn hostname() -> String {
+    let mut buf = [0u8; 256];
+    // SAFETY: the buffer is valid for its length; gethostname NUL-terminates on success.
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) };
+    if rc != 0 {
+        return "unknown".into();
+    }
+    let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+    String::from_utf8_lossy(&buf[..end]).into_owned()
+}

@@ -10,6 +10,10 @@ All code is under `src/`, split by what it does rather than by language:
 ```
 src/
   robot/           runs the arm (Rust). Each crate depends only on the ones above it:
+    contracts/       the messages every part speaks (protobuf, proto/so101/v1), the monotonic
+                     clock, and the traits: ArmDriver, FrameSource, TargetSource, Policy
+    log/             the event bus and the session log (MCAP): recorder, reader with drop
+                     detection, replay, recovery (package `session-log`)
     drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
                      STS3215 control table, the serial transport and byte log, one servo bus (real
                      or simulated), the six joints, calibration, an arm
@@ -40,10 +44,8 @@ Part 2 ([the spec](docs/part2-spec.md)) turns this into a single-arm robot that 
 grasp and place, scripted transits between pegs, and a sequencer over a catalog of skills. New
 parts arrive with the phase that needs them, not before:
 
-- `src/robot/contracts`: the message types (JointState, JointTarget, Frame, Obs, Chunk, ...),
-  the clock, and the traits every module implements (ArmDriver, FrameSource, Policy, Skill,
-  Check, Sequencer)
-- `src/robot/log`: the event bus, recorder and reader; everything is logged and replayable
+- Phase 0 is built: `contracts` and `log` ([the design](docs/phase0.md)). Skill, check and
+  sequencer traits, and their messages, arrive in Phase 3
 - `drivers` grows mock and replay arms, the leader as a target source, and USB cameras (Linux only)
 - `control` grows the safety wrapper, the target mux and the action queue
 - `src/robot/runtime`: skills, checks, the step runner, and the Hanoi sequencer
@@ -60,7 +62,7 @@ With [mise](https://mise.jdx.dev) installed, `mise install` fetches Rust, just a
 
 ```
 just              # list the commands
-just check        # clippy and the tests, against simulated servos
+just check        # formatting, clippy, the tests (simulated servos), and Python reading a log
 just sim          # teleop the simulated arms, no hardware
 ```
 

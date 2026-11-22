@@ -129,6 +129,18 @@ enum Command {
         #[arg(long, default_value_t = 400)]
         rows: usize,
     },
+    /// Session logs (MCAP).
+    Log {
+        #[command(subcommand)]
+        command: LogCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LogCommand {
+    /// Rewrite a log cut short (kill, power loss) into a complete file any reader can open.
+    /// Keeps everything up to the last complete chunk. Never overwrites OUTPUT.
+    Recover { input: PathBuf, output: PathBuf },
 }
 
 // Which bus a command is opening; decides the log label and the simulator's behaviour.
@@ -210,6 +222,7 @@ fn main() {
             cmd_replay(&log_file, &leader_calibration, &follower_calibration, &out)
         }
         Command::Visualize { log_file, out, rows } => cmd_visualize(&log_file, &out, rows),
+        Command::Log { command: LogCommand::Recover { input, output } } => cmd_log_recover(&input, &output),
     };
     if let Some(log) = &log {
         log.flush();
@@ -481,6 +494,21 @@ fn cmd_replay(log_file: &Path, leader_cal: &Path, follower_cal: &Path, out: &Pat
     std::fs::write(out, events.join("\n") + "\n")?;
     let ticks = events.iter().filter(|e| e.contains(r#""k":"t""#)).count();
     println!("{} events, {ticks} ticks -> {}", events.len(), out.display());
+    Ok(())
+}
+
+fn cmd_log_recover(input: &Path, output: &Path) -> Result<()> {
+    let bytes = std::fs::read(input)?;
+    // create_new: never overwrite an existing file, which may be a recording.
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(output)?;
+    let (_, summary) =
+        session_log::recover(&bytes, std::io::BufWriter::new(file)).map_err(|e| Error::Other(e.to_string()))?;
+    match summary.truncated {
+        Some(why) => {
+            println!("recovered {} messages -> {} (input stopped early: {why})", summary.messages, output.display())
+        }
+        None => println!("input was complete; copied {} messages -> {}", summary.messages, output.display()),
+    }
     Ok(())
 }
 
