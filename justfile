@@ -3,10 +3,15 @@
 default:
     @just --list
 
-# Rust: clippy and the tests (simulated servos, no hardware)
+# Rust: formatting, clippy (warnings fail) and the tests (simulated servos, no hardware)
 check:
-    cargo clippy --workspace --all-targets
+    cargo fmt --check
+    cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+
+# Format the Rust code
+fmt:
+    cargo fmt
 
 # Build the so101 binary (release)
 build:

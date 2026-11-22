@@ -19,9 +19,9 @@ pub fn sweep(arm: &mut Arm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool)
         // note: a voltage flag no longer fails the read (see Bus::take_flags),
         // so hand-driven sweeps on a marginal 5 V supply keep every sample.
         let ticks = arm.read_ticks()?;
-        for i in 0..COUNT {
-            sweep.min[i] = sweep.min[i].min(ticks[i]);
-            sweep.max[i] = sweep.max[i].max(ticks[i]);
+        for (i, &t) in ticks.iter().enumerate() {
+            sweep.min[i] = sweep.min[i].min(t);
+            sweep.max[i] = sweep.max[i].max(t);
         }
         if !keep_going(&sweep) {
             return Ok(sweep);

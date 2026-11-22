@@ -186,6 +186,8 @@ struct Release {
     pushing: i32,
 }
 
+// Phase 1 splits this loop into the leader source, mux and safety wrapper; until then it takes everything.
+#[allow(clippy::too_many_arguments)]
 fn one_tick(
     leader: &mut Arm,
     follower: &mut Arm,

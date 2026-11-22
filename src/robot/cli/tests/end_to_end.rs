@@ -563,7 +563,7 @@ impl drivers::arm::so101::transport::Transport for SlowEepromAcks {
             self.in_flight.push((busy.unwrap_or(now + Self::TURNAROUND), rest[..used].to_vec()));
             rest = &rest[used..];
         }
-        if instr == 0x03 && (addr < 40 || addr >= 80) {
+        if instr == 0x03 && !(40..80).contains(&addr) {
             let done = now + Self::COMMIT;
             self.busy_until.insert(id, done);
             for (t, bytes) in &mut self.in_flight {

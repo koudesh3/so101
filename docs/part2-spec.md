@@ -68,7 +68,7 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 | `runtime::step_runner` | — | — | RunStep, CheckResult | StepResult |
 | `runtime::sequencer` | `Sequencer` | hanoi_fsm; opus_agent in the last phase | Task goal, StepResult, scene Frame | Command |
 | `runtime::bus` + `record` | Event sink | recorder, export | Every Event | Log store, versioned datasets |
-| `py/export` | Offline script | — | Checkpoint, logged observations | act.onnx, export parity report |
+| `src/ml/export` | Offline script | — | Checkpoint, logged observations | act.onnx, export parity report |
 
 Rules that keep it swappable: messages in LeRobot's keys and units; one writer to the arm; safety as a wrapper that code above can't bypass; one clock with timestamps on everything; a conformance test suite per trait that mock, replay, and real implementations all pass.
 
