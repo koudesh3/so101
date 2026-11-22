@@ -1,0 +1,4 @@
+[tools]
+rust = "1.90"
+just = "latest"
+uv = "latest"

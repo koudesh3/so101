@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/drivers", "crates/control", "crates/dashboard", "crates/so101"]
+members = ["crates/drivers", "crates/control", "crates/server", "crates/so101"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,7 +11,7 @@ repository = "https://github.com/koudesh3/so101"
 [workspace.dependencies]
 drivers = { path = "crates/drivers" }
 control = { path = "crates/control" }
-dashboard = { path = "crates/dashboard" }
+server = { path = "crates/server" }
 serialport = { version = "4", default-features = false }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

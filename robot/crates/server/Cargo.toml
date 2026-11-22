@@ -1,6 +1,6 @@
 [package]
-name = "dashboard"
-description = "Live teleop dashboard, replay, the 3D viewer, and byte log -> HTML reports"
+name = "server"
+description = "Serves the ui/ web apps and streams live teleop events to them; replay and byte log -> HTML reports"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

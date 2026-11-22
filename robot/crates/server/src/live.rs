@@ -23,17 +23,17 @@ use drivers::so101::robot::calibration::ArmCalibration;
 use drivers::so101::robot::joint::{Joint, Values};
 use drivers::so101::wire::transport::{Transport, TransportError};
 
-const PAGE: &str = include_str!("dashboard.html");
+const PAGE: &str = include_str!("../../../../ui/dashboard/index.html");
 /// One arm, or the servo alone, drawn by the dashboard's renderer (?show=).
-const VIEWER: &str = include_str!("viewer.html");
-/// SO-101 meshes and kinematic tree, packed by tools/build_model.py from
+const VIEWER: &str = include_str!("../../../../ui/viewer/index.html");
+/// SO-101 meshes and kinematic tree, packed by ui/tools/build_model.py from
 /// TheRobotStudio's SO-ARM100 simulation assets (Apache-2.0).
-const MODEL_JSON: &[u8] = include_bytes!("assets/model.json");
-const MODEL_BIN: &[u8] = include_bytes!("assets/model.bin");
-/// Both STS3215 shells at full resolution (tools/build_servo.py), drawn in
+const MODEL_JSON: &[u8] = include_bytes!("../../../../ui/assets/model.json");
+const MODEL_BIN: &[u8] = include_bytes!("../../../../ui/assets/model.bin");
+/// Both STS3215 shells at full resolution (ui/tools/build_servo.py), drawn in
 /// place of model.bin's decimated copies.
-const SERVO_JSON: &[u8] = include_bytes!("assets/servo.json");
-const SERVO_BIN: &[u8] = include_bytes!("assets/servo.bin");
+const SERVO_JSON: &[u8] = include_bytes!("../../../../ui/assets/servo.json");
+const SERVO_BIN: &[u8] = include_bytes!("../../../../ui/assets/servo.bin");
 
 /// The "hello" event: calibrations, rate and limits for this run.
 pub fn hello_json(hz: f64, max_step: i32, sim: bool, ports: &[String; 2], cal: [&ArmCalibration; 2]) -> String {
