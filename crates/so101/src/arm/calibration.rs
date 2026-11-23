@@ -188,7 +188,7 @@ impl TryFrom<CalibrationFile> for Calibration {
 
 pub fn sweep(arm: &mut ServoArm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool) -> Result<Sweep> {
     let mut sweep = Sweep { min: [i32::MAX; JOINT_COUNT], max: [i32::MIN; JOINT_COUNT] };
-    let mut grid = Grid::new(hz);
+    let mut grid = Grid::new(hz, arm.clock());
     loop {
         grid.wait();
         // A voltage flag does not fail the read (Servos::take_flags), so hand-driven

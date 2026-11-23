@@ -14,7 +14,7 @@ use crate::policy::CheckpointId;
 pub use calibration::{check_centred, sweep, Calibration, Sweep};
 pub use servo_arm::{FollowerGains, ServoArm, IDS};
 pub use servos::Servos;
-pub use simulated_servos::{demo, Hand, Obstacle, SimClock, SimulatedServos};
+pub use simulated_servos::{demo, Hand, Obstacle, SimulatedServos};
 pub use uart::{read_trace, ByteTrace, SerialPort, Traced, Transport};
 
 pub const JOINT_COUNT: usize = 6;

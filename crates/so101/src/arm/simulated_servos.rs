@@ -2,14 +2,15 @@
 //! instruction bytes and answer with real status bytes.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::arm::servos::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::servos::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
 use crate::arm::Error;
 use crate::arm::Transport;
 use crate::arm::IDS;
+use crate::clock::{Clock, MonotonicClock, Timestamp};
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
 pub const MAX_SPEED_COUNTS_PER_S: f64 = 3100.0;
@@ -50,12 +51,6 @@ pub type Hand = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
 // lowest shaft angle it can reach (an object in the gripper, say).
 pub type Obstacle = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
 
-#[derive(Clone)]
-pub enum SimClock {
-    Real(Instant),
-    Manual(Arc<Mutex<f64>>),
-}
-
 pub struct SimServo {
     pub id: u8,
     pub table: [u8; 128],
@@ -69,7 +64,8 @@ pub struct SimServo {
 
 pub struct SimulatedServos {
     pub servos: Vec<SimServo>,
-    pub clock: SimClock,
+    clock: Arc<dyn Clock>,
+    start: Timestamp,
     hand: Option<Hand>,
     obstacle: Option<Obstacle>,
     reply_queue: VecDeque<u8>,
@@ -77,23 +73,6 @@ pub struct SimulatedServos {
     name: String,
     // Replies from these IDs are dropped, to exercise timeouts.
     pub silenced_ids: Vec<u8>,
-}
-
-impl SimClock {
-    pub fn manual() -> Self {
-        SimClock::Manual(Arc::new(Mutex::new(0.0)))
-    }
-    pub fn now(&self) -> f64 {
-        match self {
-            SimClock::Real(epoch) => epoch.elapsed().as_secs_f64(),
-            SimClock::Manual(t) => *t.lock().unwrap(),
-        }
-    }
-    pub fn advance(&self, dt: Duration) {
-        if let SimClock::Manual(t) = self {
-            *t.lock().unwrap() += dt.as_secs_f64();
-        }
-    }
 }
 
 impl SimServo {
@@ -222,11 +201,13 @@ impl SimServo {
 }
 
 impl SimulatedServos {
-    pub fn new(name: &str, ids: &[u8], clock: SimClock) -> Self {
+    pub fn new(name: &str, ids: &[u8], clock: Arc<dyn Clock>) -> Self {
         let servos = ids.iter().map(|&id| SimServo::new(id, CENTER_COUNT as f64)).collect();
+        let start = clock.now();
         Self {
             servos,
             clock,
+            start,
             hand: None,
             obstacle: None,
             reply_queue: VecDeque::new(),
@@ -236,9 +217,20 @@ impl SimulatedServos {
         }
     }
 
-    // A full arm on the real clock that only tracks goals.
+    /// A full arm on the real clock that only tracks goals.
     pub fn arm(name: &str) -> Self {
-        Self::new(name, &IDS, SimClock::Real(Instant::now()))
+        Self::new(name, &IDS, Arc::new(MonotonicClock))
+    }
+
+    /// Runs the physics on `clock` from now on, starting at its present time.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.start = clock.now();
+        self.clock = clock;
+        self
+    }
+
+    fn now_s(&self) -> f64 {
+        self.clock.now().since(self.start).as_secs_f64()
     }
 
     pub fn waving_arm(name: &str) -> Self {
@@ -274,7 +266,7 @@ impl SimulatedServos {
     }
 
     pub fn settle(&mut self) {
-        let now = self.clock.now();
+        let now = self.now_s();
         let hand = self.hand.as_ref();
         let obstacle = self.obstacle.as_ref();
         for s in &mut self.servos {

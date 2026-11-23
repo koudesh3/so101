@@ -2,12 +2,13 @@
 //! follower's gains, reading and writing through `Servos`, decoding actuator status. Positions here
 //! are in the calibrated coordinate; it's the only code above `servos` that names a register.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::calibration::Calibration;
 use super::servos::{self, ServoError, Servos};
 use super::{ActuatorStatus, Arm, Counts, Error, Fault, Joint, JointState, Pose, Result, JOINT_COUNT};
-use crate::clock::{MonotonicClock, Timestamp};
+use crate::clock::{Clock, MonotonicClock, Timestamp};
 
 /// Servo IDs, in `Joint::ALL` order.
 pub const IDS: [u8; JOINT_COUNT] = [1, 2, 3, 4, 5, 6];
@@ -34,6 +35,7 @@ pub struct ServoArm {
     label: String,
     servos: Servos,
     calibration: Calibration,
+    clock: Arc<dyn Clock>,
 }
 
 impl Joint {
@@ -52,7 +54,17 @@ impl FollowerGains {
 
 impl ServoArm {
     pub fn new(label: &str, servos: Servos, calibration: Calibration) -> Self {
-        Self { label: label.to_string(), servos, calibration }
+        Self { label: label.to_string(), servos, calibration, clock: Arc::new(MonotonicClock) }
+    }
+
+    /// Stamps readings on `clock` instead of the host's monotonic clock.
+    pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        self.clock.clone()
     }
 
     pub fn label(&self) -> &str {
@@ -184,7 +196,7 @@ impl ServoArm {
     /// One block read covers every field.
     pub fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
         let block = self.servos.read_block(joint.id(), STATUS_BLOCK_START, STATUS_BLOCK_LEN)?;
-        decode_actuator(joint, MonotonicClock::read(), &block)
+        decode_actuator(joint, self.clock.now(), &block)
             .ok_or_else(|| Error::Corrupt(format!("short status block from servo {}", joint.id())))
     }
 
@@ -207,7 +219,7 @@ impl ServoArm {
 impl Arm for ServoArm {
     fn read_state(&mut self) -> Result<JointState> {
         let counts = self.read_counts()?;
-        Ok(JointState { t: MonotonicClock::read(), pose: self.to_pose(&counts), counts: Some(counts) })
+        Ok(JointState { t: self.clock.now(), pose: self.to_pose(&counts), counts: Some(counts) })
     }
 
     fn take_faults(&mut self) -> [Vec<Fault>; JOINT_COUNT] {

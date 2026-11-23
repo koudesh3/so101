@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::arm::{Arm, Counts, Fault, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
 use crate::arm::{Error, Result};
+use crate::clock::{Clock, Timestamp};
 use crate::control::Grid;
 use crate::control::{ArmRole, Clip, Event, Limit, Message, Tick};
 
@@ -91,7 +92,7 @@ enum Direction {
 // Leader velocity, smoothed, for commanding a little ahead of the hand.
 #[derive(Default)]
 struct Predictor {
-    last: Option<(Instant, Pose)>,
+    last: Option<(Timestamp, Pose)>,
     velocity: [f32; JOINT_COUNT],
 }
 
@@ -121,9 +122,9 @@ impl Predictor {
     // Soft, so lead fades in rather than switching on.
     const DEADBAND: f32 = 12.0;
 
-    fn ahead(&mut self, now: Instant, pose: Pose, lead: [Duration; JOINT_COUNT]) -> Pose {
+    fn ahead(&mut self, now: Timestamp, pose: Pose, lead: [Duration; JOINT_COUNT]) -> Pose {
         if let Some((t, prev)) = self.last {
-            let dt = now.duration_since(t).as_secs_f32();
+            let dt = now.since(t).as_secs_f32();
             if dt > 1e-4 {
                 for i in 0..JOINT_COUNT {
                     let v = (pose.0[i] - prev.0[i]) / dt;
@@ -146,6 +147,7 @@ pub fn run(
     leader: &mut impl Arm,
     follower: &mut impl Arm,
     options: TeleopOptions,
+    clock: Arc<dyn Clock>,
     stop: Arc<AtomicBool>,
     mut on_step: impl FnMut(std::result::Result<&[Event], &str>),
 ) -> Result<TeleopStats> {
@@ -156,7 +158,7 @@ pub fn run(
     let _ = follower.take_faults();
     let _ = leader.take_faults();
 
-    let loop_result = run_loop(leader, follower, options, &stop, &mut on_step);
+    let loop_result = run_loop(leader, follower, options, &clock, &stop, &mut on_step);
     let torque_result = follower.torque_off();
 
     match (loop_result, torque_result) {
@@ -170,10 +172,11 @@ fn run_loop(
     leader: &mut impl Arm,
     follower: &mut impl Arm,
     options: TeleopOptions,
+    clock: &Arc<dyn Clock>,
     stop: &AtomicBool,
     on_step: &mut impl FnMut(std::result::Result<&[Event], &str>),
 ) -> Result<TeleopStats> {
-    let mut grid = Grid::new(options.hz);
+    let mut grid = Grid::new(options.hz, clock.clone());
     let mut stats = TeleopStats::default();
     let mut state = LoopState::default();
     let mut consecutive_errors = 0u32;
@@ -185,7 +188,7 @@ fn run_loop(
         }
         let cycle = grid.wait();
         let work_started = Instant::now();
-        let outcome = one_step(leader, follower, options, &mut state, cycle.index, stats.ticks);
+        let outcome = one_step(leader, follower, options, clock.as_ref(), &mut state, cycle.index, stats.ticks);
         let work_time = work_started.elapsed();
         stats.ticks += 1;
         stats.worst_work_time = stats.worst_work_time.max(work_time);
@@ -217,6 +220,7 @@ fn one_step(
     leader: &mut impl Arm,
     follower: &mut impl Arm,
     options: TeleopOptions,
+    clock: &dyn Clock,
     state: &mut LoopState,
     cycle: u64,
     tick: u64,
@@ -228,7 +232,7 @@ fn one_step(
     let follower_counts = counts(&follower_state)?;
     let (follower_pose, leader_pose) = (follower_state.pose, leader_state.pose);
 
-    let requested = state.predictor.ahead(Instant::now(), leader_pose, options.lead);
+    let requested = state.predictor.ahead(clock.now(), leader_pose, options.lead);
     let in_range = follower.to_counts(&requested);
     let mut goal = in_range;
     let period = 1.0 / options.hz;
@@ -278,7 +282,7 @@ fn one_step(
         None => goal,
     };
     follower.write_goal(&sent)?;
-    let t_sent = crate::clock::MonotonicClock::read();
+    let t_sent = clock.now();
     state.last_goal = Some(sent);
     let action = follower.to_pose(&sent);
 
@@ -359,7 +363,7 @@ mod tests {
     // Feed `steps` poses, 10 ms apart, moving pan at `deg_per_s`; return the last prediction.
     fn predict(deg_per_s: f32, steps: u32, lead: [Duration; JOINT_COUNT]) -> (Pose, Pose) {
         let mut p = Predictor::default();
-        let t0 = Instant::now();
+        let t0 = Timestamp(0);
         let mut last = (Pose::default(), Pose::default());
         for i in 0..steps {
             let mut pose = Pose::default();

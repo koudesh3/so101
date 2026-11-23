@@ -6,9 +6,10 @@ use std::time::Duration;
 
 use so101::arm::servos;
 use so101::arm::{
-    read_trace, sweep, ActuatorStatus, ByteTrace, Calibration, Counts, Error, Fault, Joint, ServoArm, Servos, SimClock,
+    read_trace, sweep, ActuatorStatus, ByteTrace, Calibration, Counts, Error, Fault, Joint, ServoArm, Servos,
     SimulatedServos, Traced, IDS, JOINT_COUNT,
 };
+use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
 use so101::control::{teleop, ArmRole, Event, Limit, Message, TeleopOptions, Tick};
 
 /// One teleop step's events, by what they are.
@@ -236,8 +237,18 @@ fn sim_bus(name: &str) -> Servos {
     Servos::new(Box::new(SimulatedServos::arm(name)))
 }
 
-fn sim_arm(sim: SimulatedServos, label: &str) -> ServoArm {
-    ServoArm::new(label, Servos::new(Box::new(sim)), Calibration::identity(label))
+/// A clock that only moves when something waits on it: the grid, or a test stepping time.
+fn stepped() -> Arc<ReplayClock> {
+    Arc::new(ReplayClock::new(Timestamp(0), ReplaySpeed::AsFastAsPossible))
+}
+
+fn advance(clock: &ReplayClock, by: Duration) {
+    clock.sleep_until(clock.now() + by);
+}
+
+fn sim_arm(sim: SimulatedServos, label: &str, clock: &Arc<ReplayClock>) -> ServoArm {
+    ServoArm::new(label, Servos::new(Box::new(sim.with_clock(clock.clone()))), Calibration::identity(label))
+        .with_clock(clock.clone())
 }
 
 #[test]
@@ -281,17 +292,17 @@ fn read_only_register_is_refused_before_touching_the_wire() {
 
 #[test]
 fn servo_tracks_goal_within_speed_limit() {
-    let clock = SimClock::manual();
+    let clock = stepped();
     let sim = SimulatedServos::new("servos", &[1], clock.clone());
     let mut servos = Servos::new(Box::new(sim));
     servos.write(1, servos::TORQUE_ENABLE, 1).unwrap();
     servos.write(1, servos::GOAL_POSITION, 3048).unwrap();
 
-    clock.advance(Duration::from_millis(100));
+    advance(&clock, Duration::from_millis(100));
     let after_100ms = servos.read(1, servos::PRESENT_POSITION).unwrap();
     assert!(after_100ms > 2048 && after_100ms <= 2048 + 310, "{after_100ms}");
 
-    clock.advance(Duration::from_secs(2));
+    advance(&clock, Duration::from_secs(2));
     let settled = servos.read(1, servos::PRESENT_POSITION).unwrap();
     assert!((settled - 3048).abs() <= 2, "{settled}");
     assert_eq!(servos.read(1, servos::MOVING).unwrap(), 0);
@@ -314,20 +325,22 @@ fn sync_read_returns_in_id_order_and_fails_on_a_missing_servo() {
 
 #[test]
 fn check_present_rejects_a_wrong_model() {
-    let mut sim = SimulatedServos::arm("servos");
+    let clock = stepped();
+    let mut sim = SimulatedServos::arm("servos").with_clock(clock.clone());
     sim.servo_mut(2).unwrap().set(servos::MODEL_NUMBER, 1234);
-    let mut arm = sim_arm(sim, "a");
+    let mut arm = sim_arm(sim, "a", &clock);
     let err = arm.check_present().unwrap_err();
     assert!(matches!(err, Error::UnexpectedModel { id: 2, model: 1234 }), "{err}");
 }
 
 #[test]
 fn recentre_makes_every_joint_read_centre_without_moving() {
-    let mut sim = SimulatedServos::arm("servos");
+    let clock = stepped();
+    let mut sim = SimulatedServos::arm("servos").with_clock(clock.clone());
     for (i, s) in sim.servos.iter_mut().enumerate() {
         s.actual_counts = 1500.0 + i as f64 * 100.0;
     }
-    let mut arm = sim_arm(sim, "a");
+    let mut arm = sim_arm(sim, "a", &clock);
     let offsets = arm.recentre().unwrap();
     assert_eq!(offsets, [-548, -448, -348, -248, -148, -48]);
     assert_eq!(arm.read_counts().unwrap(), [2048; JOINT_COUNT]);
@@ -335,7 +348,8 @@ fn recentre_makes_every_joint_read_centre_without_moving() {
 
 #[test]
 fn sweep_records_the_range_the_hand_covered() {
-    let mut arm = sim_arm(SimulatedServos::waving_arm("servos"), "a");
+    let clock = stepped();
+    let mut arm = sim_arm(SimulatedServos::waving_arm("servos").with_clock(clock.clone()), "a", &clock);
     arm.torque_off().unwrap();
     let mut polls = 0;
     let sweep = sweep(&mut arm, 200.0, |_| {
@@ -355,16 +369,20 @@ fn sweep_records_the_range_the_hand_covered() {
 
 #[test]
 fn teleop_follows_the_leader_and_logs_every_byte() {
+    let clock = stepped();
     let dir = std::env::temp_dir().join(format!("so101-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let trace_path = dir.join("bytes.jsonl");
     let log = ByteTrace::create(&trace_path).unwrap();
 
-    let leader_sim = Traced::new(SimulatedServos::waving_arm("leader"), "leader", log.clone());
-    let follower_sim = Traced::new(SimulatedServos::arm("follower"), "follower", log.clone());
-    let mut leader = ServoArm::new("leader", Servos::new(Box::new(leader_sim)), Calibration::identity("leader"));
+    let leader_sim =
+        Traced::new(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", log.clone());
+    let follower_sim = Traced::new(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", log.clone());
+    let mut leader = ServoArm::new("leader", Servos::new(Box::new(leader_sim)), Calibration::identity("leader"))
+        .with_clock(clock.clone());
     let mut follower =
-        ServoArm::new("follower", Servos::new(Box::new(follower_sim)), Calibration::identity("follower"));
+        ServoArm::new("follower", Servos::new(Box::new(follower_sim)), Calibration::identity("follower"))
+            .with_clock(clock.clone());
 
     leader.check_present().unwrap();
     follower.check_present().unwrap();
@@ -379,9 +397,10 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut reports = Vec::new();
-    let stats =
-        teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(Step::of(r)))
-            .unwrap();
+    let stats = teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
+        reports.push(Step::of(r))
+    })
+    .unwrap();
     log.flush();
 
     assert_eq!(stats.ticks, 120);
@@ -413,10 +432,11 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
 
 #[test]
 fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
-    let mut follower_sim = SimulatedServos::arm("follower");
+    let clock = stepped();
+    let mut follower_sim = SimulatedServos::arm("follower").with_clock(clock.clone());
     follower_sim.silenced_ids.push(2);
-    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
-    let mut follower = sim_arm(follower_sim, "follower");
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let mut follower = sim_arm(follower_sim, "follower", &clock);
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(200),
@@ -425,7 +445,7 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut errors = 0;
-    let result = teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+    let result = teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
         if r.is_err() {
             errors += 1
         }
@@ -436,7 +456,8 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
 
 #[test]
 fn configure_follower_caps_the_gripper_only() {
-    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
+    let clock = stepped();
+    let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     arm.configure_follower().unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 500);
     assert_eq!(arm.read_register(Joint::Gripper, servos::PROTECTION_CURRENT).unwrap(), 250);
@@ -447,7 +468,8 @@ fn configure_follower_caps_the_gripper_only() {
 
 #[test]
 fn actuator_status_decodes_every_field_in_one_read() {
-    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
+    let clock = stepped();
+    let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     let a = arm.read_actuator(Joint::ElbowFlex).unwrap();
     assert_eq!(a.joint, Joint::ElbowFlex);
     assert_eq!(a.temperature_c, Some(31.0));
@@ -459,16 +481,16 @@ fn actuator_status_decodes_every_field_in_one_read() {
 #[test]
 fn a_blocked_gripper_shows_load_and_no_speed() {
     use so101::arm::demo;
-    let clock = SimClock::manual();
+    let clock = stepped();
     let sim = SimulatedServos::new("follower", &IDS, clock.clone()).with_obstacle(demo::object());
-    let mut arm = sim_arm(sim, "follower");
+    let mut arm = sim_arm(sim, "follower", &clock);
     arm.configure_follower().unwrap();
     arm.torque_on_holding().unwrap();
     // Into the window where the object sits in the jaws, then squeeze past it.
-    clock.advance(Duration::from_secs_f64(6.0));
+    advance(&clock, Duration::from_secs_f64(6.0));
     arm.write_goal(&[2048, 2048, 2048, 2048, 2048, 1600]).unwrap();
     for _ in 0..50 {
-        clock.advance(Duration::from_millis(20));
+        advance(&clock, Duration::from_millis(20));
         let _ = arm.read_counts().unwrap();
     }
     let a = arm.read_actuator(Joint::Gripper).unwrap();
@@ -482,8 +504,9 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
 
 #[test]
 fn teleop_reads_one_actuator_per_tick_in_rotation() {
-    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
-    let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
+    let clock = stepped();
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(200),
@@ -492,7 +515,7 @@ fn teleop_reads_one_actuator_per_tick_in_rotation() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut seen = Vec::new();
-    teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+    teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
         seen.push(Step::of(r).actuator.map(|a| a.joint.id()).unwrap_or(0));
     })
     .unwrap();
@@ -515,13 +538,15 @@ fn check_centred_rejects_a_middle_pose_held_at_one_end() {
 
 #[test]
 fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
+    let clock = stepped();
     // The leader sits 800 counts away on the pan joint. With a 40-count step at
     // 200 Hz the command may move 8000 counts/s, so the follower should run at
     // its own top speed (3100 counts/s in the sim), not crawl behind a goal
     // pinned 40 counts ahead of it.
     let hand: so101::arm::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 2848.0 } else { 2048.0 }));
-    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -530,7 +555,7 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut last = None;
-    teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+    teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
         last = Some(Step::of(r).follower)
     })
     .unwrap();
@@ -540,6 +565,7 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
 
 #[test]
 fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
+    let clock = stepped();
     // The follower's jaws meet an object at tick 1900 while the leader asks for
     // 1600; after 0.7 s the leader opens to 2600. The capped gripper overloads.
     // Teleop must keep ticking, hold the gripper where it stopped, then follow
@@ -556,8 +582,10 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
         })
     });
     let object: so101::arm::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
-    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedServos::arm("follower").with_obstacle(object), "follower");
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+    let mut follower =
+        sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()).with_obstacle(object), "follower", &clock);
     follower.configure_follower().unwrap();
     let options = TeleopOptions {
         hz: 200.0,
@@ -567,9 +595,10 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut reports = Vec::new();
-    let stats =
-        teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(Step::of(r)))
-            .unwrap();
+    let stats = teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
+        reports.push(Step::of(r))
+    })
+    .unwrap();
     let g = Joint::Gripper.index();
     assert_eq!(stats.errors, 0, "an overload flag must not fail ticks");
     let held: Vec<_> = reports.iter().filter(|r| r.held(Joint::Gripper)).collect();
@@ -586,8 +615,9 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
 
 #[test]
 fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
+    let clock = stepped();
     use so101::arm::FollowerGains;
-    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
+    let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     arm.configure_follower_with(FollowerGains { p: 28, d: 32, grip_torque: 800 }).unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::Gripper, servos::TORQUE_LIMIT).unwrap(), 800);
@@ -604,13 +634,15 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
 
 #[test]
 fn lead_closes_the_gap_to_a_moving_leader() {
+    let clock = stepped();
     // Leader pan sweeps at a constant 1200 counts/s. Commanding 60 ms ahead
     // should leave the follower closer to the leader than no lead does.
     let gap = |lead_ms: u64| {
         let hand: so101::arm::Hand =
             Arc::new(|id: u8, t: f64| Some(if id == 1 { 1200.0 + 1200.0 * t.min(1.5) } else { 2048.0 }));
-        let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-        let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
+        let mut leader =
+            sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+        let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
         let options = TeleopOptions {
             hz: 100.0,
             max_step_counts: Some(80),
@@ -619,7 +651,7 @@ fn lead_closes_the_gap_to_a_moving_leader() {
             lead: [Duration::from_millis(lead_ms); JOINT_COUNT],
         };
         let mut errs = Vec::new();
-        teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+        teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
             errs.push({
                 let r = Step::of(r);
                 (r.leader[0] - r.follower[0]).abs()
@@ -648,17 +680,16 @@ fn a_late_eeprom_ack_does_not_leak_into_the_next_transaction() {
 
 #[test]
 fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
+    let clock = stepped();
     // The leader's pan trembles 4 counts (0.35 deg) at 8 Hz: a hand held still.
     // With 70 ms of lead the commanded goal must not shake more than without.
-    // Known flaky (about 1 run in 6 on a busy machine, seen 2026-11-22): the simulated hand
-    // trembles on wall-clock time while teleop ticks in real time, so how much tremor each tick
-    // samples depends on OS wake-ups. Don't loosen the assertion to hide it.
     let spread = |lead_ms: u64| {
         let hand: so101::arm::Hand = Arc::new(|id: u8, t: f64| {
             Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 })
         });
-        let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-        let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
+        let mut leader =
+            sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+        let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
         let options = TeleopOptions {
             hz: 100.0,
             max_step_counts: Some(40),
@@ -667,7 +698,7 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
             lead: [Duration::from_millis(lead_ms); JOINT_COUNT],
         };
         let mut goals = Vec::new();
-        teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+        teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
             goals.push(Step::of(r).sent[0])
         })
         .unwrap();
@@ -680,13 +711,16 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
 
 #[test]
 fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
+    let clock = stepped();
     // Pan is blocked at 2000 while the leader asks for 1900: a 100-tick gap,
     // well under saturation, so the servo never raises a flag. Teleop must
     // notice the stall by itself and hold at the contact point.
     let hand: so101::arm::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 1900.0 } else { 2048.0 }));
     let wall: so101::arm::Obstacle = Arc::new(|id: u8, _t: f64| (id == 1).then_some(2000.0));
-    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedServos::arm("follower").with_obstacle(wall), "follower");
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+    let mut follower =
+        sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()).with_obstacle(wall), "follower", &clock);
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -695,8 +729,10 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut reports = Vec::new();
-    teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(Step::of(r)))
-        .unwrap();
+    teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
+        reports.push(Step::of(r))
+    })
+    .unwrap();
     let pan_faults = reports.iter().filter_map(|r| r.actuator.as_ref()).filter(|a| a.joint == Joint::ShoulderPan);
     assert!(
         pan_faults.flat_map(|a| a.faults.iter()).all(|f| !matches!(f, Fault::Overload | Fault::Overcurrent)),
@@ -709,9 +745,11 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
 
 #[test]
 fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
-    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
-    let dying = DiesAfter { inner: SimulatedServos::arm("follower"), sends_left: 60 };
-    let mut follower = ServoArm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"));
+    let clock = stepped();
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let dying = DiesAfter { inner: SimulatedServos::arm("follower").with_clock(clock.clone()), sends_left: 60 };
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"))
+        .with_clock(clock.clone());
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -720,7 +758,7 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut errors = 0;
-    let result = teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| {
+    let result = teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
         if r.is_err() {
             errors += 1
         }
@@ -732,13 +770,17 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
 
 #[test]
 fn stale_flags_at_startup_do_not_lock_the_gripper() {
+    let clock = stepped();
     // Hardware, grab1.jsonl: overcurrent left over from the previous run showed
     // in the first 0.09 s, the first tick latched a hold, and the gripper stayed
     // shut for the whole run. A free gripper must follow the leader open.
     let hand: so101::arm::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 6 { 2600.0 } else { 2048.0 }));
-    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
-    let stale = StaleGripperFlags { inner: SimulatedServos::arm("follower"), flagged_left: 8 };
-    let mut follower = ServoArm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"));
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+    let stale =
+        StaleGripperFlags { inner: SimulatedServos::arm("follower").with_clock(clock.clone()), flagged_left: 8 };
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"))
+        .with_clock(clock.clone());
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -747,8 +789,10 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut reports = Vec::new();
-    teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(Step::of(r)))
-        .unwrap();
+    teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
+        reports.push(Step::of(r))
+    })
+    .unwrap();
     let g = Joint::Gripper.index();
     let last = reports.last().unwrap();
     assert!(!last.held(Joint::Gripper), "gripper latched in a hold it never earned");
@@ -757,6 +801,7 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
 
 #[test]
 fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
+    let clock = stepped();
     // Hardware, grab1.jsonl (second run): holding an object keeps the servo's
     // overload flag on; opening the leader released the hold, the flag was still
     // set for a few ticks while the jaws had not started moving, and a second
@@ -773,11 +818,17 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
         })
     });
     let object: so101::arm::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
-    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
     // Flag on from the grip until ~0.15 s after the leader opens.
-    let window =
-        GripperFlagWindow { inner: SimulatedServos::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
-    let mut follower = ServoArm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"));
+    let window = GripperFlagWindow {
+        inner: SimulatedServos::arm("follower").with_clock(clock.clone()).with_obstacle(object),
+        seen: 0,
+        from: 60,
+        to: 150,
+    };
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"))
+        .with_clock(clock.clone());
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -786,8 +837,10 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
         lead: [Duration::ZERO; JOINT_COUNT],
     };
     let mut reports = Vec::new();
-    teleop(&mut leader, &mut follower, options, Arc::new(AtomicBool::new(false)), |r| reports.push(Step::of(r)))
-        .unwrap();
+    teleop(&mut leader, &mut follower, options, clock.clone(), Arc::new(AtomicBool::new(false)), |r| {
+        reports.push(Step::of(r))
+    })
+    .unwrap();
     let g = Joint::Gripper.index();
     assert!(reports.iter().any(|r| r.held(Joint::Gripper)), "the grip never held");
     let last = reports.last().unwrap();

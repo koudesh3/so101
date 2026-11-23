@@ -266,7 +266,7 @@ fn cmd_monitor(servos: Servos, calibration: Option<PathBuf>, hz: f64) -> Result<
     let mut arm = ServoArm::new("arm", servos, cal);
     arm.check_present()?;
     let stop = ctrl_c_flag();
-    let mut grid = Grid::new(hz);
+    let mut grid = Grid::new(hz, arm.clock());
     println!("monitoring {} at {hz} Hz; Ctrl-C to stop", arm.port_name());
     while !stop.load(Ordering::Relaxed) {
         grid.wait();
@@ -387,7 +387,8 @@ fn cmd_teleop(
     );
     let mut held = [false; JOINT_COUNT];
     let mut steps = 0u64;
-    let stats = teleop(&mut leader, &mut follower, options, stop, |step| {
+    let clock = follower.clock();
+    let stats = teleop(&mut leader, &mut follower, options, clock, stop, |step| {
         steps += 1;
         let events = match step {
             Ok(events) => events,
