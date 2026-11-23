@@ -1,5 +1,5 @@
 //! The control loop: what it publishes (`Event`s on the `EventBus`, each step's `Tick`), the grid
-//! of servo cycles it runs on, and teleop.
+//! of 120 Hz cycles it runs on, and teleop.
 
 mod grid;
 mod teleop;
@@ -19,7 +19,7 @@ pub use teleop::{run as teleop, TeleopOptions, TeleopStats};
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tick {
     pub t: Timestamp,
-    /// The servo cycle whose `JointState` this tick used and in which its target was written, so
+    /// The cycle whose `JointState` this tick used and in which its target was written, so
     /// `state` and `action` can be recomputed from raw counts under another calibration.
     pub cycle: u32,
     pub state: Pose,

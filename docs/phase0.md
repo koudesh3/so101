@@ -290,7 +290,7 @@ Only what Phases 0-2 write (the runtime on fakes, then the policy):
 - Frame: `foxglove.CompressedImage {timestamp = t_capture, frame_id = camera, data = jpeg, format = "jpeg"}`,
   so Foxglove plays both cameras as video. A frame's identity is `(camera, sequence)`
 - `Tick {t, cycle, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`,
-  30 Hz (contract 2). `cycle` is the servo cycle whose `JointState` it used and in which its target
+  30 Hz (contract 2). `cycle` is the cycle whose `JointState` it used and in which its target
   was written, so a tick can be recomputed from raw ticks under another calibration
 - `Chunk {t_obs, period, k, actions[k][6], checkpoint_id}`: every predicted chunk, with the time
   between its actions stated rather than assumed

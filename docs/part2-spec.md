@@ -60,7 +60,7 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 | `arm/` (leader) | The leader as a target source | the leader `Arm`, replay | Leader joints | JointTarget |
 | `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
 | `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |
-| `control/` | The loop: servo cycles on a grid, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
+| `control/` | The loop: 120 Hz cycles on a grid, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
 | `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunSubtask, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |
 | `runtime/` | Subtask runner and sequencer (Phase 3) | hanoi_fsm; opus_agent in the last phase | RunSubtask, CheckResult, Task goal, scene Frame | SubtaskResult, Command |
 | `session/` | A recorded session: protobuf in MCAP | recorder, reader, recover, export | Every Event | Log store, versioned datasets |

@@ -18,10 +18,10 @@ below it and gets observations back. The code follows the same layers.
 | Subtask | 2-10 s | run a skill (grasp, place, transit) until its check says done or failed | a policy or script | check results | skills, checks (Phase 3) |
 | Action chunk | each inference, ~1-3 s | the next stretch of motion | a `Chunk` of poses | an `Obs` | `policy/` (Phase 2) and the action queue |
 | **Tick** | **30 Hz** (the camera) | this tick's target, within safety | a target `Pose` | `JointState`, latest `Frame` | `control/` |
-| **Servo cycle** | **120 Hz** (the grid) | the goal to write now, stall holds, slew limit | goal `Counts` | `Counts`, faults | `control/` and `arm/` |
+| **Cycle** | **120 Hz** (the grid) | the goal to write now, stall holds, slew limit | goal `Counts` | `Counts`, faults | `control/` and `arm/` |
 
 Phase 1 builds the two loops in bold, and the action queue at the boundary with the action chunk
-loop. Below the servo cycle, each STS3215 runs its own position loop in firmware; it isn't ours,
+loop. Below the cycle, each STS3215 runs its own position loop in firmware; it isn't ours,
 and only its gains are (contract 8).
 
 **Rules.**

@@ -69,7 +69,7 @@ One concept, one name, one home.
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
 | `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
-| `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one servo cycle on it (read, step toward the target, write) | `control` |
+| `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
 | `Source` | who produced a target: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
