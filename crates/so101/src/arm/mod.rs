@@ -1,16 +1,21 @@
 //! The arm: its joints, poses and messages, its errors, and the `Arm` trait the control loop uses.
 //! `ServoArm` is the real one, on STS3215 servos.
 
-pub mod calibration;
-pub mod servo_arm;
+mod calibration;
+mod servo_arm;
 pub mod servos;
-pub mod simulated_servos;
-pub mod uart;
+mod simulated_servos;
+mod uart;
 
 use self::servos::ServoError;
-use crate::{CheckpointId, Timestamp};
+use crate::clock::Timestamp;
+use crate::policy::CheckpointId;
 
+pub use calibration::{check_centred, sweep, Calibration, Sweep};
 pub use servo_arm::{FollowerGains, ServoArm, IDS};
+pub use servos::Servos;
+pub use simulated_servos::{demo, Hand, Obstacle, SimClock, SimulatedServos};
+pub use uart::{read_trace, ByteTrace, SerialPort, Traced, Transport};
 
 pub const JOINT_COUNT: usize = 6;
 

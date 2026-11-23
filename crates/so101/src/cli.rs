@@ -5,16 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
-use so101::arm::calibration::{self, Calibration};
-use so101::arm::servos::Servos;
-use so101::arm::simulated_servos::{demo, SimulatedServos};
-use so101::arm::uart::{ByteTrace, SerialPort, Traced, Transport};
-use so101::arm::{Error, Result};
-use so101::arm::{FollowerGains, ServoArm};
-use so101::arm::{Pose, IDS, JOINT_COUNT};
-use so101::control::grid::Grid;
-use so101::control::teleop::{self, TeleopOptions};
-use so101::{ArmRole, Joint, Limit, Message, Tick};
+use so101::arm::{
+    check_centred, demo, sweep, ByteTrace, Calibration, Error, FollowerGains, Joint, Pose, Result, SerialPort,
+    ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
+};
+use so101::control::{teleop, ArmRole, Grid, Limit, Message, TeleopOptions, Tick};
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -314,7 +309,7 @@ fn cmd_calibrate(servos: Servos, arm_id: &str, out: &Path) -> Result<()> {
     println!("homing offsets written: {offsets:?}");
 
     println!("Now move every joint slowly through its FULL range (and open/close the gripper). Press Enter when done.");
-    let sweep = calibration::sweep(&mut arm, 30.0, |sweep| {
+    let sweep = sweep(&mut arm, 30.0, |sweep| {
         print!("\r");
         for (joint, (lo, hi)) in Joint::ALL.iter().zip(sweep.min.iter().zip(sweep.max)) {
             print!("{}:{lo}..{hi}  ", &joint.name()[..3]);
@@ -328,7 +323,7 @@ fn cmd_calibrate(servos: Servos, arm_id: &str, out: &Path) -> Result<()> {
     if flags.iter().any(|f| f.0 != 0) {
         println!("note: servos raised advisory flags during the sweep: {flags:?}");
     }
-    calibration::check_centred(&sweep)?;
+    check_centred(&sweep)?;
 
     let cal = Calibration::from_sweep(arm_id, offsets, sweep.min, sweep.max);
     cal.check_travel(200)?;
@@ -392,7 +387,7 @@ fn cmd_teleop(
     );
     let mut held = [false; JOINT_COUNT];
     let mut steps = 0u64;
-    let stats = teleop::run(&mut leader, &mut follower, options, stop, |step| {
+    let stats = teleop(&mut leader, &mut follower, options, stop, |step| {
         steps += 1;
         let events = match step {
             Ok(events) => events,

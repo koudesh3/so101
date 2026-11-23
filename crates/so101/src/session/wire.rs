@@ -9,7 +9,11 @@ use prost::Message as _;
 use super::pb::foxglove as fpb;
 use super::pb::so101::v1 as pb;
 use super::Error;
-use crate::*;
+use crate::arm::*;
+use crate::camera::*;
+use crate::clock::*;
+use crate::control::*;
+use crate::policy::*;
 
 pub(crate) const SCHEMA_JOINT_STATE: &str = "so101.v1.JointState";
 pub(crate) const SCHEMA_ACTUATOR: &str = "so101.v1.ActuatorStatus";

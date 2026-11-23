@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::calibration::Calibration;
 use super::servos::{self, ServoError, Servos};
 use super::{ActuatorStatus, Arm, Counts, Error, Fault, Joint, JointState, Pose, Result, JOINT_COUNT};
-use crate::{MonotonicClock, Timestamp};
+use crate::clock::{MonotonicClock, Timestamp};
 
 /// Servo IDs, in `Joint::ALL` order.
 pub const IDS: [u8; JOINT_COUNT] = [1, 2, 3, 4, 5, 6];

@@ -5,9 +5,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use sample::joints;
-use so101::control::event::EventBus;
+use so101::arm::JointState;
+use so101::camera::Camera;
+use so101::clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
+use so101::control::EventBus;
+use so101::control::{ArmRole, Event, Message};
 use so101::session::{recover, replay, Attachment, CameraInfo, DropKind, Header, Recorder, RecorderOptions, Session};
-use so101::{ArmRole, Camera, Clock, Event, JointState, Message, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 
 const MS: u64 = 1_000_000;
 const CALIBRATION: &[u8] = br#"{"shoulder_pan": {"homing_offset": 12, "range_min": 800, "range_max": 3300}}"#;
@@ -334,12 +337,13 @@ fn python_reads_a_session_without_generated_code() {
 /// A small synthetic session with every message type.
 mod sample {
     use bytes::Bytes;
-    use so101::{
-        ActuatorStatus, Camera, CheckpointId, Chunk, Clip, Fault, Frame, FrameRef, Joint, JointState, JointTarget,
-        Limit, Pose, Source, Tick, Timestamp,
-    };
+    use so101::arm::{ActuatorStatus, Fault, Joint, JointState, JointTarget, Pose, Source};
+    use so101::camera::{Camera, Frame, FrameRef};
+    use so101::clock::Timestamp;
+    use so101::control::{Clip, Limit, Tick};
+    use so101::policy::{CheckpointId, Chunk};
 
-    use so101::{ArmRole, Event, Message};
+    use so101::control::{ArmRole, Event, Message};
 
     const MS: u64 = 1_000_000;
 

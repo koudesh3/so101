@@ -36,6 +36,11 @@ justfile         the commands for the whole repo; mise.toml pins the tools they 
 
 - **One folder per thing.** A folder's `mod.rs` is the thing itself: its types, its errors and its
   trait. Each implementation gets its own file beside it (`arm/servo_arm.rs` implements `Arm`).
+- **A folder's API is what its `mod.rs` re-exports.** Its other files are private, so code outside
+  never depends on which file inside a folder holds something. (One exception: `arm::servos` stays
+  public as the namespace of the servo's register constants.)
+- **Imports name the folder:** `crate::arm::Joint`, `crate::control::Tick`, never a re-export at the
+  crate root, so every import says where a type lives.
 - **Every file reads in one order:** a one-line `//!` saying what it is; imports (std, external,
   crate); constants; types; the trait; inherent impls, then trait impls; free functions; unit tests.
 - **One error type per folder**, named `Error`, with `Result` beside it.

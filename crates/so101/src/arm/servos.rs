@@ -5,7 +5,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::arm::uart::Transport;
+use crate::arm::Transport;
 use crate::arm::{Error, Result};
 use Access::*;
 use Encoding::*;

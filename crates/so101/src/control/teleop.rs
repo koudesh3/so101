@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use crate::arm::{Arm, Counts, Fault, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
 use crate::arm::{Error, Result};
-use crate::control::grid::Grid;
-use crate::{ArmRole, Clip, Event, Limit, Message, Tick};
+use crate::control::Grid;
+use crate::control::{ArmRole, Clip, Event, Limit, Message, Tick};
 
 // How long a follower may fail every tick before teleop stops.
 const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
@@ -278,7 +278,7 @@ fn one_step(
         None => goal,
     };
     follower.write_goal(&sent)?;
-    let t_sent = crate::MonotonicClock::read();
+    let t_sent = crate::clock::MonotonicClock::read();
     state.last_goal = Some(sent);
     let action = follower.to_pose(&sent);
 

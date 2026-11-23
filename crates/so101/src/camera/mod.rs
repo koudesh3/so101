@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 
-use crate::Timestamp;
+use crate::clock::Timestamp;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Camera {

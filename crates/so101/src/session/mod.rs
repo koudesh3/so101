@@ -9,9 +9,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{MonotonicClock, Timestamp};
+use crate::clock::{MonotonicClock, Timestamp};
+use crate::control::Event;
 
-pub use reader::{recover, replay, Drop, DropKind, RecoverSummary, Session};
+pub use reader::{recover, replay, Drop, DropKind, RecoverSummary};
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
 
 /// Embedded in every MCAP schema record, so any log decodes without generated code.
@@ -83,6 +84,16 @@ pub struct Attachment {
     pub name: String,
     pub media_type: String,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct Session {
+    pub header: Header,
+    /// `None` if the writer never finished (killed, power loss).
+    pub end: Option<SessionEnd>,
+    /// Every event, in file order (the order the recorder received them).
+    pub events: Vec<Event>,
+    pub attachments: Vec<Attachment>,
 }
 
 impl Header {

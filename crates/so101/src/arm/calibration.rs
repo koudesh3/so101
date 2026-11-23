@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::arm::servos::{CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::{Counts, Joint, Pose, ServoArm, Unit, JOINT_COUNT};
 use crate::arm::{Error, Result};
-use crate::control::grid::Grid;
+use crate::control::Grid;
 
 pub const DEGREES_PER_COUNT: f64 = 360.0 / COUNTS_PER_TURN as f64;
 
@@ -62,7 +62,7 @@ impl JointCalibration {
         self.range_max - self.range_min
     }
 
-    pub fn to_value(&self, unit: Unit, counts: i32) -> f64 {
+    pub fn to_value(self, unit: Unit, counts: i32) -> f64 {
         match unit {
             Unit::Degrees => (counts as f64 - self.midpoint()) * DEGREES_PER_COUNT,
             Unit::Percent => {
@@ -73,7 +73,7 @@ impl JointCalibration {
     }
 
     // Always lands inside the calibrated range.
-    pub fn to_count(&self, unit: Unit, value: f64) -> i32 {
+    pub fn to_count(self, unit: Unit, value: f64) -> i32 {
         let counts = match unit {
             Unit::Degrees => (value / DEGREES_PER_COUNT + self.midpoint()).round() as i32,
             Unit::Percent => {

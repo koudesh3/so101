@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use crate::arm::servos::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::servos::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
-use crate::arm::uart::Transport;
 use crate::arm::Error;
+use crate::arm::Transport;
 use crate::arm::IDS;
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.

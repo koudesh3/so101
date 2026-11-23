@@ -15,9 +15,10 @@ use mcap::{WriteOptions, Writer};
 use super::DESCRIPTOR_SET;
 use super::{Attachment, Error, Header, Result, SessionEnd};
 use super::{META_SESSION, META_SESSION_END};
-use crate::control::event::Sink;
-use crate::{Clock, RecorderDrop};
-use crate::{Event, Message};
+use crate::clock::Clock;
+use crate::control::RecorderDrop;
+use crate::control::Sink;
+use crate::control::{Event, Message};
 
 #[derive(Clone, Debug)]
 pub struct RecorderOptions {
@@ -56,7 +57,7 @@ struct Shared {
     lost: AtomicU64,
 }
 
-/// Owns the writer thread. Attach [`Recorder::sink`] to a [`crate::EventBus`]; call
+/// Owns the writer thread. Attach [`Recorder::sink`] to a [`crate::control::EventBus`]; call
 /// [`Recorder::finish`] to close the file. Dropping it (for instance while unwinding a panic)
 /// also finishes the file.
 pub struct Recorder<W: Write + Seek + Send + 'static> {

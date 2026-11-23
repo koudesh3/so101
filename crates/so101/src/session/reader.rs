@@ -12,19 +12,10 @@ use mcap::records::{AttachmentHeader, MessageHeader, Metadata, Record};
 use mcap::WriteOptions;
 
 use super::wire::TOPIC_RECORDER_DROPS;
-use super::{calibration_attachment, sha256_hex, Attachment, Error, Header, Result, SessionEnd};
+use super::{calibration_attachment, sha256_hex, Attachment, Error, Header, Result, Session, SessionEnd};
 use super::{META_SESSION, META_SESSION_END};
-use crate::{Clock, Event, Message, Timestamp};
-
-#[derive(Debug)]
-pub struct Session {
-    pub header: Header,
-    /// `None` if the writer never finished (killed, power loss).
-    pub end: Option<SessionEnd>,
-    /// Every event, in file order (the order the recorder received them).
-    pub events: Vec<Event>,
-    pub attachments: Vec<Attachment>,
-}
+use crate::clock::{Clock, Timestamp};
+use crate::control::{Event, Message};
 
 pub(crate) struct RawLog<'a> {
     /// id -> (name, encoding, data)

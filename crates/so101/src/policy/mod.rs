@@ -2,7 +2,9 @@
 
 use std::time::Duration;
 
-use crate::{Frame, Pose, Timestamp};
+use crate::arm::Pose;
+use crate::camera::Frame;
+use crate::clock::Timestamp;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CheckpointId(pub String);
