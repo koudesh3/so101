@@ -58,45 +58,54 @@ and only its gains are (contract 8).
 All in `crates/so101/src/control/` unless noted. Every part works through the `Arm` trait, so it
 runs on `ServoArm` and the mock arm alike.
 
-**The grid, on `Clock`.** `Grid` takes its time from the `Clock` port instead of `Instant`, and
-follows contract 5: cycle *n* starts at `t0 + n × period`; an overrun skips the next cycle and the
-loop resumes on the grid. Cycle index is `JointState`'s sequence, so a skipped cycle is a gap in the
-log. On a `ReplayClock` the timing tests become exact, which retires the two flaky tests (the
-grid's wake-up test and teleop's tremor test both assert real OS scheduling today).
+**Already in place** (the refactor before Phase 1, 2026-11-23):
+- **One `Clock`.** The grid, `ServoArm`'s timestamps, the simulated servos and the loop all take
+  their time from it. Tests run everything on one stepped `ReplayClock`, so they're exact: the two
+  timing tests that flaked are gone, and the end-to-end suite runs in 0.09 s.
+- **The `Arm` trait speaks poses.** `command(target)` returns `Sent`: what was written and, per
+  joint, which `Limit` changed it. `ServoArm` owns its protections in the counts they were tuned
+  in: range clamp, stall hold, and the step limit (LeRobot keeps `max_relative_target` in its robot
+  driver too). The loop never sees counts, faults or calibration.
+- **`run` and `Pilot`.** `control::run` drives a follower on the grid: each cycle it reads the
+  follower, asks the `Pilot` for a target, commands it, and publishes the follower's
+  `JointState`, whatever the pilot observed, the `JointTarget` and the `Tick` on the `EventBus`.
+  `Teleop` is the first pilot: the leader arm and the lead predictor. The CLI and the tests
+  subscribe to the bus; the session recorder will too.
 
-**The cycle step** (120 Hz): read the follower's `JointState` and faults; update the stall watch
-(teleop's logic today, unchanged); compute this cycle's goal by stepping toward the tick's target;
-apply the slew limit and any hold; write the goal; on one cycle in four, read one actuator's
-`ActuatorStatus`, rotating. Publishes `JointState`, the follower's `JointTarget`, and
-`ActuatorStatus` when read.
+Phase 1 builds on that:
 
-**The tick** (30 Hz, every 4th cycle): take the latest `JointState` and the latest `Frame` from each
-camera; ask the active source for a target; clip it to the joint ranges; hand it to the next four
-cycles; publish a `Tick` with what was requested, what was sent and why they differ.
+**The grid's overrun rule** (contract 5): today an overrunning cycle still runs late; it should skip
+to the next grid point, so a skipped cycle is a gap in `JointState`'s sequence.
 
-**Sources**, one interface: given the tick's observation, return a target `Pose` or nothing.
-- **Teleop:** reads the leader `Arm` and returns its pose plus the lead. The lead's velocity is
-  filtered (it multiplied target jitter 1.2-2.1× when computed per cycle), and the lead belongs here,
-  before clipping, never after (contract 2).
+**Ticks every 4th cycle, with stepping** (30 Hz): on a tick, take the latest `JointState` and each
+camera's latest `Frame`, and ask the pilot for a target. On the cycles between, command a goal
+stepped linearly from the previous target toward it. `Tick.clipped` collects its cycles' limits,
+most severe first.
+
+**Pilots**, one interface (`Pilot`): given the follower's state, a target `Pose` and what was
+observed to decide it.
+- **Teleop** (exists): reads the leader `Arm` and returns its pose plus the lead. Phase 1 filters
+  the lead's velocity (it multiplied target jitter 1.2-2.1× when computed per cycle); the lead
+  belongs here, before the arm's limits, never after (contract 2).
 - **Script:** a list of waypoints, stored as targets (what was commanded), each with a duration.
 - **Action queue:** turns `Chunk`s into one target per tick. Asks for the next chunk early enough
   that inference finishes before the current one runs out; holds the last target if it hasn't.
   Optional ensembling.
 
-**The mux:** exactly one source is active. Switching is explicit (`Tick.source` changes on that
-tick), and a newly active source starts from the follower's present pose, so nothing jumps.
+**The mux:** exactly one pilot is active. Switching is explicit (`Tick.source` changes on that
+tick), and a newly active pilot starts from the follower's present pose, so nothing jumps.
 Takeover from the leader (Phase 4) is a mux switch.
 
 **Safety, by loop:**
 
-| Check | Loop | Action |
+| Check | Where | Action |
 |---|---|---|
-| Joint range | tick | clip the target (`Limit::Range`) |
-| Slew limit | cycle | limit each goal's step from the last (`Limit::Step`) |
-| Stall or overload | cycle | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
+| Joint range | `ServoArm`, every write (exists) | clamp to the calibrated range (`Limit::Range`) |
+| Step limit | `ServoArm`, every write (exists) | limit each goal's step from the last (`Limit::Step`) |
+| Stall or overload | `ServoArm`, every write (exists) | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
 | Actuator health | cycle | act on the median of each joint's last 5 temperature and voltage readings (single readings are sometimes junk); count impossible values (contract 8) |
 | E-stop | cycle | torque off on the next cycle; the session records why |
-| Follower failing | cycle | after 0.5 s of failed cycles, torque off and stop (today's fail-safe) |
+| Follower failing | cycle (exists) | after 0.5 s of failed cycles, torque off and stop |
 
 **Shake measure.** Per joint, the follower's motion in the 5-30 Hz band against its target's in
 the same band, from the 120 Hz `JointState` stream. Follower moving more than it was told to is

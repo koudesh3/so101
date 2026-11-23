@@ -59,7 +59,8 @@ One concept, one name, one home.
 | `Pose` | where all six are: degrees, gripper 0-100 | `arm` |
 | `Counts` | raw encoder readings, one per joint | `arm` |
 | `Calibration` | the measured mapping from an arm's `Counts` to its `Pose` (homing offsets and ranges), and the procedure that measures it | `arm` |
-| `Arm` | what the loop can do with an arm: read its state, write a goal, read its actuators (a trait) | `arm` |
+| `Arm` | what the loop can do with an arm: read its state, command a pose, read its actuators (a trait) | `arm` |
+| `Sent` / `Limit` | what an arm actually wrote for a commanded pose / why a joint differs (step, range, stall) | `arm` |
 | `ServoArm` | the SO-101 on its STS3215 servos: the real `Arm` | `arm` |
 | `Servos` | the STS3215 servos on their UART, addressed by ID, and their registers | `arm/servos.rs` |
 | `Transport` | the UART to the servos: a `SerialPort`, or `SimulatedServos`; either can be `Traced` | `arm/uart.rs` |
@@ -71,7 +72,8 @@ One concept, one name, one home.
 | `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
-| `Source` | who produced a target: teleop, script, policy | `control` |
+| `Pilot` | what decides the follower's target each tick: teleop now, a script or the action queue next (a trait) | `control` |
+| `Source` | which pilot produced a target, as recorded: teleop, script, policy | `arm` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
 | `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |
 | `Clock` / `Timestamp` | where time comes from | `clock` |

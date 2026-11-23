@@ -1,19 +1,23 @@
-//! The control loop: what it publishes (`Event`s on the `EventBus`, each step's `Tick`), the grid
-//! of 120 Hz cycles it runs on, and teleop.
+//! The control loop: `run` drives a follower `Arm` on a grid of 120 Hz cycles, takes each target
+//! from a `Pilot` (teleop, so far), and publishes what happened (`Event`s on the `EventBus`,
+//! each step's `Tick`).
 
 mod grid;
+mod run;
 mod teleop;
 
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 
+use crate::arm::Result;
 use crate::arm::{ActuatorStatus, Joint, JointState, JointTarget, Limit, Pose, Source};
 use crate::camera::{Frame, FrameRef};
 use crate::clock::Timestamp;
 use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
-pub use teleop::{run as teleop, TeleopOptions, TeleopStats};
+pub use run::{run, RunOptions, RunStats};
+pub use teleop::Teleop;
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).
 #[derive(Clone, Debug, PartialEq)]
@@ -87,6 +91,15 @@ struct ChannelSink(mpsc::Sender<Event>);
 /// control loop publishes.
 pub trait Sink: Send + Sync {
     fn accept(&self, event: &Event);
+}
+
+/// What decides the follower's target each tick: teleop now; a script and the action queue next.
+pub trait Pilot: Send {
+    /// Recorded with every target it produces.
+    fn source(&self) -> Source;
+    /// The target for this tick, given the follower's latest state, and anything the pilot
+    /// observed to decide it (the leader's state, say), to be recorded.
+    fn target(&mut self, now: Timestamp, follower: &JointState) -> Result<(Pose, Vec<Message>)>;
 }
 
 impl Message {

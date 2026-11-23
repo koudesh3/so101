@@ -9,7 +9,7 @@ use so101::arm::{
     check_centred, demo, sweep, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose, Result, SerialPort,
     ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::control::{teleop, ArmRole, Grid, Message, TeleopOptions, Tick};
+use so101::control::{run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick};
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -370,7 +370,7 @@ fn cmd_teleop(
     }
     follower.configure_follower_with(gains)?;
 
-    let options = TeleopOptions { hz, max_ticks: (ticks > 0).then_some(ticks), read_actuators: actuators, lead };
+    let options = RunOptions { hz, max_ticks: (ticks > 0).then_some(ticks), read_actuators: actuators };
     let stop = ctrl_c_flag();
     println!(
         "teleop at {hz} Hz, max step {max_step} counts, P {}, grip torque {}%, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
@@ -379,29 +379,14 @@ fn cmd_teleop(
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
-    let mut held = [false; JOINT_COUNT];
-    let mut steps = 0u64;
     follower.set_step_limit((max_step > 0).then_some(max_step));
     let clock = follower.clock();
-    let stats = teleop(&mut leader, &mut follower, options, clock, stop, |step| {
-        steps += 1;
-        let events = match step {
-            Ok(events) => events,
-            Err(e) => return println!("tick {steps:>6}  ERROR {e}"),
-        };
-        let mut poses = [Pose::default(); 2];
-        for event in events {
-            match &event.message {
-                Message::JointState(ArmRole::Leader, s) => poses[0] = s.pose,
-                Message::JointState(ArmRole::Follower, s) => poses[1] = s.pose,
-                Message::Tick(tick) => report_holds(tick, &mut held),
-                _ => {}
-            }
-        }
-        if steps.is_multiple_of((hz as u64).max(1)) {
-            println!("tick {steps:>6}\n   leader   {}\n   follower {}", format_pose(&poses[0]), format_pose(&poses[1]));
-        }
-    })?;
+    let bus = EventBus::new();
+    let printer = print_teleop(bus.subscribe(), hz);
+    let mut pilot = Teleop::new(leader, lead)?;
+    let stats = run(&mut follower, &mut pilot, options, clock, &stop, &bus, |e| println!("ERROR {e}"))?;
+    drop(bus);
+    let _ = printer.join();
     println!(
         "stopped after {} ticks: {} overruns, {} errors, worst tick work {:.2} ms",
         stats.ticks,
@@ -439,4 +424,32 @@ fn report_holds(tick: &Tick, held: &mut [bool; JOINT_COUNT]) {
         }
         held[joint.index()] = now;
     }
+}
+
+/// Prints what the teleop loop publishes: holds as they start and end, and both arms' poses once a
+/// second. Ends when the bus is dropped.
+fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut held = [false; JOINT_COUNT];
+        let mut poses = [Pose::default(); 2];
+        let every = (hz as u64).max(1);
+        for event in events {
+            match &event.message {
+                Message::JointState(ArmRole::Leader, s) => poses[0] = s.pose,
+                Message::JointState(ArmRole::Follower, s) => poses[1] = s.pose,
+                Message::Tick(tick) => {
+                    report_holds(tick, &mut held);
+                    if (event.sequence as u64 + 1).is_multiple_of(every) {
+                        println!(
+                            "tick {:>6}\n   leader   {}\n   follower {}",
+                            event.sequence + 1,
+                            format_pose(&poses[0]),
+                            format_pose(&poses[1])
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
 }

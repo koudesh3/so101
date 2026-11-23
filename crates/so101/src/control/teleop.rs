@@ -1,42 +1,17 @@
-//! Teleop: the follower mirrors the leader through each arm's calibration. Every step publishes
-//! both arms' `JointState`, the follower's `JointTarget` and a `Tick` (contract 2).
+//! Teleop: a `Pilot` that commands where the leader arm is, a little ahead of it to cancel the
+//! follower's own response lag.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::arm::{Arm, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
-use crate::arm::{Error, Result};
-use crate::clock::{Clock, Timestamp};
-use crate::control::Grid;
-use crate::control::{ArmRole, Clip, Event, Message, Tick};
+use crate::arm::{Arm, JointState, Pose, Result, Source, JOINT_COUNT};
+use crate::clock::Timestamp;
+use crate::control::{ArmRole, Message, Pilot};
 
-// How long a follower may fail every tick before teleop stops.
-const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
-
-#[derive(Clone, Copy, Debug)]
-pub struct TeleopOptions {
-    pub hz: f64,
-    /// Stop after this many ticks. None runs until `stop` is set.
-    pub max_ticks: Option<u64>,
-    /// Also read one follower actuator's status per tick, rotating through the six. Costs one
-    /// extra round trip per tick.
-    pub read_actuators: bool,
-    /// Per joint: command where the leader will be this far ahead, from its measured velocity,
-    /// to cancel the follower's own response lag. Zero disables.
-    pub lead: [Duration; JOINT_COUNT],
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct TeleopStats {
-    pub ticks: u64,
-    pub overruns: u64,
-    pub errors: u64,
-    pub worst_work_time: Duration,
-}
-
-#[derive(Default)]
-struct LoopState {
+pub struct Teleop<L: Arm> {
+    leader: L,
+    /// Per joint: command where the leader will be this far ahead, from its measured velocity.
+    /// Zero disables.
+    lead: [Duration; JOINT_COUNT],
     predictor: Predictor,
 }
 
@@ -74,140 +49,24 @@ impl Predictor {
     }
 }
 
-/// `on_step` gets each step's events, or why the step failed (the previous goal then holds).
-/// Follower torque is switched off on every exit path.
-pub fn run(
-    leader: &mut impl Arm,
-    follower: &mut impl Arm,
-    options: TeleopOptions,
-    clock: Arc<dyn Clock>,
-    stop: Arc<AtomicBool>,
-    mut on_step: impl FnMut(std::result::Result<&[Event], &str>),
-) -> Result<TeleopStats> {
-    leader.torque_off()?;
-    follower.hold()?;
-
-    let loop_result = run_loop(leader, follower, options, &clock, &stop, &mut on_step);
-    let torque_result = follower.torque_off();
-
-    match (loop_result, torque_result) {
-        (Err(e), _) => Err(e),
-        (Ok(_), Err(e)) => Err(e),
-        (Ok(stats), Ok(())) => Ok(stats),
+impl<L: Arm> Teleop<L> {
+    /// Turns the leader's torque off, so a hand can move it.
+    pub fn new(mut leader: L, lead: [Duration; JOINT_COUNT]) -> Result<Self> {
+        leader.torque_off()?;
+        Ok(Self { leader, lead, predictor: Predictor::default() })
     }
 }
 
-fn run_loop(
-    leader: &mut impl Arm,
-    follower: &mut impl Arm,
-    options: TeleopOptions,
-    clock: &Arc<dyn Clock>,
-    stop: &AtomicBool,
-    on_step: &mut impl FnMut(std::result::Result<&[Event], &str>),
-) -> Result<TeleopStats> {
-    let mut grid = Grid::new(options.hz, clock.clone());
-    let mut stats = TeleopStats::default();
-    let mut state = LoopState::default();
-    let mut consecutive_errors = 0u32;
-    let fail_after = ((FAILSAFE_AFTER.as_secs_f64() * options.hz).ceil() as u32).max(3);
-
-    while !stop.load(Ordering::Relaxed) {
-        if options.max_ticks.is_some_and(|max| stats.ticks >= max) {
-            break;
-        }
-        let cycle = grid.wait();
-        let work_started = Instant::now();
-        let outcome = one_step(leader, follower, options, clock.as_ref(), &mut state, cycle.index, stats.ticks);
-        let work_time = work_started.elapsed();
-        stats.ticks += 1;
-        stats.worst_work_time = stats.worst_work_time.max(work_time);
-
-        match outcome {
-            Ok(events) => {
-                consecutive_errors = 0;
-                on_step(Ok(&events));
-            }
-            Err(e) => {
-                stats.errors += 1;
-                consecutive_errors += 1;
-                if consecutive_errors >= fail_after {
-                    // Fail-safe: never leave the follower holding a stale goal
-                    // behind a fault. `run` switches its torque off on the way out.
-                    return Err(Error::Other(format!(
-                        "follower failed {consecutive_errors} ticks in a row ({e}); stopping with torque off"
-                    )));
-                }
-                on_step(Err(&e.to_string()));
-            }
-        }
+impl<L: Arm> Pilot for Teleop<L> {
+    fn source(&self) -> Source {
+        Source::Teleop
     }
-    stats.overruns = grid.overruns;
-    Ok(stats)
-}
 
-fn one_step(
-    leader: &mut impl Arm,
-    follower: &mut impl Arm,
-    options: TeleopOptions,
-    clock: &dyn Clock,
-    state: &mut LoopState,
-    cycle: u64,
-    tick: u64,
-) -> Result<Vec<Event>> {
-    let follower_state = follower.read_state()?;
-    let leader_state = leader.read_state()?;
-    let requested = state.predictor.ahead(clock.now(), leader_state.pose, options.lead);
-    let sent = follower.command(&requested)?;
-    let t_sent = clock.now();
-    let clipped = Joint::ALL
-        .into_iter()
-        .filter_map(|joint| sent.limits[joint.index()].map(|limit| Clip { joint, limit }))
-        .collect();
-
-    let cycle = cycle as u32;
-    let follower_pose = follower_state.pose;
-    let mut events = vec![
-        state_event(ArmRole::Follower, follower_state, cycle),
-        state_event(ArmRole::Leader, leader_state, cycle),
-        Event::new(
-            Message::JointTarget(
-                ArmRole::Follower,
-                JointTarget { t: t_sent, pose: sent.pose, source: Source::Teleop, counts: sent.counts },
-            ),
-            cycle,
-            t_sent,
-        ),
-        Event::new(
-            Message::Tick(Tick {
-                t: t_sent,
-                cycle,
-                state: follower_pose,
-                wrist: None,
-                scene: None,
-                action: sent.pose,
-                source: Source::Teleop,
-                requested,
-                clipped,
-            }),
-            tick as u32,
-            t_sent,
-        ),
-    ];
-
-    // A side channel: a failed status read must not cost the step.
-    if options.read_actuators {
-        let joint = Joint::ALL[(tick % JOINT_COUNT as u64) as usize];
-        if let Ok(status) = follower.read_actuator(joint) {
-            let t = status.t;
-            events.push(Event::new(Message::Actuator(ArmRole::Follower, status), cycle, t));
-        }
+    fn target(&mut self, now: Timestamp, _follower: &JointState) -> Result<(Pose, Vec<Message>)> {
+        let leader = self.leader.read_state()?;
+        let target = self.predictor.ahead(now, leader.pose, self.lead);
+        Ok((target, vec![Message::JointState(ArmRole::Leader, leader)]))
     }
-    Ok(events)
-}
-
-fn state_event(role: ArmRole, state: JointState, cycle: u32) -> Event {
-    let t = state.t;
-    Event::new(Message::JointState(role, state), cycle, t)
 }
 
 #[cfg(test)]

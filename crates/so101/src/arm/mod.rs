@@ -127,19 +127,6 @@ pub struct ActuatorStatus {
     pub faults: Vec<Fault>,
 }
 
-/// What the control loop can do with an arm. `ServoArm` is the SO-101 on its servos; a mock arm
-/// joins it in Phase 1.
-pub trait Arm: Send {
-    fn read_state(&mut self) -> Result<JointState>;
-    /// Move toward `target`. The arm applies its own protections (range, stall hold, step limit)
-    /// and reports what it actually wrote, and why each changed joint differs.
-    fn command(&mut self, target: &Pose) -> Result<Sent>;
-    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus>;
-    fn torque_off(&mut self) -> Result<()>;
-    /// Torque on, holding where it is now, so nothing jumps; protections start fresh.
-    fn hold(&mut self) -> Result<()>;
-}
-
 /// Why a joint's written goal differs from the commanded one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Limit {
@@ -157,6 +144,19 @@ pub struct Sent {
     /// `None` when not written to servos.
     pub counts: Option<Counts>,
     pub limits: [Option<Limit>; JOINT_COUNT],
+}
+
+/// What the control loop can do with an arm. `ServoArm` is the SO-101 on its servos; a mock arm
+/// joins it in Phase 1.
+pub trait Arm: Send {
+    fn read_state(&mut self) -> Result<JointState>;
+    /// Move toward `target`. The arm applies its own protections (range, stall hold, step limit)
+    /// and reports what it actually wrote, and why each changed joint differs.
+    fn command(&mut self, target: &Pose) -> Result<Sent>;
+    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus>;
+    fn torque_off(&mut self) -> Result<()>;
+    /// Torque on, holding where it is now, so nothing jumps; protections start fresh.
+    fn hold(&mut self) -> Result<()>;
 }
 
 impl Joint {
@@ -244,6 +244,28 @@ impl From<String> for Error {
 impl From<&str> for Error {
     fn from(s: &str) -> Self {
         Error::Other(s.to_string())
+    }
+}
+
+impl<A: Arm + ?Sized> Arm for &mut A {
+    fn read_state(&mut self) -> Result<JointState> {
+        (**self).read_state()
+    }
+
+    fn command(&mut self, target: &Pose) -> Result<Sent> {
+        (**self).command(target)
+    }
+
+    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
+        (**self).read_actuator(joint)
+    }
+
+    fn torque_off(&mut self) -> Result<()> {
+        (**self).torque_off()
+    }
+
+    fn hold(&mut self) -> Result<()> {
+        (**self).hold()
     }
 }
 
