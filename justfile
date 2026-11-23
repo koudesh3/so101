@@ -50,11 +50,6 @@ teleop:
       --leader "$LEADER" --follower "$FOLLOWER" \
       --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json
 
-# Rebuild web/assets (the viewer's meshes) from a checkout of TheRobotStudio's SO-ARM100 repo
-meshes so_arm100:
-    uv run web/tools/build_model.py {{so_arm100}}/Simulation/SO101
-    uv run web/tools/build_servo.py {{so_arm100}}/Simulation/SO101
-
 # Push this commit to the Spark and run a recipe there, e.g. `just spark check` (only committed work goes)
 spark *args:
     @git diff --quiet HEAD || echo "note: uncommitted changes stay on this machine"
