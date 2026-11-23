@@ -48,8 +48,9 @@ justfile         the commands for the whole repo; mise.toml pins the tools they 
 - **Unit tests sit in the file whose logic they test.** `tests/` is for behaviour that crosses
   folders: teleop against simulated servos, a session written and read back, the schema.
 - **Comments only say what the code can't:** units, outside conventions, measured facts, and why.
-- **Modules depend only downward:** clock, camera, arm, policy, control, session, then `cli.rs`
-  on top. `control/` reaches arms only through the `Arm` trait. `just check` enforces both.
+- **Modules depend only on lower levels:** clock; then arm and camera (peers, never using each
+  other); policy; control; session; `cli.rs` on top. `control/` reaches arms only through the
+  `Arm` trait. `just check` enforces both.
 
 ## Glossary
 

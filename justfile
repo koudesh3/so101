@@ -10,20 +10,22 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# Each module uses only the ones below it (clock, camera, arm, policy, control, session), and the
-# control loop reaches arms only through the Arm trait
+# Each module uses only modules on lower levels (clock; arm and camera; policy; control; session),
+# never one beside it; and the control loop reaches arms only through the Arm trait
 check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
-    order=(clock camera arm policy control session)
-    for i in "${!order[@]}"; do
-        module=${order[$i]}
-        path=$module; [ -d "$module" ] || path=$module.rs
-        for above in "${order[@]:$((i + 1))}"; do
-            if grep -rnE "crate::$above\b" "$path"; then
-                echo "error: $module uses $above, which sits above it (order: ${order[*]})"; exit 1
-            fi
+    levels=("clock" "arm camera" "policy" "control" "session")
+    for i in "${!levels[@]}"; do
+        for module in ${levels[$i]}; do
+            path=$module; [ -d "$module" ] || path=$module.rs
+            for other in ${levels[@]:$i}; do
+                [ "$other" = "$module" ] && continue
+                if grep -rnE "crate::$other\b" "$path"; then
+                    echo "error: $module uses $other, which isn't below it (levels: ${levels[*]})"; exit 1
+                fi
+            done
         done
     done
     if grep -rnE 'crate::session\b|crate::arm::(servos|uart|simulated_servos|calibration)\b|\bServoArm\b' control/; then
