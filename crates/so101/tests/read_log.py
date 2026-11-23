@@ -3,9 +3,10 @@
 # dependencies = ["mcap>=1.6", "mcap-protobuf-support>=0.6"]
 # ///
 """Contract 1: a log is readable from Python with no generated code. Decodes every message of
-the sample session (examples/write_sample.rs) using only the schemas embedded in the file.
+a log using only the schemas embedded in the file. Run by `python_reads_a_log_without_generated_code`
+in log.rs, on the sample session.
 
-usage: uv run crates/so101/tests/read_log.py SAMPLE.mcap
+usage: uv run crates/so101/tests/read_log.py LOG.mcap
 """
 import hashlib
 import sys
@@ -37,10 +38,10 @@ with open(sys.argv[1], "rb") as f:
             assert pb.k * 6 == len(pb.actions)
 
 session = header["so101.session"]
-assert session["git_commit"] == "sample", header
+assert session["git_commit"], header
 # The calibration file is in the log, and matches the hash in the header.
 assert hashlib.sha256(attachments["calibration/follower.json"]).hexdigest() == session["calibration.follower.sha256"]
-assert session["camera.wrist.device"] == "/dev/v4l/by-id/sample-wrist", session
+assert session["camera.wrist.device"].startswith("/dev/v4l/by-id/"), session
 assert counts["clipped"] > 0, counts
 assert header["so101.session_end"]["complete"] == "true", header
 expected = {"/follower/state", "/leader/state", "/follower/actuators", "/follower/target", "/tick", "/cam/wrist", "/cam/scene", "/policy/chunk"}

@@ -3,13 +3,12 @@
 default:
     @just --list
 
-# Formatting, the core/adapter rule, clippy (warnings fail), the tests (simulated servos, no hardware), and the Python log check
+# Formatting, the layer rule, clippy (warnings fail), and the tests (simulated servos, no hardware; one runs Python on a log)
 check:
     cargo fmt --check
     @just check-layers
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
-    @just check-py
 
 # The control loop uses the arm's types, never its hardware or the log; only bin/ wires those in
 check-layers:
@@ -19,14 +18,6 @@ check-layers:
     if grep -rnE 'crate::(log|arm::(Arm|servo|teleop|calibration))\b' control/; then
         echo "error: control/ reaches into hardware or the log (above)"; exit 1
     fi
-
-# Python reads a session log with no generated code (docs/phase0.md, contract 1)
-check-py:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    d=$(mktemp -d "${TMPDIR:-/tmp}/so101.XXXXXX"); trap 'rm -rf "$d"' EXIT
-    cargo run -q -p so101 --example write_sample -- "$d/sample.mcap" >/dev/null
-    uv run -q crates/so101/tests/read_log.py "$d/sample.mcap"
 
 # Refresh the so101.v1 schema snapshot after an allowed (additive) .proto change
 proto-snapshot:

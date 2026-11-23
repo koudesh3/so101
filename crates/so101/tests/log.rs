@@ -1,5 +1,4 @@
-//! Tests from docs/phase0.md; the schema snapshot is in `contracts`, the Python check in
-//! `just check-py`.
+//! The session log's tests (docs/phase0.md). The schema snapshot is in `schema_snapshot.rs`.
 
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex};
@@ -25,7 +24,7 @@ fn header_fields() -> Header {
     h.cameras.insert(
         "wrist".into(),
         CameraInfo {
-            device: "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0".into(),
+            device: "/dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0".into(),
             settings: "auto_exposure=1 exposure_time_absolute=300 gain=0".into(),
         },
     );
@@ -314,4 +313,21 @@ fn a_calibration_that_doesnt_match_its_hash_is_refused() {
     let (out, _) = recorder.finish().unwrap();
     let err = Log::from_bytes(out.get_ref()).unwrap_err();
     assert!(err.to_string().contains("doesn't match its hash"), "{err}");
+}
+
+/// Contract 1: Python decodes a log using only the schemas embedded in it (`read_log.py`).
+#[test]
+fn python_reads_a_log_without_generated_code() {
+    let (bytes, _) = write(&sample::session(Timestamp(5_000 * MS)), RecorderOptions::default());
+    let path = std::env::temp_dir().join(format!("so101-python-{}.mcap", std::process::id()));
+    std::fs::write(&path, bytes).unwrap();
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/read_log.py");
+    let out = std::process::Command::new("uv")
+        .args(["run", "-q", script])
+        .arg(&path)
+        .output()
+        .expect("uv not found: `mise install` provides it");
+    let _ = std::fs::remove_file(&path);
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{said}");
 }
