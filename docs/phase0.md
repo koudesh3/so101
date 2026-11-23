@@ -240,8 +240,11 @@ Servo gains and limits live in each servo's memory and survive power cycles, and
 connects writes its own: Part 1's teleop writes P 32; LeRobot's follower writes P 16, I 0, D 32 on
 every connect, and caps the gripper at Max_Torque 500, Protection_Current 250, Overload_Torque 25
 (ours: 800). So the follower's stiffness depends on which tool ran last, and nothing records it.
-- **One file in the repo holds the follower's gains and limits** (P 32, I 0, D 32, measured above;
-  gripper limits to be unified with LeRobot's in Phase 4, since LeRobot hard-codes them). Our
+- **One file in the repo holds the follower's gains and limits**: P 32, I 0, D 32 (measured
+  above), and the gripper at LeRobot's limits (Max_Torque 500, Protection_Current 250,
+  Overload_Torque 25), decided 2026-11-23. 50% closes more slowly than Part 1's 80% but heats less
+  while holding a disc through a transit, and matches anything recorded with `act` before Phase 4.
+  Revisit only if a gripper test with the real discs shows slipping. Our
   runtime applies it on every start and reads it back; `act` passes the same values to LeRobot
   (`--robot.position_p_coefficient=32` and the I and D equivalents).
 - **Every log's header stores the gain and limit registers read back from each servo** at session
