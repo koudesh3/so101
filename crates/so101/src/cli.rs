@@ -1,3 +1,5 @@
+//! The `so101` command line: picks the arms, transports and session, and puts them together.
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};

@@ -14,7 +14,7 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
   control/         the loop: the grid of slots, ticks, events, the event bus, and teleop
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
-  bin/so101.rs     the `so101` command line, which puts the pieces together
+  cli.rs     the `so101` command line, which puts the pieces together
 ml/              the LeRobot side
   act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
 proto/           the log's messages in protobuf (so101/v1), readable from any language; Foxglove's

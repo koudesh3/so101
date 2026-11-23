@@ -26,4 +26,4 @@ protox.workspace = true
 
 [[bin]]
 name = "so101"
-path = "src/bin/so101.rs"
+path = "src/cli.rs"

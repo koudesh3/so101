@@ -1,5 +1,5 @@
 //! The SO-101, one folder per thing: the arm (with its servo bus), the camera, the policy, the
-//! control loop, and the session log. `bin/so101.rs` puts them together.
+//! control loop, and the session log. `cli.rs` puts them together.
 
 pub mod arm;
 pub mod camera;

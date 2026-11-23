@@ -351,7 +351,7 @@ crates/so101/              one crate, one folder per thing
   src/session/                 a recorded session: wire (protobuf conversions, generated from a field
                                map), recorder, reader, drops, replay, recover
   src/clock.rs                 Timestamp, Clock, MonotonicClock, ReplayClock
-  src/bin/so101.rs             the command line: puts the pieces together
+  src/cli.rs             the command line: puts the pieces together
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
 ```
 
