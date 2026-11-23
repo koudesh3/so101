@@ -1,3 +1,6 @@
+//! What the control loop publishes: each `Event` with its times, and the `EventBus` that carries them
+//! to whoever listens (the session recorder, checks, a live viewer).
+
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 
@@ -20,6 +23,39 @@ pub enum Message {
     RecorderDrop(RecorderDrop),
 }
 
+/// An event with when it happened, when we received it, and its producer's counter (contract 3).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Event {
+    /// The slot index for joint state (contract 5), the kernel's frame number for a camera.
+    pub sequence: u32,
+    pub log_time: Timestamp,
+    pub publish_time: Timestamp,
+    pub message: Message,
+}
+
+/// A run of consecutive messages on one topic that a consumer dropped because it fell behind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecorderDrop {
+    pub t: Timestamp,
+    pub topic: String,
+    pub first_sequence: u32,
+    pub last_sequence: u32,
+    pub count: u32,
+}
+
+#[derive(Default, Clone)]
+pub struct EventBus {
+    sinks: Arc<RwLock<Vec<Arc<dyn Sink>>>>,
+}
+
+struct ChannelSink(mpsc::Sender<Event>);
+
+/// `accept` must return without blocking, dropping (and saying so) rather than waiting: the
+/// control loop publishes.
+pub trait Sink: Send + Sync {
+    fn accept(&self, event: &Event);
+}
+
 impl Message {
     /// When the thing happened (contract 3).
     pub fn time(&self) -> Timestamp {
@@ -39,16 +75,6 @@ impl Message {
     }
 }
 
-/// An event with when it happened, when we received it, and its producer's counter (contract 3).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Event {
-    /// The slot index for joint state (contract 5), the kernel's frame number for a camera.
-    pub sequence: u32,
-    pub log_time: Timestamp,
-    pub publish_time: Timestamp,
-    pub message: Message,
-}
-
 impl Event {
     pub fn new(message: Message, sequence: u32, log_time: Timestamp) -> Self {
         debug_assert!(!message.is_frame(), "use Event::frame: a frame carries its own sequence and receive time");
@@ -63,27 +89,6 @@ impl Event {
             message: Message::Frame(frame),
         }
     }
-}
-
-/// A run of consecutive messages on one topic that a consumer dropped because it fell behind.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecorderDrop {
-    pub t: Timestamp,
-    pub topic: String,
-    pub first_sequence: u32,
-    pub last_sequence: u32,
-    pub count: u32,
-}
-
-/// `accept` must return without blocking, dropping (and saying so) rather than waiting: the
-/// control loop publishes.
-pub trait Sink: Send + Sync {
-    fn accept(&self, event: &Event);
-}
-
-#[derive(Default, Clone)]
-pub struct EventBus {
-    sinks: Arc<RwLock<Vec<Arc<dyn Sink>>>>,
 }
 
 impl EventBus {
@@ -109,8 +114,6 @@ impl EventBus {
         }
     }
 }
-
-struct ChannelSink(mpsc::Sender<Event>);
 
 impl Sink for ChannelSink {
     fn accept(&self, event: &Event) {

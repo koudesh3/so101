@@ -1,3 +1,5 @@
+//! The `Tick`: what the control loop saw and sent at one step, and why the two differ (contract 2).
+
 use crate::{FrameRef, Joint, Pose, Source, Timestamp};
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).

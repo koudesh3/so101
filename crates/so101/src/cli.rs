@@ -5,12 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
-
 use so101::arm::calibration::{self, Calibration};
 use so101::arm::servos::Servos;
-use so101::arm::servos::{Error, Result};
 use so101::arm::simulated_servos::{demo, SimulatedServos};
 use so101::arm::uart::{ByteTrace, SerialPort, Traced, Transport};
+use so101::arm::{Error, Result};
 use so101::arm::{FollowerGains, ServoArm};
 use so101::arm::{Pose, IDS, JOINT_COUNT};
 use so101::control::grid::Grid;
@@ -411,8 +410,7 @@ fn cmd_teleop(
         if steps.is_multiple_of((hz as u64).max(1)) {
             println!("tick {steps:>6}\n   leader   {}\n   follower {}", format_pose(&poses[0]), format_pose(&poses[1]));
         }
-    })
-    .map_err(|e| Error::Other(e.to_string()))?;
+    })?;
     println!(
         "stopped after {} ticks: {} overruns, {} errors, worst tick work {:.2} ms",
         stats.ticks,

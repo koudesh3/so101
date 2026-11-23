@@ -1,15 +1,15 @@
-//! Per-joint tick ranges and the conversion to the coordinate both arms
-//! share: degrees from the midpoint of the calibrated range, or percent of
-//! the range for the gripper.
+//! `Calibration`: the measured mapping from an arm's encoder counts to its pose (homing offsets and
+//! ranges, in LeRobot's file format), and the sweep that measures it. Degrees are measured from the
+//! midpoint of each joint's calibrated range; the gripper is a percent of its range.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::arm::servos::{Error, Result};
 use crate::arm::servos::{CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::{Counts, Joint, Pose, ServoArm, Unit, JOINT_COUNT};
+use crate::arm::{Error, Result};
 use crate::control::grid::Grid;
 
 pub const DEGREES_PER_COUNT: f64 = 360.0 / COUNTS_PER_TURN as f64;
@@ -20,6 +20,34 @@ pub struct JointCalibration {
     pub homing_offset: i32,
     pub range_min: i32,
     pub range_max: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "CalibrationFile", into = "CalibrationFile")]
+pub struct Calibration {
+    pub arm_id: String,
+    pub joints: [JointCalibration; JOINT_COUNT],
+}
+
+// On-disk layout: joints keyed by name, each carrying its servo id.
+#[derive(Serialize, Deserialize)]
+struct CalibrationFile {
+    arm_id: String,
+    joints: BTreeMap<String, JointFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JointFile {
+    id: u8,
+    homing_offset: i32,
+    range_min: i32,
+    range_max: i32,
+}
+
+// The procedure that produces a calibration: sweep, then check the middle pose.
+pub struct Sweep {
+    pub min: Counts,
+    pub max: Counts,
 }
 
 impl JointCalibration {
@@ -54,13 +82,6 @@ impl JointCalibration {
         };
         counts.clamp(self.range_min, self.range_max)
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "CalibrationFile", into = "CalibrationFile")]
-pub struct Calibration {
-    pub arm_id: String,
-    pub joints: [JointCalibration; JOINT_COUNT],
 }
 
 impl Calibration {
@@ -123,21 +144,6 @@ impl Calibration {
     }
 }
 
-// On-disk layout: joints keyed by name, each carrying its servo id.
-#[derive(Serialize, Deserialize)]
-struct CalibrationFile {
-    arm_id: String,
-    joints: BTreeMap<String, JointFile>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct JointFile {
-    id: u8,
-    homing_offset: i32,
-    range_min: i32,
-    range_max: i32,
-}
-
 impl From<Calibration> for CalibrationFile {
     fn from(cal: Calibration) -> Self {
         let joints = Joint::ALL
@@ -178,13 +184,6 @@ impl TryFrom<CalibrationFile> for Calibration {
         }
         Ok(Self { arm_id: file.arm_id, joints })
     }
-}
-
-// The procedure that produces a calibration: sweep, then check the middle pose.
-
-pub struct Sweep {
-    pub min: Counts,
-    pub max: Counts,
 }
 
 pub fn sweep(arm: &mut ServoArm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool) -> Result<Sweep> {

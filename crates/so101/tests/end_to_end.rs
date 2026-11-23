@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use so101::arm::calibration::{self, Calibration};
 use so101::arm::servos;
-use so101::arm::servos::Error;
 use so101::arm::servos::Servos;
 use so101::arm::simulated_servos::{SimClock, SimulatedServos};
 use so101::arm::uart::{read_trace, ByteTrace, Traced};
+use so101::arm::Error;
 use so101::arm::ServoArm;
 use so101::arm::{ActuatorStatus, Counts, Joint, IDS, JOINT_COUNT};
 use so101::control::teleop::{self, TeleopOptions};
@@ -22,6 +22,40 @@ struct Step {
     sent: Counts,
     tick: Tick,
     actuator: Option<ActuatorStatus>,
+}
+
+// A transport with the timing measured on hardware: a write that commits to
+// EEPROM or the factory area leaves that servo busy for ~40 ms, and anything it
+// says meanwhile (the ack included) arrives only when it's done. Other replies
+// arrive 0.3 ms after the request. A reply that misses its window stays in
+// flight and lands in whatever exchange is open then, as on a real port.
+struct SlowEepromAcks {
+    inner: SimulatedServos,
+    busy_until: std::collections::HashMap<u8, std::time::Instant>,
+    in_flight: Vec<(std::time::Instant, Vec<u8>)>,
+    arrived: std::collections::VecDeque<u8>,
+}
+
+// A transport that goes silent after a number of sends: a follower line dying mid-run.
+struct DiesAfter {
+    inner: SimulatedServos,
+    sends_left: usize,
+}
+
+// Flags the gripper's first few replies with OVERCURRENT, as a real servo does
+// for a moment after torque comes back on following an earlier trip.
+struct StaleGripperFlags {
+    inner: SimulatedServos,
+    flagged_left: usize,
+}
+
+// Flags the gripper's replies with OVERLOAD between two reply counts: the
+// servo's protection staying on across the moment the leader opens.
+struct GripperFlagWindow {
+    inner: SimulatedServos,
+    seen: usize,
+    from: usize,
+    to: usize,
 }
 
 impl Step {
@@ -49,6 +83,156 @@ impl Step {
 
     fn held(&self, joint: Joint) -> bool {
         self.tick.clipped.iter().any(|c| c.joint == joint && c.limit == Limit::Stall)
+    }
+}
+
+impl SlowEepromAcks {
+    const COMMIT: Duration = Duration::from_millis(40);
+    const TURNAROUND: Duration = Duration::from_micros(300);
+
+    fn new() -> Self {
+        Self {
+            inner: SimulatedServos::arm("servos"),
+            busy_until: Default::default(),
+            in_flight: Vec::new(),
+            arrived: Default::default(),
+        }
+    }
+
+    fn land_due(&mut self) {
+        let now = std::time::Instant::now();
+        self.in_flight.sort_by_key(|(t, _)| *t);
+        while self.in_flight.first().is_some_and(|(t, _)| *t <= now) {
+            let (_, bytes) = self.in_flight.remove(0);
+            self.arrived.extend(bytes);
+        }
+    }
+}
+
+impl so101::arm::uart::Transport for SlowEepromAcks {
+    fn send(&mut self, bytes: &[u8]) -> so101::arm::Result<()> {
+        let now = std::time::Instant::now();
+        self.inner.send(bytes)?;
+        let (id, instr, addr) = (bytes[2], bytes[4], bytes[5]);
+        let mut out = Vec::new();
+        let mut b = [0u8; 1];
+        while self.inner.receive_exact(&mut b, Duration::ZERO).is_ok() {
+            out.push(b[0]);
+        }
+        let mut rest = &out[..];
+        while let Ok((frame, used)) = so101::arm::servos::parse_packet(rest) {
+            let busy = self.busy_until.get(&frame.id).copied().filter(|t| *t > now);
+            self.in_flight.push((busy.unwrap_or(now + Self::TURNAROUND), rest[..used].to_vec()));
+            rest = &rest[used..];
+        }
+        if instr == 0x03 && !(40..80).contains(&addr) {
+            let done = now + Self::COMMIT;
+            self.busy_until.insert(id, done);
+            for (t, bytes) in &mut self.in_flight {
+                if bytes[2] == id {
+                    *t = done;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> so101::arm::Result<()> {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut got = 0;
+        while got < buf.len() {
+            self.land_due();
+            match self.arrived.pop_front() {
+                Some(b) => {
+                    buf[got] = b;
+                    got += 1;
+                }
+                None if std::time::Instant::now() >= deadline => {
+                    return Err(so101::arm::Error::Timeout { wanted: buf.len(), got })
+                }
+                None => std::thread::sleep(Duration::from_micros(100)),
+            }
+        }
+        Ok(())
+    }
+
+    // Like a real port: only bytes that have already arrived are thrown away.
+    fn discard_input(&mut self) -> so101::arm::Result<()> {
+        self.land_due();
+        self.arrived.clear();
+        Ok(())
+    }
+
+    fn name(&self) -> &str {
+        "slow-eeprom"
+    }
+}
+
+impl so101::arm::uart::Transport for DiesAfter {
+    fn send(&mut self, bytes: &[u8]) -> so101::arm::Result<()> {
+        if self.sends_left == 0 {
+            return Ok(());
+        }
+        self.sends_left -= 1;
+        self.inner.send(bytes)
+    }
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> so101::arm::Result<()> {
+        if self.sends_left == 0 {
+            return Err(so101::arm::Error::Timeout { wanted: buf.len(), got: 0 });
+        }
+        self.inner.receive_exact(buf, timeout)
+    }
+    fn discard_input(&mut self) -> so101::arm::Result<()> {
+        self.inner.discard_input()
+    }
+    fn name(&self) -> &str {
+        "dies-after"
+    }
+}
+
+impl so101::arm::uart::Transport for StaleGripperFlags {
+    fn send(&mut self, bytes: &[u8]) -> so101::arm::Result<()> {
+        self.inner.send(bytes)
+    }
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> so101::arm::Result<()> {
+        self.inner.receive_exact(buf, timeout)?;
+        if self.flagged_left > 0 && buf.len() >= 6 && buf[2] == 6 {
+            self.flagged_left -= 1;
+            buf[4] |= 0x08;
+            let n = buf.len();
+            buf[n - 1] = !buf[2..n - 1].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+        }
+        Ok(())
+    }
+    fn discard_input(&mut self) -> so101::arm::Result<()> {
+        self.inner.discard_input()
+    }
+    fn name(&self) -> &str {
+        "stale-gripper-flags"
+    }
+}
+
+impl so101::arm::uart::Transport for GripperFlagWindow {
+    fn send(&mut self, bytes: &[u8]) -> so101::arm::Result<()> {
+        self.inner.send(bytes)
+    }
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> so101::arm::Result<()> {
+        self.inner.receive_exact(buf, timeout)?;
+        if buf.len() >= 6 && buf[2] == 6 {
+            self.seen += 1;
+            if (self.from..self.to).contains(&self.seen) {
+                buf[4] |= 0x20;
+                let n = buf.len();
+                buf[n - 1] = !buf[2..n - 1].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+            }
+        }
+        Ok(())
+    }
+    fn discard_input(&mut self) -> so101::arm::Result<()> {
+        self.inner.discard_input()
+    }
+    fn name(&self) -> &str {
+        "gripper-flag-window"
     }
 }
 
@@ -455,100 +639,6 @@ fn lead_closes_the_gap_to_a_moving_leader() {
     assert!(led < none * 0.6, "lead did not help: {none:.0} -> {led:.0} counts");
 }
 
-// A transport with the timing measured on hardware: a write that commits to
-// EEPROM or the factory area leaves that servo busy for ~40 ms, and anything it
-// says meanwhile (the ack included) arrives only when it's done. Other replies
-// arrive 0.3 ms after the request. A reply that misses its window stays in
-// flight and lands in whatever exchange is open then, as on a real port.
-struct SlowEepromAcks {
-    inner: SimulatedServos,
-    busy_until: std::collections::HashMap<u8, std::time::Instant>,
-    in_flight: Vec<(std::time::Instant, Vec<u8>)>,
-    arrived: std::collections::VecDeque<u8>,
-}
-
-impl SlowEepromAcks {
-    const COMMIT: Duration = Duration::from_millis(40);
-    const TURNAROUND: Duration = Duration::from_micros(300);
-
-    fn new() -> Self {
-        Self {
-            inner: SimulatedServos::arm("servos"),
-            busy_until: Default::default(),
-            in_flight: Vec::new(),
-            arrived: Default::default(),
-        }
-    }
-
-    fn land_due(&mut self) {
-        let now = std::time::Instant::now();
-        self.in_flight.sort_by_key(|(t, _)| *t);
-        while self.in_flight.first().is_some_and(|(t, _)| *t <= now) {
-            let (_, bytes) = self.in_flight.remove(0);
-            self.arrived.extend(bytes);
-        }
-    }
-}
-
-impl so101::arm::uart::Transport for SlowEepromAcks {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
-        let now = std::time::Instant::now();
-        self.inner.send(bytes)?;
-        let (id, instr, addr) = (bytes[2], bytes[4], bytes[5]);
-        let mut out = Vec::new();
-        let mut b = [0u8; 1];
-        while self.inner.receive_exact(&mut b, Duration::ZERO).is_ok() {
-            out.push(b[0]);
-        }
-        let mut rest = &out[..];
-        while let Ok((frame, used)) = so101::arm::servos::parse_packet(rest) {
-            let busy = self.busy_until.get(&frame.id).copied().filter(|t| *t > now);
-            self.in_flight.push((busy.unwrap_or(now + Self::TURNAROUND), rest[..used].to_vec()));
-            rest = &rest[used..];
-        }
-        if instr == 0x03 && !(40..80).contains(&addr) {
-            let done = now + Self::COMMIT;
-            self.busy_until.insert(id, done);
-            for (t, bytes) in &mut self.in_flight {
-                if bytes[2] == id {
-                    *t = done;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
-        let deadline = std::time::Instant::now() + timeout;
-        let mut got = 0;
-        while got < buf.len() {
-            self.land_due();
-            match self.arrived.pop_front() {
-                Some(b) => {
-                    buf[got] = b;
-                    got += 1;
-                }
-                None if std::time::Instant::now() >= deadline => {
-                    return Err(so101::arm::uart::TransportError::Timeout { wanted: buf.len(), got })
-                }
-                None => std::thread::sleep(Duration::from_micros(100)),
-            }
-        }
-        Ok(())
-    }
-
-    // Like a real port: only bytes that have already arrived are thrown away.
-    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
-        self.land_due();
-        self.arrived.clear();
-        Ok(())
-    }
-
-    fn name(&self) -> &str {
-        "slow-eeprom"
-    }
-}
-
 #[test]
 fn a_late_eeprom_ack_does_not_leak_into_the_next_transaction() {
     // The sequence that failed on hardware: clear the wrap bit on servo 3, then
@@ -625,34 +715,6 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     assert!((last.sent[0] - 2000).abs() <= 2, "held goal {} should sit at the contact point", last.sent[0]);
 }
 
-// A transport that goes silent after a number of sends: a follower line dying mid-run.
-struct DiesAfter {
-    inner: SimulatedServos,
-    sends_left: usize,
-}
-
-impl so101::arm::uart::Transport for DiesAfter {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
-        if self.sends_left == 0 {
-            return Ok(());
-        }
-        self.sends_left -= 1;
-        self.inner.send(bytes)
-    }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
-        if self.sends_left == 0 {
-            return Err(so101::arm::uart::TransportError::Timeout { wanted: buf.len(), got: 0 });
-        }
-        self.inner.receive_exact(buf, timeout)
-    }
-    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.discard_input()
-    }
-    fn name(&self) -> &str {
-        "dies-after"
-    }
-}
-
 #[test]
 fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
@@ -674,35 +736,6 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("stopping with torque off"), "{msg}");
     assert!(errors <= 100, "ran {errors} failed ticks; the fail-safe is 0.5 s = 100 ticks at 200 Hz");
-}
-
-// Flags the gripper's first few replies with OVERCURRENT, as a real servo does
-// for a moment after torque comes back on following an earlier trip.
-struct StaleGripperFlags {
-    inner: SimulatedServos,
-    flagged_left: usize,
-}
-
-impl so101::arm::uart::Transport for StaleGripperFlags {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.send(bytes)
-    }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.receive_exact(buf, timeout)?;
-        if self.flagged_left > 0 && buf.len() >= 6 && buf[2] == 6 {
-            self.flagged_left -= 1;
-            buf[4] |= 0x08;
-            let n = buf.len();
-            buf[n - 1] = !buf[2..n - 1].iter().fold(0u8, |a, b| a.wrapping_add(*b));
-        }
-        Ok(())
-    }
-    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.discard_input()
-    }
-    fn name(&self) -> &str {
-        "stale-gripper-flags"
-    }
 }
 
 #[test]
@@ -729,39 +762,6 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
     let last = reports.last().unwrap();
     assert!(!last.held(Joint::Gripper), "gripper latched in a hold it never earned");
     assert!(last.follower[g] > 2500, "gripper did not open: {}", last.follower[g]);
-}
-
-// Flags the gripper's replies with OVERLOAD between two reply counts: the
-// servo's protection staying on across the moment the leader opens.
-struct GripperFlagWindow {
-    inner: SimulatedServos,
-    seen: usize,
-    from: usize,
-    to: usize,
-}
-
-impl so101::arm::uart::Transport for GripperFlagWindow {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.send(bytes)
-    }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.receive_exact(buf, timeout)?;
-        if buf.len() >= 6 && buf[2] == 6 {
-            self.seen += 1;
-            if (self.from..self.to).contains(&self.seen) {
-                buf[4] |= 0x20;
-                let n = buf.len();
-                buf[n - 1] = !buf[2..n - 1].iter().fold(0u8, |a, b| a.wrapping_add(*b));
-            }
-        }
-        Ok(())
-    }
-    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
-        self.inner.discard_input()
-    }
-    fn name(&self) -> &str {
-        "gripper-flag-window"
-    }
 }
 
 #[test]

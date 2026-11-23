@@ -342,9 +342,9 @@ proto/                     shared by every language in the repo
   foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
 crates/so101/              one crate, one folder per thing
-  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, the `Arm` trait
-                               and `ServoArm` (mod.rs); calibration; the STS3215 servos and their
-                               registers (servos.rs); the UART; simulated servos
+  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, `Error` and the
+                               `Arm` trait (mod.rs); `ServoArm` (servo_arm.rs); calibration; the
+                               STS3215 servos and their registers (servos.rs); the UART; simulated servos
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
   src/control/                 the loop: grid (slots), Tick, events, bus, teleop

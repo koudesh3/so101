@@ -1,3 +1,5 @@
+//! The cameras: which one, and the frames they produce, with their capture and receive times.
+
 use bytes::Bytes;
 
 use crate::Timestamp;
@@ -6,23 +8,6 @@ use crate::Timestamp;
 pub enum Camera {
     Wrist,
     Scene,
-}
-
-impl Camera {
-    pub fn name(self) -> &'static str {
-        match self {
-            Camera::Wrist => "wrist",
-            Camera::Scene => "scene",
-        }
-    }
-
-    pub fn from_name(name: &str) -> Option<Camera> {
-        match name {
-            "wrist" => Some(Camera::Wrist),
-            "scene" => Some(Camera::Scene),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -42,6 +27,23 @@ pub struct Frame {
     pub t_capture: Timestamp,
     pub t_receive: Timestamp,
     pub jpeg: Bytes,
+}
+
+impl Camera {
+    pub fn name(self) -> &'static str {
+        match self {
+            Camera::Wrist => "wrist",
+            Camera::Scene => "scene",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Camera> {
+        match name {
+            "wrist" => Some(Camera::Wrist),
+            "scene" => Some(Camera::Scene),
+            _ => None,
+        }
+    }
 }
 
 impl Frame {

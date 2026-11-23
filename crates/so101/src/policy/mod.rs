@@ -1,3 +1,5 @@
+//! What a policy is given (`Obs`) and what it returns (`Chunk`).
+
 use std::time::Duration;
 
 use crate::{Frame, Pose, Timestamp};

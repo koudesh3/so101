@@ -9,14 +9,14 @@ use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 
-use super::DESCRIPTOR_SET;
-use crate::{Clock, RecorderDrop};
 use mcap::records::{MessageHeader, Metadata};
 use mcap::{WriteOptions, Writer};
 
+use super::DESCRIPTOR_SET;
 use super::{Attachment, Error, Header, Result, SessionEnd};
 use super::{META_SESSION, META_SESSION_END};
 use crate::control::event::Sink;
+use crate::{Clock, RecorderDrop};
 use crate::{Event, Message};
 
 #[derive(Clone, Debug)]
@@ -28,12 +28,6 @@ pub struct RecorderOptions {
     pub queue: usize,
     /// MCAP chunk size: a kill or power loss loses at most the last chunk.
     pub chunk_size: u64,
-}
-
-impl Default for RecorderOptions {
-    fn default() -> Self {
-        Self { frame_queue: 90, queue: 100_000, chunk_size: 1024 * 1024 }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +54,21 @@ struct Shared {
     frames_dropped: AtomicU64,
     overflowed: AtomicBool,
     lost: AtomicU64,
+}
+
+/// Owns the writer thread. Attach [`Recorder::sink`] to a [`crate::EventBus`]; call
+/// [`Recorder::finish`] to close the file. Dropping it (for instance while unwinding a panic)
+/// also finishes the file.
+pub struct Recorder<W: Write + Seek + Send + 'static> {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<Result<(W, RecordSummary)>>>,
+}
+
+struct LogWriter<W: Write + Seek> {
+    writer: Writer<W>,
+    schemas: HashMap<&'static str, u16>,
+    channels: HashMap<&'static str, u16>,
+    written: u64,
 }
 
 impl Shared {
@@ -97,54 +106,6 @@ impl Shared {
         }
         out
     }
-}
-
-impl Sink for Shared {
-    fn accept(&self, event: &Event) {
-        if self.overflowed.load(Ordering::Relaxed) {
-            self.lost.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-        let guard = self.tx.read().expect("recorder lock");
-        let Some(tx) = guard.as_ref() else {
-            self.lost.fetch_add(1, Ordering::Relaxed);
-            return;
-        };
-        let frame = event.message.is_frame();
-        if frame {
-            if self.queued_frames.load(Ordering::Relaxed) >= self.frame_budget {
-                self.drop_frame(event.topic(), event.sequence);
-                return;
-            }
-            self.queued_frames.fetch_add(1, Ordering::Relaxed);
-        }
-        match tx.try_send(event.clone()) {
-            Ok(()) => {
-                if frame {
-                    self.frame_got_through(event.topic());
-                }
-            }
-            Err(TrySendError::Full(_)) if frame => {
-                self.queued_frames.fetch_sub(1, Ordering::Relaxed);
-                self.drop_frame(event.topic(), event.sequence);
-            }
-            Err(TrySendError::Full(_)) => {
-                self.overflowed.store(true, Ordering::Relaxed);
-                self.lost.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                self.lost.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-}
-
-/// Owns the writer thread. Attach [`Recorder::sink`] to a [`crate::EventBus`]; call
-/// [`Recorder::finish`] to close the file. Dropping it (for instance while unwinding a panic)
-/// also finishes the file.
-pub struct Recorder<W: Write + Seek + Send + 'static> {
-    shared: Arc<Shared>,
-    thread: Option<JoinHandle<Result<(W, RecordSummary)>>>,
 }
 
 impl<W: Write + Seek + Send + 'static> Recorder<W> {
@@ -244,21 +205,6 @@ impl<W: Write + Seek + Send + 'static> Recorder<W> {
     }
 }
 
-impl<W: Write + Seek + Send + 'static> std::ops::Drop for Recorder<W> {
-    fn drop(&mut self) {
-        if self.thread.is_some() {
-            let _ = self.close();
-        }
-    }
-}
-
-struct LogWriter<W: Write + Seek> {
-    writer: Writer<W>,
-    schemas: HashMap<&'static str, u16>,
-    channels: HashMap<&'static str, u16>,
-    written: u64,
-}
-
 impl<W: Write + Seek> LogWriter<W> {
     fn write(&mut self, event: &Event) -> Result<()> {
         let topic = event.topic();
@@ -288,5 +234,59 @@ impl<W: Write + Seek> LogWriter<W> {
         self.writer.write_to_known_channel(&header, &event.message.encode())?;
         self.written += 1;
         Ok(())
+    }
+}
+
+impl Default for RecorderOptions {
+    fn default() -> Self {
+        Self { frame_queue: 90, queue: 100_000, chunk_size: 1024 * 1024 }
+    }
+}
+
+impl Sink for Shared {
+    fn accept(&self, event: &Event) {
+        if self.overflowed.load(Ordering::Relaxed) {
+            self.lost.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let guard = self.tx.read().expect("recorder lock");
+        let Some(tx) = guard.as_ref() else {
+            self.lost.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let frame = event.message.is_frame();
+        if frame {
+            if self.queued_frames.load(Ordering::Relaxed) >= self.frame_budget {
+                self.drop_frame(event.topic(), event.sequence);
+                return;
+            }
+            self.queued_frames.fetch_add(1, Ordering::Relaxed);
+        }
+        match tx.try_send(event.clone()) {
+            Ok(()) => {
+                if frame {
+                    self.frame_got_through(event.topic());
+                }
+            }
+            Err(TrySendError::Full(_)) if frame => {
+                self.queued_frames.fetch_sub(1, Ordering::Relaxed);
+                self.drop_frame(event.topic(), event.sequence);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.overflowed.store(true, Ordering::Relaxed);
+                self.lost.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.lost.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+impl<W: Write + Seek + Send + 'static> std::ops::Drop for Recorder<W> {
+    fn drop(&mut self) {
+        if self.thread.is_some() {
+            let _ = self.close();
+        }
     }
 }

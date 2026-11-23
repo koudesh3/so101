@@ -4,17 +4,23 @@
 
 use std::time::Duration;
 
+use prost::Message as _;
+
 use super::pb::foxglove as fpb;
 use super::pb::so101::v1 as pb;
 use super::Error;
 use crate::*;
-use prost::Message as _;
+
+pub(crate) const SCHEMA_JOINT_STATE: &str = "so101.v1.JointState";
+pub(crate) const SCHEMA_ACTUATOR: &str = "so101.v1.ActuatorStatus";
+pub(crate) const SCHEMA_JOINT_TARGET: &str = "so101.v1.JointTarget";
+pub(crate) const SCHEMA_TICK: &str = "so101.v1.Tick";
+pub(crate) const SCHEMA_CHUNK: &str = "so101.v1.Chunk";
+pub(crate) const SCHEMA_RECORDER_DROP: &str = "so101.v1.RecorderDrop";
+pub(crate) const SCHEMA_IMAGE: &str = "foxglove.CompressedImage";
+pub(crate) const TOPIC_RECORDER_DROPS: &str = "/session/drops";
 
 type Result<T> = std::result::Result<T, Error>;
-
-fn invalid(msg: impl Into<String>) -> Error {
-    Error::Wire(msg.into())
-}
 
 pub(crate) trait Wire: Sized {
     type Pb;
@@ -23,54 +29,82 @@ pub(crate) trait Wire: Sized {
     fn from_pb(pb: Self::Pb, field: &str) -> Result<Self>;
 }
 
-macro_rules! wire_same {
-    ($($t:ty),*) => {$(
-        impl Wire for $t {
-            type Pb = $t;
-            fn to_pb(&self) -> $t {
-                self.clone()
-            }
-            fn from_pb(v: $t, _: &str) -> Result<$t> {
-                Ok(v)
-            }
+impl Message {
+    pub fn topic(&self) -> &'static str {
+        use ArmRole::*;
+        match self {
+            Message::JointState(Leader, _) => "/leader/state",
+            Message::JointState(Follower, _) => "/follower/state",
+            Message::Actuator(Leader, _) => "/leader/actuators",
+            Message::Actuator(Follower, _) => "/follower/actuators",
+            Message::JointTarget(Leader, _) => "/leader/target",
+            Message::JointTarget(Follower, _) => "/follower/target",
+            Message::Tick(_) => "/tick",
+            Message::Frame(f) => match f.camera {
+                Camera::Wrist => "/cam/wrist",
+                Camera::Scene => "/cam/scene",
+            },
+            Message::Chunk(_) => "/policy/chunk",
+            Message::RecorderDrop(_) => TOPIC_RECORDER_DROPS,
         }
-    )*};
+    }
+
+    pub(crate) fn schema(&self) -> &'static str {
+        match self {
+            Message::JointState(..) => SCHEMA_JOINT_STATE,
+            Message::Actuator(..) => SCHEMA_ACTUATOR,
+            Message::JointTarget(..) => SCHEMA_JOINT_TARGET,
+            Message::Tick(_) => SCHEMA_TICK,
+            Message::Frame(_) => SCHEMA_IMAGE,
+            Message::Chunk(_) => SCHEMA_CHUNK,
+            Message::RecorderDrop(_) => SCHEMA_RECORDER_DROP,
+        }
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        match self {
+            Message::JointState(_, m) => m.to_pb().encode_to_vec(),
+            Message::Actuator(_, m) => m.to_pb().encode_to_vec(),
+            Message::JointTarget(_, m) => m.to_pb().encode_to_vec(),
+            Message::Tick(m) => m.to_pb().encode_to_vec(),
+            Message::Frame(f) => frame_to_pb(f).encode_to_vec(),
+            Message::Chunk(m) => m.to_pb().encode_to_vec(),
+            Message::RecorderDrop(m) => m.to_pb().encode_to_vec(),
+        }
+    }
+
+    /// A frame's sequence and receive time come from its record, not its payload.
+    pub(crate) fn decode(topic: &str, data: &[u8], sequence: u32, log_time: Timestamp) -> Result<Message> {
+        let role = |name: &str| match name {
+            "leader" => Ok(ArmRole::Leader),
+            "follower" => Ok(ArmRole::Follower),
+            _ => Err(Error::Format(format!("unknown arm in topic {topic}"))),
+        };
+        let parts: Vec<&str> = topic.trim_start_matches('/').split('/').collect();
+        Ok(match parts.as_slice() {
+            [a, "state"] => Message::JointState(role(a)?, Wire::from_pb(pb::JointState::decode(data)?, "JointState")?),
+            [a, "actuators"] => {
+                Message::Actuator(role(a)?, Wire::from_pb(pb::ActuatorStatus::decode(data)?, "ActuatorStatus")?)
+            }
+            [a, "target"] => {
+                Message::JointTarget(role(a)?, Wire::from_pb(pb::JointTarget::decode(data)?, "JointTarget")?)
+            }
+            ["tick"] => Message::Tick(Wire::from_pb(pb::Tick::decode(data)?, "Tick")?),
+            ["cam", _] => Message::Frame(frame_from_pb(fpb::CompressedImage::decode(data)?, sequence, log_time)?),
+            ["policy", "chunk"] => Message::Chunk(Wire::from_pb(pb::Chunk::decode(data)?, "Chunk")?),
+            ["session", "drops"] => {
+                Message::RecorderDrop(Wire::from_pb(pb::RecorderDrop::decode(data)?, "RecorderDrop")?)
+            }
+            _ => return Err(Error::Format(format!("unknown topic {topic}"))),
+        })
+    }
 }
 
-macro_rules! wire_enum {
-    ($t:ident => $pb:ident { $($v:ident),* $(,)? }) => {
-        impl Wire for $t {
-            type Pb = i32;
-            fn to_pb(&self) -> i32 {
-                match self {
-                    $($t::$v => pb::$pb::$v as i32,)*
-                }
-            }
-            fn from_pb(v: i32, field: &str) -> Result<$t> {
-                match pb::$pb::try_from(v) {
-                    $(Ok(pb::$pb::$v) => Ok($t::$v),)*
-                    _ => Err(invalid(format!("{field}: unknown value {v}"))),
-                }
-            }
-        }
-    };
+impl Event {
+    pub fn topic(&self) -> &'static str {
+        self.message.topic()
+    }
 }
-
-macro_rules! wire_struct {
-    ($t:ident => $pb:ident { $($f:ident: $pf:ident),* $(,)? }) => {
-        impl Wire for $t {
-            type Pb = pb::$pb;
-            fn to_pb(&self) -> pb::$pb {
-                pb::$pb { $($pf: self.$f.to_pb(),)* }
-            }
-            fn from_pb(m: pb::$pb, _: &str) -> Result<$t> {
-                Ok($t { $($f: Wire::from_pb(m.$pf, concat!(stringify!($pb), ".", stringify!($pf)))?,)* })
-            }
-        }
-    };
-}
-
-wire_same!(u32, String, Option<f32>);
 
 impl Wire for Timestamp {
     type Pb = u64;
@@ -162,44 +196,6 @@ impl Wire for Option<FrameRef> {
     }
 }
 
-wire_enum!(Joint => Joint { ShoulderPan, ShoulderLift, ElbowFlex, WristFlex, WristRoll, Gripper });
-wire_enum!(Camera => Camera { Wrist, Scene });
-wire_enum!(Limit => Limit { Step, Range, Stall });
-wire_enum!(Fault => Fault { Voltage, Sensor, Overheat, Overcurrent, AngleLimit, Overload });
-
-wire_struct!(JointState => JointState { t: t_ns, pose: pose, counts: counts });
-wire_struct!(JointTarget => JointTarget { t: t_ns, pose: pose, source: source, counts: counts });
-wire_struct!(ActuatorStatus => ActuatorStatus {
-    t: t_ns,
-    joint: joint,
-    velocity_deg_s: velocity_deg_s,
-    load_percent: load_percent,
-    voltage_v: voltage_v,
-    temperature_c: temperature_c,
-    current_a: current_a,
-    faults: faults,
-});
-wire_struct!(FrameRef => FrameRef { camera: camera, sequence: sequence });
-wire_struct!(Clip => Clip { joint: joint, limit: limit });
-wire_struct!(Tick => Tick {
-    t: t_ns,
-    slot: slot,
-    state: state,
-    wrist: wrist,
-    scene: scene,
-    action: action,
-    source: source,
-    requested: requested,
-    clipped: clipped,
-});
-wire_struct!(RecorderDrop => RecorderDrop {
-    t: t_ns,
-    topic: topic,
-    first_sequence: first_sequence,
-    last_sequence: last_sequence,
-    count: count,
-});
-
 /// The action matrix is flattened row-major, so its shape has to be checked against `k`.
 impl Wire for Chunk {
     type Pb = pb::Chunk;
@@ -234,6 +230,99 @@ impl Wire for Chunk {
     }
 }
 
+macro_rules! wire_same {
+    ($($t:ty),*) => {$(
+        impl Wire for $t {
+            type Pb = $t;
+            fn to_pb(&self) -> $t {
+                self.clone()
+            }
+            fn from_pb(v: $t, _: &str) -> Result<$t> {
+                Ok(v)
+            }
+        }
+    )*};
+}
+
+macro_rules! wire_enum {
+    ($t:ident => $pb:ident { $($v:ident),* $(,)? }) => {
+        impl Wire for $t {
+            type Pb = i32;
+            fn to_pb(&self) -> i32 {
+                match self {
+                    $($t::$v => pb::$pb::$v as i32,)*
+                }
+            }
+            fn from_pb(v: i32, field: &str) -> Result<$t> {
+                match pb::$pb::try_from(v) {
+                    $(Ok(pb::$pb::$v) => Ok($t::$v),)*
+                    _ => Err(invalid(format!("{field}: unknown value {v}"))),
+                }
+            }
+        }
+    };
+}
+
+macro_rules! wire_struct {
+    ($t:ident => $pb:ident { $($f:ident: $pf:ident),* $(,)? }) => {
+        impl Wire for $t {
+            type Pb = pb::$pb;
+            fn to_pb(&self) -> pb::$pb {
+                pb::$pb { $($pf: self.$f.to_pb(),)* }
+            }
+            fn from_pb(m: pb::$pb, _: &str) -> Result<$t> {
+                Ok($t { $($f: Wire::from_pb(m.$pf, concat!(stringify!($pb), ".", stringify!($pf)))?,)* })
+            }
+        }
+    };
+}
+
+wire_same!(u32, String, Option<f32>);
+wire_enum!(Joint => Joint { ShoulderPan, ShoulderLift, ElbowFlex, WristFlex, WristRoll, Gripper });
+wire_enum!(Camera => Camera { Wrist, Scene });
+wire_enum!(Limit => Limit { Step, Range, Stall });
+wire_enum!(Fault => Fault { Voltage, Sensor, Overheat, Overcurrent, AngleLimit, Overload });
+wire_struct!(JointState => JointState { t: t_ns, pose: pose, counts: counts });
+wire_struct!(JointTarget => JointTarget { t: t_ns, pose: pose, source: source, counts: counts });
+
+wire_struct!(ActuatorStatus => ActuatorStatus {
+    t: t_ns,
+    joint: joint,
+    velocity_deg_s: velocity_deg_s,
+    load_percent: load_percent,
+    voltage_v: voltage_v,
+    temperature_c: temperature_c,
+    current_a: current_a,
+    faults: faults,
+});
+
+wire_struct!(FrameRef => FrameRef { camera: camera, sequence: sequence });
+wire_struct!(Clip => Clip { joint: joint, limit: limit });
+
+wire_struct!(Tick => Tick {
+    t: t_ns,
+    slot: slot,
+    state: state,
+    wrist: wrist,
+    scene: scene,
+    action: action,
+    source: source,
+    requested: requested,
+    clipped: clipped,
+});
+
+wire_struct!(RecorderDrop => RecorderDrop {
+    t: t_ns,
+    topic: topic,
+    first_sequence: first_sequence,
+    last_sequence: last_sequence,
+    count: count,
+});
+
+fn invalid(msg: impl Into<String>) -> Error {
+    Error::Wire(msg.into())
+}
+
 /// Frames are Foxglove's image message, so viewers show them without our schema.
 pub(crate) fn frame_to_pb(f: &Frame) -> fpb::CompressedImage {
     let ns = f.t_capture.0;
@@ -263,95 +352,6 @@ pub(crate) fn frame_from_pb(img: fpb::CompressedImage, sequence: u32, t_receive:
         t_receive,
         jpeg: img.data,
     })
-}
-
-// ---- Topics and schemas: where each message goes in the MCAP file ----
-
-pub(crate) const SCHEMA_JOINT_STATE: &str = "so101.v1.JointState";
-pub(crate) const SCHEMA_ACTUATOR: &str = "so101.v1.ActuatorStatus";
-pub(crate) const SCHEMA_JOINT_TARGET: &str = "so101.v1.JointTarget";
-pub(crate) const SCHEMA_TICK: &str = "so101.v1.Tick";
-pub(crate) const SCHEMA_CHUNK: &str = "so101.v1.Chunk";
-pub(crate) const SCHEMA_RECORDER_DROP: &str = "so101.v1.RecorderDrop";
-pub(crate) const SCHEMA_IMAGE: &str = "foxglove.CompressedImage";
-
-pub(crate) const TOPIC_RECORDER_DROPS: &str = "/session/drops";
-
-impl Message {
-    pub fn topic(&self) -> &'static str {
-        use ArmRole::*;
-        match self {
-            Message::JointState(Leader, _) => "/leader/state",
-            Message::JointState(Follower, _) => "/follower/state",
-            Message::Actuator(Leader, _) => "/leader/actuators",
-            Message::Actuator(Follower, _) => "/follower/actuators",
-            Message::JointTarget(Leader, _) => "/leader/target",
-            Message::JointTarget(Follower, _) => "/follower/target",
-            Message::Tick(_) => "/tick",
-            Message::Frame(f) => match f.camera {
-                Camera::Wrist => "/cam/wrist",
-                Camera::Scene => "/cam/scene",
-            },
-            Message::Chunk(_) => "/policy/chunk",
-            Message::RecorderDrop(_) => TOPIC_RECORDER_DROPS,
-        }
-    }
-
-    pub(crate) fn schema(&self) -> &'static str {
-        match self {
-            Message::JointState(..) => SCHEMA_JOINT_STATE,
-            Message::Actuator(..) => SCHEMA_ACTUATOR,
-            Message::JointTarget(..) => SCHEMA_JOINT_TARGET,
-            Message::Tick(_) => SCHEMA_TICK,
-            Message::Frame(_) => SCHEMA_IMAGE,
-            Message::Chunk(_) => SCHEMA_CHUNK,
-            Message::RecorderDrop(_) => SCHEMA_RECORDER_DROP,
-        }
-    }
-
-    pub(crate) fn encode(&self) -> Vec<u8> {
-        match self {
-            Message::JointState(_, m) => m.to_pb().encode_to_vec(),
-            Message::Actuator(_, m) => m.to_pb().encode_to_vec(),
-            Message::JointTarget(_, m) => m.to_pb().encode_to_vec(),
-            Message::Tick(m) => m.to_pb().encode_to_vec(),
-            Message::Frame(f) => frame_to_pb(f).encode_to_vec(),
-            Message::Chunk(m) => m.to_pb().encode_to_vec(),
-            Message::RecorderDrop(m) => m.to_pb().encode_to_vec(),
-        }
-    }
-
-    /// A frame's sequence and receive time come from its record, not its payload.
-    pub(crate) fn decode(topic: &str, data: &[u8], sequence: u32, log_time: Timestamp) -> Result<Message> {
-        let role = |name: &str| match name {
-            "leader" => Ok(ArmRole::Leader),
-            "follower" => Ok(ArmRole::Follower),
-            _ => Err(Error::Format(format!("unknown arm in topic {topic}"))),
-        };
-        let parts: Vec<&str> = topic.trim_start_matches('/').split('/').collect();
-        Ok(match parts.as_slice() {
-            [a, "state"] => Message::JointState(role(a)?, Wire::from_pb(pb::JointState::decode(data)?, "JointState")?),
-            [a, "actuators"] => {
-                Message::Actuator(role(a)?, Wire::from_pb(pb::ActuatorStatus::decode(data)?, "ActuatorStatus")?)
-            }
-            [a, "target"] => {
-                Message::JointTarget(role(a)?, Wire::from_pb(pb::JointTarget::decode(data)?, "JointTarget")?)
-            }
-            ["tick"] => Message::Tick(Wire::from_pb(pb::Tick::decode(data)?, "Tick")?),
-            ["cam", _] => Message::Frame(frame_from_pb(fpb::CompressedImage::decode(data)?, sequence, log_time)?),
-            ["policy", "chunk"] => Message::Chunk(Wire::from_pb(pb::Chunk::decode(data)?, "Chunk")?),
-            ["session", "drops"] => {
-                Message::RecorderDrop(Wire::from_pb(pb::RecorderDrop::decode(data)?, "RecorderDrop")?)
-            }
-            _ => return Err(Error::Format(format!("unknown topic {topic}"))),
-        })
-    }
-}
-
-impl Event {
-    pub fn topic(&self) -> &'static str {
-        self.message.topic()
-    }
 }
 
 #[cfg(test)]

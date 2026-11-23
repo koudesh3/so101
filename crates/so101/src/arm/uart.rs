@@ -6,42 +6,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::arm::{Error, Result};
+
 pub const BAUD_RATE: u32 = 1_000_000;
-
-#[derive(Debug)]
-pub enum TransportError {
-    Io(io::Error),
-    Timeout { wanted: usize, got: usize },
-}
-
-impl From<io::Error> for TransportError {
-    fn from(e: io::Error) -> Self {
-        if e.kind() == io::ErrorKind::TimedOut {
-            TransportError::Timeout { wanted: 0, got: 0 }
-        } else {
-            TransportError::Io(e)
-        }
-    }
-}
-
-impl std::fmt::Display for TransportError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TransportError::Io(e) => write!(f, "io: {e}"),
-            TransportError::Timeout { wanted, got } => write!(f, "timeout after {got} of {wanted} bytes"),
-        }
-    }
-}
-
-impl std::error::Error for TransportError {}
-
-pub trait Transport: Send {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError>;
-    // Fill `buf` entirely or fail with how many bytes arrived.
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), TransportError>;
-    fn discard_input(&mut self) -> Result<(), TransportError>;
-    fn name(&self) -> &str;
-}
 
 // note: the SO-101 bus board is 1 Mbaud, 8N1, no flow control.
 pub struct SerialPort {
@@ -49,8 +16,43 @@ pub struct SerialPort {
     path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Direction {
+    HostToServos,
+    BusToHost,
+}
+
+// One line of the byte trace: `{"t_us":..,"port":..,"dir":"tx"|"rx","hex":"FFFF.."}`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct TraceRecord {
+    pub t_us: u64,
+    pub port: String,
+    pub dir: String,
+    pub hex: String,
+}
+
+// One trace file shared by every transport in the process, on one clock.
+pub struct ByteTrace {
+    writer: Mutex<BufWriter<File>>,
+    epoch: Instant,
+}
+
+pub struct Traced<T: Transport> {
+    inner: T,
+    label: String,
+    trace: Arc<ByteTrace>,
+}
+
+pub trait Transport: Send {
+    fn send(&mut self, bytes: &[u8]) -> Result<()>;
+    // Fill `buf` entirely or fail with how many bytes arrived.
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<()>;
+    fn discard_input(&mut self) -> Result<()>;
+    fn name(&self) -> &str;
+}
+
 impl SerialPort {
-    pub fn open(path: &str) -> Result<Self, TransportError> {
+    pub fn open(path: &str) -> Result<Self> {
         let port = serialport::new(path, BAUD_RATE)
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
@@ -61,53 +63,6 @@ impl SerialPort {
             .map_err(other)?;
         Ok(Self { port, path: path.to_string() })
     }
-}
-
-fn other(e: serialport::Error) -> TransportError {
-    TransportError::Io(io::Error::other(e.to_string()))
-}
-
-impl Transport for SerialPort {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.port.write_all(bytes)?;
-        self.port.flush()?;
-        Ok(())
-    }
-
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), TransportError> {
-        let deadline = Instant::now() + timeout;
-        let mut got = 0;
-        while got < buf.len() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(TransportError::Timeout { wanted: buf.len(), got });
-            }
-            self.port.set_timeout(remaining).map_err(other)?;
-            match self.port.read(&mut buf[got..]) {
-                Ok(0) => return Err(TransportError::Timeout { wanted: buf.len(), got }),
-                Ok(n) => got += n,
-                Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                    return Err(TransportError::Timeout { wanted: buf.len(), got })
-                }
-                Err(e) => return Err(TransportError::Io(e)),
-            }
-        }
-        Ok(())
-    }
-
-    fn discard_input(&mut self) -> Result<(), TransportError> {
-        self.port.clear(serialport::ClearBuffer::Input).map_err(other)
-    }
-
-    fn name(&self) -> &str {
-        &self.path
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Direction {
-    HostToServos,
-    BusToHost,
 }
 
 impl Direction {
@@ -126,25 +81,10 @@ impl Direction {
     }
 }
 
-// One line of the byte trace: `{"t_us":..,"port":..,"dir":"tx"|"rx","hex":"FFFF.."}`.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct TraceRecord {
-    pub t_us: u64,
-    pub port: String,
-    pub dir: String,
-    pub hex: String,
-}
-
 impl TraceRecord {
     pub fn bytes(&self) -> Vec<u8> {
         (0..self.hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(&self.hex[i..i + 2], 16).ok()).collect()
     }
-}
-
-// One trace file shared by every transport in the process, on one clock.
-pub struct ByteTrace {
-    writer: Mutex<BufWriter<File>>,
-    epoch: Instant,
 }
 
 impl ByteTrace {
@@ -172,29 +112,58 @@ impl ByteTrace {
     }
 }
 
-pub struct Traced<T: Transport> {
-    inner: T,
-    label: String,
-    trace: Arc<ByteTrace>,
-}
-
 impl<T: Transport> Traced<T> {
     pub fn new(inner: T, label: &str, trace: Arc<ByteTrace>) -> Self {
         Self { inner, label: label.to_string(), trace }
     }
 }
 
+impl Transport for SerialPort {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        self.port.write_all(bytes)?;
+        self.port.flush()?;
+        Ok(())
+    }
+
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        let mut got = 0;
+        while got < buf.len() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::Timeout { wanted: buf.len(), got });
+            }
+            self.port.set_timeout(remaining).map_err(other)?;
+            match self.port.read(&mut buf[got..]) {
+                Ok(0) => return Err(Error::Timeout { wanted: buf.len(), got }),
+                Ok(n) => got += n,
+                Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(Error::Timeout { wanted: buf.len(), got }),
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+        Ok(())
+    }
+
+    fn discard_input(&mut self) -> Result<()> {
+        self.port.clear(serialport::ClearBuffer::Input).map_err(other)
+    }
+
+    fn name(&self) -> &str {
+        &self.path
+    }
+}
+
 impl<T: Transport> Transport for Traced<T> {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
         self.trace.record(&self.label, Direction::HostToServos, bytes);
         self.inner.send(bytes)
     }
 
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<()> {
         let result = self.inner.receive_exact(buf, timeout);
         let got = match &result {
             Ok(()) => buf.len(),
-            Err(TransportError::Timeout { got, .. }) => *got,
+            Err(Error::Timeout { got, .. }) => *got,
             Err(_) => 0,
         };
         if got > 0 {
@@ -203,13 +172,17 @@ impl<T: Transport> Transport for Traced<T> {
         result
     }
 
-    fn discard_input(&mut self) -> Result<(), TransportError> {
+    fn discard_input(&mut self) -> Result<()> {
         self.inner.discard_input()
     }
 
     fn name(&self) -> &str {
         self.inner.name()
     }
+}
+
+fn other(e: serialport::Error) -> Error {
+    Error::Io(io::Error::other(e.to_string()))
 }
 
 pub fn read_trace(path: &Path) -> io::Result<Vec<TraceRecord>> {

@@ -7,8 +7,9 @@ written to learn how they work.
 
 ```
 crates/so101/    the Rust code, one crate, one folder per thing (src/):
-  arm/             the arm: joints, poses, the `Arm` trait the loop uses, and `ServoArm`, the
-                   SO-101 on its STS3215 servos (servos.rs), their UART, calibration, simulated servos
+  arm/             the arm: joints, poses, its errors and the `Arm` trait (mod.rs); `ServoArm`, the
+                   SO-101 on its STS3215 servos (servo_arm.rs); the servos and their registers
+                   (servos.rs); their UART; simulated servos; calibration
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop: the grid of slots, ticks, events, the event bus, and teleop
@@ -30,6 +31,18 @@ docs/
   devlog/          dated entries: what was tried, how, and what it showed
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
+
+## Conventions
+
+- **One folder per thing.** A folder's `mod.rs` is the thing itself: its types, its errors and its
+  trait. Each implementation gets its own file beside it (`arm/servo_arm.rs` implements `Arm`).
+- **Every file reads in one order:** a one-line `//!` saying what it is; imports (std, external,
+  crate); constants; types; the trait; inherent impls, then trait impls; free functions; unit tests.
+- **One error type per folder**, named `Error`, with `Result` beside it.
+- **Unit tests sit in the file whose logic they test.** `tests/` is for behaviour that crosses
+  folders: teleop against simulated servos, a session written and read back, the schema.
+- **Comments only say what the code can't:** units, outside conventions, measured facts, and why.
+- **`control/` reaches arms only through the `Arm` trait** (`just check` enforces it).
 
 ## Glossary
 

@@ -26,6 +26,42 @@ pub struct Session {
     pub attachments: Vec<Attachment>,
 }
 
+pub(crate) struct RawLog<'a> {
+    /// id -> (name, encoding, data)
+    pub schemas: BTreeMap<u16, (String, String, Cow<'a, [u8]>)>,
+    /// id -> (topic, schema id, message encoding, metadata)
+    pub channels: BTreeMap<u16, (String, u16, String, BTreeMap<String, String>)>,
+    pub messages: Vec<(MessageHeader, Cow<'a, [u8]>)>,
+    pub metadata: Vec<Metadata>,
+    pub attachments: Vec<(AttachmentHeader, Cow<'a, [u8]>)>,
+    /// Why parsing stopped early, if it did (only in lenient mode).
+    pub truncated: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Drop {
+    pub topic: String,
+    pub kind: DropKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropKind {
+    /// The host lost messages: the sequence skipped `missing` numbers after `after`.
+    SequenceGap { after: u32, missing: u32 },
+    /// No sequence gap, but the capture interval after frame `after` was over 1.5 × the
+    /// camera's nominal period: the camera itself skipped (the counter can't show that).
+    LongCaptureInterval { after: u32, interval: Duration, nominal: Duration },
+    /// The recorder dropped this run because it fell behind (`/log/drops`).
+    Recorder { first: u32, last: u32, count: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoverSummary {
+    pub messages: usize,
+    /// Why the input stopped early, or `None` if it was already complete.
+    pub truncated: Option<String>,
+}
+
 impl Session {
     /// Reads the whole file into memory. A damaged or truncated file is an error: recover it
     /// first (`so101 log recover`).
@@ -98,27 +134,6 @@ impl Session {
     pub fn topic<'a>(&'a self, topic: &'a str) -> impl Iterator<Item = &'a Event> + 'a {
         self.events.iter().filter(move |e| e.topic() == topic)
     }
-}
-
-/// Hand each event to `f` at its `log_time` on `clock`. Pass events in time order
-/// (`Session::by_time`) and a `ReplayClock` started at the first one's `log_time`.
-pub fn replay<'a>(events: impl IntoIterator<Item = &'a Event>, clock: &dyn Clock, mut f: impl FnMut(&Event)) {
-    for e in events {
-        clock.sleep_until(e.log_time);
-        f(e);
-    }
-}
-
-pub(crate) struct RawLog<'a> {
-    /// id -> (name, encoding, data)
-    pub schemas: BTreeMap<u16, (String, String, Cow<'a, [u8]>)>,
-    /// id -> (topic, schema id, message encoding, metadata)
-    pub channels: BTreeMap<u16, (String, u16, String, BTreeMap<String, String>)>,
-    pub messages: Vec<(MessageHeader, Cow<'a, [u8]>)>,
-    pub metadata: Vec<Metadata>,
-    pub attachments: Vec<(AttachmentHeader, Cow<'a, [u8]>)>,
-    /// Why parsing stopped early, if it did (only in lenient mode).
-    pub truncated: Option<String>,
 }
 
 impl<'a> RawLog<'a> {
@@ -238,28 +253,13 @@ impl Session {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Drop {
-    pub topic: String,
-    pub kind: DropKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DropKind {
-    /// The host lost messages: the sequence skipped `missing` numbers after `after`.
-    SequenceGap { after: u32, missing: u32 },
-    /// No sequence gap, but the capture interval after frame `after` was over 1.5 × the
-    /// camera's nominal period: the camera itself skipped (the counter can't show that).
-    LongCaptureInterval { after: u32, interval: Duration, nominal: Duration },
-    /// The recorder dropped this run because it fell behind (`/log/drops`).
-    Recorder { first: u32, last: u32, count: u32 },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecoverSummary {
-    pub messages: usize,
-    /// Why the input stopped early, or `None` if it was already complete.
-    pub truncated: Option<String>,
+/// Hand each event to `f` at its `log_time` on `clock`. Pass events in time order
+/// (`Session::by_time`) and a `ReplayClock` started at the first one's `log_time`.
+pub fn replay<'a>(events: impl IntoIterator<Item = &'a Event>, clock: &dyn Clock, mut f: impl FnMut(&Event)) {
+    for e in events {
+        clock.sleep_until(e.log_time);
+        f(e);
+    }
 }
 
 pub fn recover<W: Write + Seek>(input: &[u8], out: W) -> Result<(W, RecoverSummary)> {

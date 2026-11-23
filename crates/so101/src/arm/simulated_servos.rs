@@ -7,12 +7,41 @@ use std::time::{Duration, Instant};
 
 use crate::arm::servos::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::servos::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
-use crate::arm::uart::{Transport, TransportError};
+use crate::arm::uart::Transport;
+use crate::arm::Error;
 use crate::arm::IDS;
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
 pub const MAX_SPEED_COUNTS_PER_S: f64 = 3100.0;
+
 const LOOP_GAIN_PER_S: f64 = 25.0;
+const AMBIENT_C: f64 = 31.0;
+
+// Load (0..1000) per tick of position error while torque is on.
+const LOAD_PER_COUNT_ERROR: f64 = 7.0;
+
+// Static load from the arm's own weight, per joint id 1..6, at the worst angle.
+const GRAVITY_LOAD: [f64; 6] = [0.0, 280.0, 170.0, 60.0, 0.0, 0.0];
+
+// note: the STS3215 raises its overload bit only after the output has been
+// saturated for Protection_Time (register 35, default 20 x 10 ms).
+const PROTECTION_TIME_S: f64 = 0.2;
+
+const FACTORY_DEFAULTS: [(Register, i32); 13] = [
+    (servos::MODEL_NUMBER, servos::STS3215_MODEL_NUMBER),
+    (servos::RESPONSE_LEVEL, 1),
+    (servos::MAX_ANGLE_LIMIT, 4095),
+    (servos::MAX_TEMPERATURE, 70),
+    (servos::MAX_TORQUE, 1000),
+    (servos::PHASE, 12),
+    (servos::P_COEFFICIENT, 32),
+    (servos::D_COEFFICIENT, 32),
+    (servos::LOCK, 1),
+    (servos::TORQUE_LIMIT, 1000),
+    (servos::PRESENT_VOLTAGE, 74),
+    (servos::PRESENT_TEMPERATURE, 31),
+    (servos::RETURN_DELAY, 0),
+];
 
 // Moves a torque-off servo: given (id, time in seconds), returns its shaft angle in counts.
 pub type Hand = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
@@ -21,19 +50,33 @@ pub type Hand = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
 // lowest shaft angle it can reach (an object in the gripper, say).
 pub type Obstacle = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
 
-const AMBIENT_C: f64 = 31.0;
-// Load (0..1000) per tick of position error while torque is on.
-const LOAD_PER_COUNT_ERROR: f64 = 7.0;
-// Static load from the arm's own weight, per joint id 1..6, at the worst angle.
-const GRAVITY_LOAD: [f64; 6] = [0.0, 280.0, 170.0, 60.0, 0.0, 0.0];
-// note: the STS3215 raises its overload bit only after the output has been
-// saturated for Protection_Time (register 35, default 20 x 10 ms).
-const PROTECTION_TIME_S: f64 = 0.2;
-
 #[derive(Clone)]
 pub enum SimClock {
     Real(Instant),
     Manual(Arc<Mutex<f64>>),
+}
+
+pub struct SimServo {
+    pub id: u8,
+    pub table: [u8; 128],
+    // Shaft angle in counts before the homing offset is applied.
+    pub actual_counts: f64,
+    pub last_update_s: f64,
+    // Winding temperature, integrated from load.
+    pub temperature_c: f64,
+    pub saturated_s: f64,
+}
+
+pub struct SimulatedServos {
+    pub servos: Vec<SimServo>,
+    pub clock: SimClock,
+    hand: Option<Hand>,
+    obstacle: Option<Obstacle>,
+    reply_queue: VecDeque<u8>,
+    pending_input: Vec<u8>,
+    name: String,
+    // Replies from these IDs are dropped, to exercise timeouts.
+    pub silenced_ids: Vec<u8>,
 }
 
 impl SimClock {
@@ -51,17 +94,6 @@ impl SimClock {
             *t.lock().unwrap() += dt.as_secs_f64();
         }
     }
-}
-
-pub struct SimServo {
-    pub id: u8,
-    pub table: [u8; 128],
-    // Shaft angle in counts before the homing offset is applied.
-    pub actual_counts: f64,
-    pub last_update_s: f64,
-    // Winding temperature, integrated from load.
-    pub temperature_c: f64,
-    pub saturated_s: f64,
 }
 
 impl SimServo {
@@ -189,34 +221,6 @@ impl SimServo {
     }
 }
 
-const FACTORY_DEFAULTS: [(Register, i32); 13] = [
-    (servos::MODEL_NUMBER, servos::STS3215_MODEL_NUMBER),
-    (servos::RESPONSE_LEVEL, 1),
-    (servos::MAX_ANGLE_LIMIT, 4095),
-    (servos::MAX_TEMPERATURE, 70),
-    (servos::MAX_TORQUE, 1000),
-    (servos::PHASE, 12),
-    (servos::P_COEFFICIENT, 32),
-    (servos::D_COEFFICIENT, 32),
-    (servos::LOCK, 1),
-    (servos::TORQUE_LIMIT, 1000),
-    (servos::PRESENT_VOLTAGE, 74),
-    (servos::PRESENT_TEMPERATURE, 31),
-    (servos::RETURN_DELAY, 0),
-];
-
-pub struct SimulatedServos {
-    pub servos: Vec<SimServo>,
-    pub clock: SimClock,
-    hand: Option<Hand>,
-    obstacle: Option<Obstacle>,
-    reply_queue: VecDeque<u8>,
-    pending_input: Vec<u8>,
-    name: String,
-    // Replies from these IDs are dropped, to exercise timeouts.
-    pub silenced_ids: Vec<u8>,
-}
-
 impl SimulatedServos {
     pub fn new(name: &str, ids: &[u8], clock: SimClock) -> Self {
         let servos = ids.iter().map(|&id| SimServo::new(id, CENTER_COUNT as f64)).collect();
@@ -341,16 +345,8 @@ impl SimulatedServos {
     }
 }
 
-pub fn waving_hand() -> Hand {
-    Arc::new(|id: u8, t: f64| {
-        let period_s = 3.0 + id as f64 * 0.7;
-        let amplitude = 300.0 + id as f64 * 60.0;
-        Some(CENTER_COUNT as f64 + amplitude * (2.0 * std::f64::consts::PI * t / period_s).sin())
-    })
-}
-
 impl Transport for SimulatedServos {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+    fn send(&mut self, bytes: &[u8]) -> crate::arm::Result<()> {
         self.pending_input.extend_from_slice(bytes);
         loop {
             match parse_packet(&self.pending_input) {
@@ -372,18 +368,18 @@ impl Transport for SimulatedServos {
         Ok(())
     }
 
-    fn receive_exact(&mut self, buf: &mut [u8], _timeout: Duration) -> Result<(), TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], _timeout: Duration) -> crate::arm::Result<()> {
         let wanted = buf.len();
         for (got, slot) in buf.iter_mut().enumerate() {
             match self.reply_queue.pop_front() {
                 Some(b) => *slot = b,
-                None => return Err(TransportError::Timeout { wanted, got }),
+                None => return Err(Error::Timeout { wanted, got }),
             }
         }
         Ok(())
     }
 
-    fn discard_input(&mut self) -> Result<(), TransportError> {
+    fn discard_input(&mut self) -> crate::arm::Result<()> {
         self.reply_queue.clear();
         Ok(())
     }
@@ -391,6 +387,14 @@ impl Transport for SimulatedServos {
     fn name(&self) -> &str {
         &self.name
     }
+}
+
+pub fn waving_hand() -> Hand {
+    Arc::new(|id: u8, t: f64| {
+        let period_s = 3.0 + id as f64 * 0.7;
+        let amplitude = 300.0 + id as f64 * 60.0;
+        Some(CENTER_COUNT as f64 + amplitude * (2.0 * std::f64::consts::PI * t / period_s).sin())
+    })
 }
 
 // A scripted pick-and-place, so the simulated leader moves like a person

@@ -10,8 +10,44 @@ use so101::session::{recover, replay, Attachment, CameraInfo, DropKind, Header, 
 use so101::{ArmRole, Camera, Clock, Event, JointState, Message, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 
 const MS: u64 = 1_000_000;
-
 const CALIBRATION: &[u8] = br#"{"shoulder_pan": {"homing_offset": 12, "range_min": 800, "range_max": 3300}}"#;
+
+/// A writer that blocks every write while its gate is closed: a stalled disk.
+#[derive(Clone)]
+struct StalledDisk {
+    data: Arc<Mutex<Cursor<Vec<u8>>>>,
+    open: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl StalledDisk {
+    fn new() -> Self {
+        Self { data: Arc::default(), open: Arc::new((Mutex::new(true), Condvar::new())) }
+    }
+    fn set_open(&self, open: bool) {
+        *self.open.0.lock().unwrap() = open;
+        self.open.1.notify_all();
+    }
+}
+
+impl Write for StalledDisk {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut open = self.open.0.lock().unwrap();
+        while !*open {
+            open = self.open.1.wait(open).unwrap();
+        }
+        drop(open);
+        self.data.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for StalledDisk {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        self.data.lock().unwrap().seek(pos)
+    }
+}
 
 fn header_fields() -> Header {
     let mut h = Header::now();
@@ -123,43 +159,6 @@ fn drops_are_reported_by_kind() {
             && matches!(k, DropKind::LongCaptureInterval { after: 6, interval, .. } if *interval == Duration::from_millis(70))),
         "{drops:?}"
     );
-}
-
-/// A writer that blocks every write while its gate is closed: a stalled disk.
-#[derive(Clone)]
-struct StalledDisk {
-    data: Arc<Mutex<Cursor<Vec<u8>>>>,
-    open: Arc<(Mutex<bool>, Condvar)>,
-}
-
-impl StalledDisk {
-    fn new() -> Self {
-        Self { data: Arc::default(), open: Arc::new((Mutex::new(true), Condvar::new())) }
-    }
-    fn set_open(&self, open: bool) {
-        *self.open.0.lock().unwrap() = open;
-        self.open.1.notify_all();
-    }
-}
-
-impl Write for StalledDisk {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut open = self.open.0.lock().unwrap();
-        while !*open {
-            open = self.open.1.wait(open).unwrap();
-        }
-        drop(open);
-        self.data.lock().unwrap().write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Seek for StalledDisk {
-    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.data.lock().unwrap().seek(pos)
-    }
 }
 
 /// 3. With the disk stalled, publishing never blocks, frames are dropped first, every drop is on

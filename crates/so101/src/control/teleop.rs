@@ -6,10 +6,30 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::arm::{Arm, Counts, Fault, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
+use crate::arm::{Error, Result};
 use crate::control::grid::Grid;
-use crate::{ArmRole, Clip, DynError, Event, Limit, Message, Tick};
+use crate::{ArmRole, Clip, Event, Limit, Message, Tick};
 
-type Result<T> = std::result::Result<T, DynError>;
+// How long a follower may fail every tick before teleop stops.
+const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
+
+// A joint is blocked when its goal is this far away...
+const STALL_GAP_COUNTS: i32 = 60;
+
+// ...and it has moved no more than this per tick...
+const STALL_STILL_COUNTS: i32 = 2;
+
+// ...for this long. Faster than the servo's own protection, which let the
+// gripper squeeze at its full ceiling for ~2 s on hardware before tripping.
+const STALL_TIME: Duration = Duration::from_millis(250);
+
+// While held, the gripper keeps this much of a squeeze past the contact
+// point: a chosen grip force instead of the servo's maximum. Other joints hold.
+const GRIP_SQUEEZE_COUNTS: i32 = 30;
+
+// One count, in the pose's units: a requested value further than this from where the range
+// clamp put it was clipped by the range.
+const ONE_COUNT_DEG: f32 = 360.0 / 4096.0;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TeleopOptions {
@@ -32,6 +52,92 @@ pub struct TeleopStats {
     pub overruns: u64,
     pub errors: u64,
     pub worst_work_time: Duration,
+}
+
+#[derive(Default)]
+struct LoopState {
+    last_goal: Option<Counts>,
+    holds: [Option<Hold>; JOINT_COUNT],
+    stalls: StallWatch,
+    predictor: Predictor,
+}
+
+#[derive(Default)]
+struct StallWatch {
+    prev: Option<Counts>,
+    stuck_s: [f64; JOINT_COUNT],
+    // Whether the servo's protection flag was up last tick. The flag stays up
+    // for as long as the servo is in protection, so only its rising edge is a
+    // new event; a flag still up from a hold says nothing about the next move.
+    flagged: [bool; JOINT_COUNT],
+}
+
+// A blocked joint (stall seen, or the servo tripped its overload or current protection): its
+// goal is held at the contact point, plus a small squeeze on the gripper, until the leader moves
+// back past that point.
+#[derive(Clone, Copy, Debug)]
+struct Hold {
+    at: i32,
+    pushing: Direction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Up,
+    Down,
+    Neither,
+}
+
+// Leader velocity, smoothed, for commanding a little ahead of the hand.
+#[derive(Default)]
+struct Predictor {
+    last: Option<(Instant, Pose)>,
+    velocity: [f32; JOINT_COUNT],
+}
+
+impl Direction {
+    fn of(delta: i32) -> Self {
+        match delta.signum() {
+            1 => Direction::Up,
+            -1 => Direction::Down,
+            _ => Direction::Neither,
+        }
+    }
+
+    fn sign(self) -> i32 {
+        match self {
+            Direction::Up => 1,
+            Direction::Down => -1,
+            Direction::Neither => 0,
+        }
+    }
+}
+
+impl Predictor {
+    // Smoothing weight for each new velocity sample (0..1).
+    const ALPHA: f32 = 0.35;
+    // Speeds below this (deg/s, or %/s for the gripper) are hand tremor and
+    // encoder noise: predicting from them only makes a still follower shiver.
+    // Soft, so lead fades in rather than switching on.
+    const DEADBAND: f32 = 12.0;
+
+    fn ahead(&mut self, now: Instant, pose: Pose, lead: [Duration; JOINT_COUNT]) -> Pose {
+        if let Some((t, prev)) = self.last {
+            let dt = now.duration_since(t).as_secs_f32();
+            if dt > 1e-4 {
+                for i in 0..JOINT_COUNT {
+                    let v = (pose.0[i] - prev.0[i]) / dt;
+                    self.velocity[i] += Self::ALPHA * (v - self.velocity[i]);
+                }
+            }
+        }
+        self.last = Some((now, pose));
+        Pose(std::array::from_fn(|i| {
+            let v = self.velocity[i];
+            let beyond = (v.abs() - Self::DEADBAND).max(0.0) * v.signum();
+            pose.0[i] + beyond * lead[i].as_secs_f32()
+        }))
+    }
 }
 
 /// `on_step` gets each step's events, or why the step failed (the previous goal then holds).
@@ -95,10 +201,9 @@ fn run_loop(
                 if consecutive_errors >= fail_after {
                     // Fail-safe: never leave the follower holding a stale goal
                     // behind a fault. `run` switches its torque off on the way out.
-                    return Err(format!(
+                    return Err(Error::Other(format!(
                         "follower failed {consecutive_errors} ticks in a row ({e}); stopping with torque off"
-                    )
-                    .into());
+                    )));
                 }
                 on_step(Err(&e.to_string()));
             }
@@ -106,74 +211,6 @@ fn run_loop(
     }
     stats.overruns = grid.overruns;
     Ok(stats)
-}
-
-// How long a follower may fail every tick before teleop stops.
-const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
-// A joint is blocked when its goal is this far away...
-const STALL_GAP_COUNTS: i32 = 60;
-// ...and it has moved no more than this per tick...
-const STALL_STILL_COUNTS: i32 = 2;
-// ...for this long. Faster than the servo's own protection, which let the
-// gripper squeeze at its full ceiling for ~2 s on hardware before tripping.
-const STALL_TIME: Duration = Duration::from_millis(250);
-// While held, the gripper keeps this much of a squeeze past the contact
-// point: a chosen grip force instead of the servo's maximum. Other joints hold.
-const GRIP_SQUEEZE_COUNTS: i32 = 30;
-// One count, in the pose's units: a requested value further than this from where the range
-// clamp put it was clipped by the range.
-const ONE_COUNT_DEG: f32 = 360.0 / 4096.0;
-
-#[derive(Default)]
-struct LoopState {
-    last_goal: Option<Counts>,
-    holds: [Option<Hold>; JOINT_COUNT],
-    stalls: StallWatch,
-    predictor: Predictor,
-}
-
-#[derive(Default)]
-struct StallWatch {
-    prev: Option<Counts>,
-    stuck_s: [f64; JOINT_COUNT],
-    // Whether the servo's protection flag was up last tick. The flag stays up
-    // for as long as the servo is in protection, so only its rising edge is a
-    // new event; a flag still up from a hold says nothing about the next move.
-    flagged: [bool; JOINT_COUNT],
-}
-
-// A blocked joint (stall seen, or the servo tripped its overload or current protection): its
-// goal is held at the contact point, plus a small squeeze on the gripper, until the leader moves
-// back past that point.
-#[derive(Clone, Copy, Debug)]
-struct Hold {
-    at: i32,
-    pushing: Direction,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Direction {
-    Up,
-    Down,
-    Neither,
-}
-
-impl Direction {
-    fn of(delta: i32) -> Self {
-        match delta.signum() {
-            1 => Direction::Up,
-            -1 => Direction::Down,
-            _ => Direction::Neither,
-        }
-    }
-
-    fn sign(self) -> i32 {
-        match self {
-            Direction::Up => 1,
-            Direction::Down => -1,
-            Direction::Neither => 0,
-        }
-    }
 }
 
 fn one_step(
@@ -313,36 +350,57 @@ fn counts(state: &JointState) -> Result<Counts> {
     state.counts.ok_or_else(|| "teleop needs an arm that reports encoder counts".into())
 }
 
-// Leader velocity, smoothed, for commanding a little ahead of the hand.
-#[derive(Default)]
-struct Predictor {
-    last: Option<(Instant, Pose)>,
-    velocity: [f32; JOINT_COUNT],
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Predictor {
-    // Smoothing weight for each new velocity sample (0..1).
-    const ALPHA: f32 = 0.35;
-    // Speeds below this (deg/s, or %/s for the gripper) are hand tremor and
-    // encoder noise: predicting from them only makes a still follower shiver.
-    // Soft, so lead fades in rather than switching on.
-    const DEADBAND: f32 = 12.0;
+    const LEAD: [Duration; JOINT_COUNT] = [Duration::from_millis(40); JOINT_COUNT];
 
-    fn ahead(&mut self, now: Instant, pose: Pose, lead: [Duration; JOINT_COUNT]) -> Pose {
-        if let Some((t, prev)) = self.last {
-            let dt = now.duration_since(t).as_secs_f32();
-            if dt > 1e-4 {
-                for i in 0..JOINT_COUNT {
-                    let v = (pose.0[i] - prev.0[i]) / dt;
-                    self.velocity[i] += Self::ALPHA * (v - self.velocity[i]);
-                }
-            }
+    // Feed `steps` poses, 10 ms apart, moving pan at `deg_per_s`; return the last prediction.
+    fn predict(deg_per_s: f32, steps: u32, lead: [Duration; JOINT_COUNT]) -> (Pose, Pose) {
+        let mut p = Predictor::default();
+        let t0 = Instant::now();
+        let mut last = (Pose::default(), Pose::default());
+        for i in 0..steps {
+            let mut pose = Pose::default();
+            pose.0[0] = deg_per_s * i as f32 * 0.01;
+            last = (pose, p.ahead(t0 + Duration::from_millis(10 * i as u64), pose, lead));
         }
-        self.last = Some((now, pose));
-        Pose(std::array::from_fn(|i| {
-            let v = self.velocity[i];
-            let beyond = (v.abs() - Self::DEADBAND).max(0.0) * v.signum();
-            pose.0[i] + beyond * lead[i].as_secs_f32()
-        }))
+        last
+    }
+
+    #[test]
+    fn a_still_hand_gets_no_lead() {
+        let (pose, ahead) = predict(0.0, 50, LEAD);
+        assert_eq!(ahead, pose);
+    }
+
+    #[test]
+    fn tremor_below_the_deadband_gets_no_lead() {
+        let (pose, ahead) = predict(Predictor::DEADBAND * 0.9, 50, LEAD);
+        assert_eq!(ahead, pose);
+    }
+
+    #[test]
+    fn steady_motion_leads_by_the_speed_above_the_deadband() {
+        let (pose, ahead) = predict(100.0, 50, LEAD);
+        let want = (100.0 - Predictor::DEADBAND) * 0.040;
+        let got = ahead.0[0] - pose.0[0];
+        assert!((got - want).abs() < 0.01, "lead {got:.3} deg, wanted {want:.3}");
+        assert_eq!(ahead.0[1..], pose.0[1..], "only the moving joint leads");
+    }
+
+    #[test]
+    fn zero_lead_passes_the_pose_through() {
+        let (pose, ahead) = predict(100.0, 50, [Duration::ZERO; JOINT_COUNT]);
+        assert_eq!(ahead, pose);
+    }
+
+    #[test]
+    fn direction_follows_the_sign_of_the_gap() {
+        assert_eq!(Direction::of(60), Direction::Up);
+        assert_eq!(Direction::of(-1), Direction::Down);
+        assert_eq!(Direction::of(0), Direction::Neither);
+        assert_eq!(Direction::Down.sign(), -1);
     }
 }

@@ -14,6 +14,3 @@ pub use clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 pub use control::event::{ArmRole, Event, EventBus, Message, RecorderDrop};
 pub use control::tick::{Clip, Limit, Tick};
 pub use policy::{CheckpointId, Chunk, Obs};
-
-/// What an `Arm` (or any other port) returns when the hardware or model layer fails.
-pub type DynError = Box<dyn std::error::Error + Send + Sync>;

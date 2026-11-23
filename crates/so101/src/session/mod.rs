@@ -1,34 +1,30 @@
 //! A recorded session (docs/phase0.md): protobuf messages in MCAP, one file per session. This file
 //! is the format around the messages: the header, the end-of-session record, and the errors.
 
-use crate::{MonotonicClock, Timestamp};
-use std::collections::BTreeMap;
-use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 mod reader;
 mod recorder;
 mod wire;
 
+use std::collections::BTreeMap;
+use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{MonotonicClock, Timestamp};
+
 pub use reader::{recover, replay, Drop, DropKind, RecoverSummary, Session};
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
-
-/// Generated from `proto/`.
-pub mod pb {
-    pub mod so101 {
-        pub mod v1 {
-            include!(concat!(env!("OUT_DIR"), "/so101.v1.rs"));
-        }
-    }
-    pub mod foxglove {
-        include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
-    }
-}
 
 /// Embedded in every MCAP schema record, so any log decodes without generated code.
 pub const DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptors.binpb"));
 
-// ---- Errors ----
+pub(crate) const META_SESSION: &str = "so101.session";
+pub(crate) const META_SESSION_END: &str = "so101.session_end";
+const CONFIG_PREFIX: &str = "config.";
+const CALIBRATION_PREFIX: &str = "calibration.";
+const CALIBRATION_SUFFIX: &str = ".sha256";
+const CAMERA_PREFIX: &str = "camera.";
+const CAMERA_DEVICE_SUFFIX: &str = ".device";
+const CAMERA_SETTINGS_SUFFIX: &str = ".settings";
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -43,49 +39,6 @@ pub enum Error {
     /// The file isn't a log this crate wrote (unknown topic or schema, missing metadata, ...).
     Format(String),
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io(e) => write!(f, "{e}"),
-            Error::Mcap(e) => write!(f, "mcap: {e}"),
-            Error::Decode(e) => write!(f, "protobuf: {e}"),
-            Error::Wire(s) => write!(f, "invalid message: {s}"),
-            Error::Format(s) => write!(f, "log format: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::Io(e)
-    }
-}
-
-impl From<mcap::McapError> for Error {
-    fn from(e: mcap::McapError) -> Self {
-        Error::Mcap(e)
-    }
-}
-
-impl From<prost::DecodeError> for Error {
-    fn from(e: prost::DecodeError) -> Self {
-        Error::Decode(e)
-    }
-}
-
-// ---- The header and the end-of-session record (contract 1), stored as MCAP metadata ----
-
-pub(crate) const META_SESSION: &str = "so101.session";
-pub(crate) const META_SESSION_END: &str = "so101.session_end";
-const CONFIG_PREFIX: &str = "config.";
-const CALIBRATION_PREFIX: &str = "calibration.";
-const CALIBRATION_SUFFIX: &str = ".sha256";
-const CAMERA_PREFIX: &str = "camera.";
-const CAMERA_DEVICE_SUFFIX: &str = ".device";
-const CAMERA_SETTINGS_SUFFIX: &str = ".settings";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
@@ -113,6 +66,23 @@ pub struct CameraInfo {
     pub device: String,
     /// The controls as read back from the device, e.g. "auto_exposure=1 exposure_time_absolute=300".
     pub settings: String,
+}
+
+/// Written when the recorder finishes. Missing if the process was killed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionEnd {
+    /// False if the recorder overflowed and stopped writing (the disk was effectively dead).
+    pub complete: bool,
+    pub messages_written: u64,
+    pub frames_dropped: u64,
+    pub messages_lost: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
 }
 
 impl Header {
@@ -196,16 +166,6 @@ impl Header {
     }
 }
 
-/// Written when the recorder finishes. Missing if the process was killed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionEnd {
-    /// False if the recorder overflowed and stopped writing (the disk was effectively dead).
-    pub complete: bool,
-    pub messages_written: u64,
-    pub frames_dropped: u64,
-    pub messages_lost: u64,
-}
-
 impl SessionEnd {
     pub(crate) fn to_metadata(&self) -> BTreeMap<String, String> {
         BTreeMap::from([
@@ -229,11 +189,36 @@ impl SessionEnd {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Attachment {
-    pub name: String,
-    pub media_type: String,
-    pub data: Vec<u8>,
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Io(e) => write!(f, "{e}"),
+            Error::Mcap(e) => write!(f, "mcap: {e}"),
+            Error::Decode(e) => write!(f, "protobuf: {e}"),
+            Error::Wire(s) => write!(f, "invalid message: {s}"),
+            Error::Format(s) => write!(f, "log format: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self {
+        Error::Io(e)
+    }
+}
+
+impl From<mcap::McapError> for Error {
+    fn from(e: mcap::McapError) -> Self {
+        Error::Mcap(e)
+    }
+}
+
+impl From<prost::DecodeError> for Error {
+    fn from(e: prost::DecodeError) -> Self {
+        Error::Decode(e)
+    }
 }
 
 /// Entries whose key is `<prefix><name><suffix>`, keyed by name.
@@ -261,4 +246,16 @@ fn hostname() -> String {
     }
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     String::from_utf8_lossy(&buf[..end]).into_owned()
+}
+
+/// Generated from `proto/`.
+pub mod pb {
+    pub mod so101 {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/so101.v1.rs"));
+        }
+    }
+    pub mod foxglove {
+        include!(concat!(env!("OUT_DIR"), "/foxglove.rs"));
+    }
 }
