@@ -104,7 +104,7 @@ policy; either can be clipped before it reaches the follower. So:
 
 ### 5. The servo loop keeps to its grid
 
-- Slot *n* starts at `t0 + n × period`, a fixed grid (90 or 120 Hz, see below), never one period
+- Slot *n* starts at `t0 + n × period`, a fixed grid (120 Hz, see below), never one period
   after the previous work finished, so the loop can't drift.
 - **An overrun skips, never starts late.** If slot *n*'s work is still running when slot *n+1*
   should start, slot *n+1* is skipped, and the loop sleeps until the first grid point after the
@@ -129,13 +129,13 @@ Each tick's bus work (follower read, leader read, follower write, one telemetry 
 typically and 7-8 ms at p99; about a quarter of ticks also wake more than 0.5 ms late, which is OS
 scheduling rather than the bus. Those two together explain the 14 ms p99 interval.
 
-**Open measurement: lock the servo loop to 90 or 120 Hz** (three or four reads per 30 Hz tick).
-On the September logs, recorded on the Mac, 0.5-0.9% of ticks would overrun a 120 Hz slot
-(8.3 ms) and 0.06-0.4% a 90 Hz slot (11.1 ms). The arms are now on the Spark, with a different
-USB stack and scheduler, so measure there before choosing: run `so101 teleop --hz 120` with
-telemetry on for a few minutes and count overruns. Under 1% means 120 Hz; otherwise 90 Hz. Nothing
-in this design depends on the answer; it needs the arms plugged in and their ports in
-`data/robot.conf`.
+**Decided: the servo loop runs at 120 Hz** (four slots per 30 Hz tick). Measured on the Spark
+on 2026-11-23: `so101 teleop --hz 120` with telemetry on, arms moved by hand including fast moves,
+17,486 ticks (2.4 minutes). Bus work per tick was 3.7 ms typical and 5.7 ms p99, against an 8.3 ms
+slot: 0 overruns (the one 11.8 ms tick was the Ctrl-C that ended the run). 16% of ticks woke more
+than 0.5 ms late, which doesn't skip a slot. On the September logs, recorded on the Mac, 0.5-0.9%
+of ticks would have overrun at 120 Hz; the Spark's USB stack and scheduler are faster. Byte log:
+`/projects/logs/hz120-20261123-133445.jsonl` on the Spark.
 
 **Open measurement: each camera's capture offset** (contract 3). Run teleop on the Spark with both
 cameras recording at their `robot.conf` settings, and move one joint sharply from rest a few times.
