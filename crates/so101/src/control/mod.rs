@@ -7,7 +7,7 @@ mod teleop;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 
-use crate::arm::{ActuatorStatus, Joint, JointState, JointTarget, Pose, Source};
+use crate::arm::{ActuatorStatus, Joint, JointState, JointTarget, Limit, Pose, Source};
 use crate::camera::{Frame, FrameRef};
 use crate::clock::Timestamp;
 use crate::policy::Chunk;
@@ -31,15 +31,6 @@ pub struct Tick {
     /// What the source asked for, before clipping.
     pub requested: Pose,
     pub clipped: Vec<Clip>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Limit {
-    /// LeRobot's `max_relative_target`.
-    Step,
-    Range,
-    /// Held at a contact point after a stall or an overload trip.
-    Stall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

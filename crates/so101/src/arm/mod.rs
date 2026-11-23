@@ -131,17 +131,32 @@ pub struct ActuatorStatus {
 /// joins it in Phase 1.
 pub trait Arm: Send {
     fn read_state(&mut self) -> Result<JointState>;
-    /// Faults the actuators reported since the last call, per joint. Reported with every reply,
-    /// so this costs no extra reads.
-    fn take_faults(&mut self) -> [Vec<Fault>; JOINT_COUNT];
-    fn write_goal(&mut self, goal: &Counts) -> Result<()>;
+    /// Move toward `target`. The arm applies its own protections (range, stall hold, step limit)
+    /// and reports what it actually wrote, and why each changed joint differs.
+    fn command(&mut self, target: &Pose) -> Result<Sent>;
     fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus>;
-    fn to_pose(&self, counts: &Counts) -> Pose;
-    /// Clamped to each joint's calibrated range.
-    fn to_counts(&self, pose: &Pose) -> Counts;
     fn torque_off(&mut self) -> Result<()>;
-    /// Torque on, holding where it is now, so nothing jumps.
+    /// Torque on, holding where it is now, so nothing jumps; protections start fresh.
     fn hold(&mut self) -> Result<()>;
+}
+
+/// Why a joint's written goal differs from the commanded one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Limit {
+    /// The most a goal may move per write (LeRobot's `max_relative_target`).
+    Step,
+    Range,
+    /// Held at a contact point after a stall or an overload trip.
+    Stall,
+}
+
+/// What an arm actually wrote for a commanded pose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sent {
+    pub pose: Pose,
+    /// `None` when not written to servos.
+    pub counts: Option<Counts>,
+    pub limits: [Option<Limit>; JOINT_COUNT],
 }
 
 impl Joint {

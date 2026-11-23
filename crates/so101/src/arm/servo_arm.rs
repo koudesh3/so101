@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::calibration::Calibration;
 use super::servos::{self, ServoError, Servos};
-use super::{ActuatorStatus, Arm, Counts, Error, Fault, Joint, JointState, Pose, Result, JOINT_COUNT};
+use super::{ActuatorStatus, Arm, Counts, Error, Fault, Joint, JointState, Limit, Pose, Result, Sent, JOINT_COUNT};
 use crate::clock::{Clock, MonotonicClock, Timestamp};
 
 /// Servo IDs, in `Joint::ALL` order.
@@ -36,6 +36,8 @@ pub struct ServoArm {
     servos: Servos,
     calibration: Calibration,
     clock: Arc<dyn Clock>,
+    protection: Protection,
+    step_limit: Option<i32>,
 }
 
 impl Joint {
@@ -54,13 +56,26 @@ impl FollowerGains {
 
 impl ServoArm {
     pub fn new(label: &str, servos: Servos, calibration: Calibration) -> Self {
-        Self { label: label.to_string(), servos, calibration, clock: Arc::new(MonotonicClock) }
+        Self {
+            label: label.to_string(),
+            servos,
+            calibration,
+            clock: Arc::new(MonotonicClock),
+            protection: Protection::default(),
+            step_limit: None,
+        }
     }
 
     /// Stamps readings on `clock` instead of the host's monotonic clock.
     pub fn with_clock(mut self, clock: Arc<dyn Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// The most a goal may move per write, in counts (LeRobot's `max_relative_target`). `None`
+    /// disables it.
+    pub fn set_step_limit(&mut self, max_counts: Option<i32>) {
+        self.step_limit = max_counts;
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {
@@ -219,27 +234,37 @@ impl ServoArm {
 impl Arm for ServoArm {
     fn read_state(&mut self) -> Result<JointState> {
         let counts = self.read_counts()?;
+        self.protection.present = Some(counts);
         Ok(JointState { t: self.clock.now(), pose: self.to_pose(&counts), counts: Some(counts) })
     }
 
-    fn take_faults(&mut self) -> [Vec<Fault>; JOINT_COUNT] {
-        self.take_flags().map(faults)
-    }
-
-    fn write_goal(&mut self, goal: &Counts) -> Result<()> {
-        ServoArm::write_goal(self, goal)
+    fn command(&mut self, target: &Pose) -> Result<Sent> {
+        let present = match self.protection.present.take() {
+            Some(counts) => counts,
+            None => self.read_counts()?,
+        };
+        let faults = self.take_flags().map(faults);
+        let in_range = self.calibration.to_counts(target);
+        let range_pose = self.calibration.to_pose(&in_range);
+        let now = self.clock.now();
+        let (sent, held, stepped) = self.protection.apply(present, &faults, in_range, now, self.step_limit);
+        self.write_goal(&sent)?;
+        let limits = std::array::from_fn(|i| {
+            if held[i] {
+                Some(Limit::Stall)
+            } else if stepped[i] {
+                Some(Limit::Step)
+            } else if (range_pose.0[i] - target.0[i]).abs() > ONE_COUNT_DEG {
+                Some(Limit::Range)
+            } else {
+                None
+            }
+        });
+        Ok(Sent { pose: self.to_pose(&sent), counts: Some(sent), limits })
     }
 
     fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
         ServoArm::read_actuator(self, joint)
-    }
-
-    fn to_pose(&self, counts: &Counts) -> Pose {
-        self.calibration.to_pose(counts)
-    }
-
-    fn to_counts(&self, pose: &Pose) -> Counts {
-        self.calibration.to_counts(pose)
     }
 
     fn torque_off(&mut self) -> Result<()> {
@@ -247,7 +272,12 @@ impl Arm for ServoArm {
     }
 
     fn hold(&mut self) -> Result<()> {
-        self.torque_on_holding()
+        self.torque_on_holding()?;
+        // Faults raised before now (a trip at the end of the last run, say) describe nothing
+        // this run did. Drop them so they cannot latch a hold.
+        let _ = self.take_flags();
+        self.protection = Protection::default();
+        Ok(())
     }
 }
 
@@ -290,9 +320,150 @@ pub(crate) fn faults(status: ServoError) -> Vec<Fault> {
     .collect()
 }
 
+// A joint is blocked when its goal is this far away...
+const STALL_GAP_COUNTS: i32 = 60;
+// ...and it has moved no more than this per write...
+const STALL_STILL_COUNTS: i32 = 2;
+// ...for this long. Faster than the servo's own protection, which let the
+// gripper squeeze at its full ceiling for ~2 s on hardware before tripping.
+const STALL_TIME: Duration = Duration::from_millis(250);
+// While held, the gripper keeps this much of a squeeze past the contact
+// point: a chosen grip force instead of the servo's maximum. Other joints hold.
+const GRIP_SQUEEZE_COUNTS: i32 = 30;
+// One count, in the pose's units: a commanded value further than this from where the range clamp
+// put it was clipped by the range.
+const ONE_COUNT_DEG: f32 = 360.0 / 4096.0;
+
+/// The follower's per-write protections, in the counts they were tuned in on hardware: the stall
+/// hold, then the step limit. The range clamp happens before, in the calibration.
+#[derive(Default)]
+struct Protection {
+    present: Option<Counts>,
+    last_goal: Option<Counts>,
+    last_write: Option<Timestamp>,
+    holds: [Option<Hold>; JOINT_COUNT],
+    stalls: StallWatch,
+}
+
+#[derive(Default)]
+struct StallWatch {
+    prev: Option<Counts>,
+    stuck_s: [f64; JOINT_COUNT],
+    // Whether the servo's protection flag was up last write. The flag stays up
+    // for as long as the servo is in protection, so only its rising edge is a
+    // new event; a flag still up from a hold says nothing about the next move.
+    flagged: [bool; JOINT_COUNT],
+}
+
+// A blocked joint (stall seen, or the servo tripped its overload or current protection): its
+// goal is held at the contact point, plus a small squeeze on the gripper, until the commanded
+// pose moves back past that point.
+#[derive(Clone, Copy, Debug)]
+struct Hold {
+    at: i32,
+    pushing: Direction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Direction {
+    Up,
+    Down,
+    Neither,
+}
+
+impl Protection {
+    /// The goal to write, which joints are held, and which the step limit moved.
+    fn apply(
+        &mut self,
+        present: Counts,
+        faults: &[Vec<Fault>; JOINT_COUNT],
+        mut goal: Counts,
+        now: Timestamp,
+        step_limit: Option<i32>,
+    ) -> (Counts, [bool; JOINT_COUNT], [bool; JOINT_COUNT]) {
+        let dt = self.last_write.map_or(0.0, |t| now.since(t).as_secs_f64());
+        self.last_write = Some(now);
+        let (holds, stalls) = (&mut self.holds, &mut self.stalls);
+        for i in 0..JOINT_COUNT {
+            // The goal that drove it into the stall is the previous one, not this
+            // write's: the command may already be backing off on the write it trips.
+            // No previous goal means nothing this run has pushed yet: no hold.
+            let gap = self.last_goal.map_or(0, |g| g[i] - present[i]);
+            let pushing_hard = gap.abs() > STALL_GAP_COUNTS;
+            let step = stalls.prev.map(|p| present[i] - p[i]);
+            let moved = step.map_or(i32::MAX, i32::abs);
+            stalls.stuck_s[i] = if pushing_hard && moved <= STALL_STILL_COUNTS { stalls.stuck_s[i] + dt } else { 0.0 };
+            // A trip only counts while the command pushes against something the
+            // joint cannot get past. A flag on a joint at its goal, or one still
+            // making progress toward it, is stale or noise, and holding there would
+            // pin a free joint.
+            let progress = step.map_or(i32::MAX, |d| d * gap.signum());
+            let blocked = pushing_hard && progress <= STALL_STILL_COUNTS;
+            let flagged = faults[i].iter().any(|f| matches!(f, Fault::Overload | Fault::Overcurrent));
+            let tripped = blocked && flagged && !stalls.flagged[i];
+            stalls.flagged[i] = flagged;
+            let stalled = stalls.stuck_s[i] >= STALL_TIME.as_secs_f64();
+            if holds[i].is_none() && (tripped || stalled) {
+                holds[i] = Some(Hold { at: present[i], pushing: Direction::of(gap) });
+            }
+            if let Some(h) = holds[i] {
+                if Direction::of(goal[i] - h.at) != h.pushing || h.pushing == Direction::Neither {
+                    holds[i] = None; // the command backed off: follow again
+                    stalls.stuck_s[i] = 0.0;
+                } else {
+                    let squeeze = if Joint::ALL[i] == Joint::Gripper { GRIP_SQUEEZE_COUNTS } else { 0 };
+                    goal[i] = h.at + h.pushing.sign() * squeeze;
+                }
+            }
+        }
+        stalls.prev = Some(present);
+        // The step limit is a slew limit on the command: each goal may move at most
+        // `max_step` from the previous goal (seeded from the present position, so
+        // nothing jumps at start). Limiting it against the present position instead
+        // keeps the servo's error, and so its effort and speed, pinned at `max_step`:
+        // measured on hardware, ~37 deg/s against a leader at ~140 deg/s, and up to
+        // 1.5 s of lag.
+        let from = self.last_goal.unwrap_or(present);
+        let sent: Counts = match step_limit {
+            Some(max) => std::array::from_fn(|i| from[i] + (goal[i] - from[i]).clamp(-max, max)),
+            None => goal,
+        };
+        self.last_goal = Some(sent);
+        let held = std::array::from_fn(|i| self.holds[i].is_some());
+        let stepped = std::array::from_fn(|i| sent[i] != goal[i]);
+        (sent, held, stepped)
+    }
+}
+
+impl Direction {
+    fn of(delta: i32) -> Self {
+        match delta.signum() {
+            1 => Direction::Up,
+            -1 => Direction::Down,
+            _ => Direction::Neither,
+        }
+    }
+
+    fn sign(self) -> i32 {
+        match self {
+            Direction::Up => 1,
+            Direction::Down => -1,
+            Direction::Neither => 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direction_follows_the_sign_of_the_gap() {
+        assert_eq!(Direction::of(60), Direction::Up);
+        assert_eq!(Direction::of(-1), Direction::Down);
+        assert_eq!(Direction::of(0), Direction::Neither);
+        assert_eq!(Direction::Down.sign(), -1);
+    }
 
     #[test]
     fn ids_round_trip() {

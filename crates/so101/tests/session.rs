@@ -340,10 +340,11 @@ fn python_reads_a_session_without_generated_code() {
 /// A small synthetic session with every message type.
 mod sample {
     use bytes::Bytes;
+    use so101::arm::Limit;
     use so101::arm::{ActuatorStatus, Fault, Joint, JointState, JointTarget, Pose, Source};
     use so101::camera::{Camera, Frame, FrameRef};
     use so101::clock::Timestamp;
-    use so101::control::{Clip, Limit, Tick};
+    use so101::control::{Clip, Tick};
     use so101::policy::{CheckpointId, Chunk};
 
     use so101::control::{ArmRole, Event, Message};
