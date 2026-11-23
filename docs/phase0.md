@@ -53,6 +53,12 @@ policy; either can be clipped before it reaches the follower. So:
   step limit, LeRobot's `max_relative_target`, or the joint's range). Clipping is then countable
   per episode: frequent clipping in demos means the step limit is fighting the operator, which is
   worth knowing before training on them.
+- **Training reads `Tick.action`, never the leader's pose.** Teleop doesn't send the leader's pose
+  as is: Part 1's teleop commands 40 ms ahead on pan, lift, elbow and gripper, extrapolating from
+  the leader's velocity, because the follower trails by about 50 ms (measured below). So the lead
+  belongs to the teleop source, before the shared clipping stage, never after it: a policy trained
+  on `action` already outputs lead-adjusted targets, and a lead applied to its output would be
+  applied twice. Keep that boundary when Phase 1 builds the mux.
 
 ### 3. What the timestamps and sequence numbers mean
 
@@ -78,6 +84,11 @@ policy; either can be clipped before it reaches the follower. So:
   - **Synthetic camera:** when the frame was generated (exact). **Replayed camera:** the original
     capture time, offset onto the replay's clock.
   - **Ticks and targets:** the moment the loop made the decision (exact; we are the source).
+- **Nothing may assume a camera delivers frames at its nominal rate.** The icSpring delivers
+  29.35-29.8 fps, not 30, with intervals alternating between about 32.3 and 36.6 ms at any exposure
+  (measured below). Numbering frames 0, 1, 2… as 33.3 ms apart drifts 0.4-1.2 s per minute. The
+  converter places frames on its 30 Hz grid by `publish_time`, nearest frame per slot; the runtime
+  uses a tick's latest frame by time. Pairing a frame with joint state happens in one function.
 - Every record's **`sequence`** is a per-source counter set by the producer: the kernel's frame
   number for a camera, the producer's own count for joint state, targets and ticks.
 - **A sequence gap proves the host lost something; it doesn't prove the camera didn't skip a
@@ -147,7 +158,7 @@ roll 68 ms (no lead), gripper 106 ms. That's the ~50 ms servo dead time plus the
 `/projects/spikes/cam-offset/teleop-135403/` on the Spark.
 
 **Measured: the wrist camera's exposure starts about 10 ms before its kernel stamp** (contract 3).
-On the Spark, 2026-11-23, icSpring wrist camera at 640x480 MJPG, manual exposure 30 ms, frame
+On the Spark, 2026-11-23, the icSpring, mounted on the wrist that day (its image turned with wrist roll) at 640x480 MJPG, manual exposure 30 ms, frame
 period 32.2 ms. A script held the follower still and stepped wrist flex by 10 degrees every 2 s,
 logging joint positions (600 reads/s, stamped at the request/reply midpoint) and the camera's kernel
 timestamps from `v4l2-ctl`. Fitting the image change between frames against the wrist's movement
@@ -172,6 +183,35 @@ a delay in the reported position, it's what the loop sees: an action shows up ab
 frames later. It probably explains why Part 1's 40 ms teleop lead helped. A policy trained on
 teleop data learns this delay implicitly; the runtime shouldn't try to hide it.
 
+**Measured: the follower's gains need no tuning, only pinning.** 2026-11-23, follower held in a
+reaching pose (upper arm about 45 degrees up, forearm level, so gravity loads every joint), 10
+degree steps up and down on wrist flex, elbow and shoulder lift, at P/I of 32/0, 32/1, 32/2, 32/4,
+32/8 and LeRobot's 16/0 (D 32 throughout):
+- At the factory gains (P 32, I 0, D 32, unchanged on every servo) every joint stopped within
+  0.4-0.7 degrees of its goal. I gain barely helps (about 0.2 degrees at I 8) and adds up to
+  0.8 degrees of overshoot. LeRobot's P 16 is 60-250 ms slower and stops up to 2.3 degrees short.
+- **Shoulder lift overshoots about 1 degree and wobbles at roughly 5 Hz for about 400 ms** before
+  settling, at every gain tried. Teleop shows the same 5 Hz content (below), so it's the likely
+  source of the arm shaking on fast moves. A short D sweep on shoulder lift is the one tuning
+  question left.
+- The 5.5 degree stall on upward wrist-flex steps (the first step test) happens only in the folded
+  pose; the same joint at the same gains reaches 96-100% in the reaching pose. Something in that
+  pose resists the wrist (the camera cable, or contact); check it by eye before trusting folded
+  poses as waypoints.
+- About 1 in 2,500 temperature readings is junk (44 to 150 degrees C in a steady 31-36 band), in
+  packets with a correct checksum and servo ID, so the servo itself sends them. A median of each
+  joint's last 5 readings removed every false reading over 55 C in 27,009 samples; a fixed ceiling
+  did not (64, 66 and 77 C passed). See contract 8.
+- Spike: `/projects/spikes/cam-offset/tune-reach-141514/` on the Spark (`tune.py`, `tune_analyze.py`).
+
+**Measured: target jitter from the teleop lead, and follower shake.** On the 90 s teleop run, the
+5-30 Hz content of the target sent on joints with the lead is 1.2-2.1 times the leader's (pan,
+lift, gripper), because the lead extrapolates from velocity, the noisiest signal derived from
+position reads; on the wrists, without a lead, target and leader match exactly. The elbow's worst
+second moved 0.40 degrees in that band against 0.17 degrees of target. Detecting shake therefore
+compares each joint's follower motion with its target in the same band; it needs only the 120 Hz
+position stream, no extra bus reads.
+
 ### 6. Degrees are only meaningful with their calibration
 
 LeRobot turns a raw servo reading into degrees from the midpoint of that motor's calibrated range,
@@ -194,6 +234,23 @@ too, or a policy trained at one exposure runs at another.
 - The runtime refuses to start if a camera's read-back settings differ from the training data's
   (Phase 4, when the runtime first drives real cameras).
 
+### 8. A policy runs at the servo gains it was trained at
+
+Servo gains and limits live in each servo's memory and survive power cycles, and every tool that
+connects writes its own: Part 1's teleop writes P 32; LeRobot's follower writes P 16, I 0, D 32 on
+every connect, and caps the gripper at Max_Torque 500, Protection_Current 250, Overload_Torque 25
+(ours: 800). So the follower's stiffness depends on which tool ran last, and nothing records it.
+- **One file in the repo holds the follower's gains and limits** (P 32, I 0, D 32, measured above;
+  gripper limits to be unified with LeRobot's in Phase 4, since LeRobot hard-codes them). Our
+  runtime applies it on every start and reads it back; `act` passes the same values to LeRobot
+  (`--robot.position_p_coefficient=32` and the I and D equivalents).
+- **Every log's header stores the gain and limit registers read back from each servo** at session
+  start, like calibration and camera settings.
+- The runtime refuses to run a policy whose training data's gains differ (Phase 4).
+- Servo health checks (temperature, voltage) act on the median of a joint's last 5 readings, never
+  a single reading; the log keeps every raw reading, and the reader counts impossible values
+  (temperature over 100 C) as a bus-health signal.
+
 ### Units and names everywhere
 
 LeRobot's: degrees, gripper 0-100, joints `shoulder_pan` … `gripper`, cameras `wrist` and `scene`.
@@ -211,6 +268,8 @@ Export to a LeRobot dataset is then a straight copy, given one calibration (cont
 | **Mismatched model and stats** | The policy refuses to load (contract 4) | A failed start instead of a wrong-but-plausible run |
 | **The arm is recalibrated** | New logs carry the new calibration and its hash; raw ticks are logged throughout (contract 6) | Nothing lost: old logs can be recomputed; the converter won't silently mix them |
 | **Camera settings drift, or cameras swapped** | Each log records device and read-back settings; the runtime refuses to start on a mismatch (contract 7) | A failed start instead of a policy running at the wrong exposure |
+| **Servo gains changed by another tool** | Each log records the gains read back from every servo; the runtime applies the repo's gains on start and refuses a policy trained at others (contract 8) | A failed start instead of a policy running on a stiffer or softer arm |
+| **A servo reports a junk value** | Health checks use the median of the last 5 readings; the raw value stays in the log and is counted (contract 8) | Nothing: no false stop, and the glitch rate is visible |
 | **A target is clipped** | `Tick.action` is what was sent, `Tick.requested` what was asked, `Tick.clipped` which joints and why (contract 2) | Nothing hidden: clipping is countable per episode |
 
 ## Messages in Phase 0 (`so101.v1`)
