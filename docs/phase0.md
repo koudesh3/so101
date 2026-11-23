@@ -59,14 +59,26 @@ policy; either can be clipped before it reaches the follower. So:
 - All times are u64 nanoseconds of the host's monotonic clock (`CLOCK_MONOTONIC`). It never jumps,
   unlike wall time under NTP. Times compare only within one log; real dates come from the header's
   monotonic/wall pair.
-- Every MCAP record carries two times. **`publish_time`** is when the thing happened: a frame's
-  capture, a servo read, a decision. **`log_time`** is when our process received it. The event time
-  is also inside the message, so a message read alone is complete. Channels line up by
-  `publish_time`, and staleness is `log_time - publish_time`, both from the record headers alone.
-- What "capture time" means depends on the frame source, and the header records which: for a V4L2
-  camera on Linux it's the kernel's buffer timestamp (the same clock as `CLOCK_MONOTONIC`); for a
-  synthetic camera it's when the frame was generated; for a replayed camera it's the original
-  capture time, offset onto the replay's clock.
+- Every MCAP record carries two times (MCAP's names). **`publish_time`** is when the thing
+  happened: a frame's capture, a servo read, a decision. **`log_time`** is when our process
+  received it, so `publish_time <= log_time`. The event time is also inside the message, so a
+  message read alone is complete. Channels line up by `publish_time` (what the world looked like),
+  replay orders by `log_time` (what the loop knew), and staleness is `log_time - publish_time`, all
+  from the record headers alone.
+- **`publish_time` is the best stamp we can get, not the physical instant.** Every source stamps
+  slightly after the real event, with a bias that is small and steady for each source. That's
+  fine, as long as the bias is known:
+  - **Joint state:** stamped when the sync read returns. The servos sampled sometime in the
+    ~1 ms round trip before that. Phase 1 stamps the midpoint of request and reply instead, which
+    bounds the error to about ±0.5 ms against a 10 ms slot.
+  - **V4L2 camera on Linux:** the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
+    which for UVC cameras is roughly when the frame starts arriving over USB, after exposure and
+    the camera's readout. The real capture is earlier by an unmeasured offset, possibly tens of
+    ms. With manual, fixed exposure it should be roughly constant per camera and settings, so it's
+    measured (below) and subtracted by the converter, not baked into the log.
+  - **Synthetic camera:** when the frame was generated (exact). **Replayed camera:** the original
+    capture time, offset onto the replay's clock.
+  - **Ticks and targets:** the moment the loop made the decision (exact; we are the source).
 - Every record's **`sequence`** is a per-source counter set by the producer: the kernel's frame
   number for a camera, the producer's own count for joint state, targets and ticks.
 - **A sequence gap proves the host lost something; it doesn't prove the camera didn't skip a
@@ -124,6 +136,15 @@ USB stack and scheduler, so measure there before choosing: run `so101 teleop --h
 telemetry on for a few minutes and count overruns. Under 1% means 120 Hz; otherwise 90 Hz. Nothing
 in this design depends on the answer; it needs the arms plugged in and their ports in
 `data/robot.conf`.
+
+**Open measurement: each camera's capture offset** (contract 3). Run teleop on the Spark with both
+cameras recording at their `robot.conf` settings, and move one joint sharply from rest a few times.
+For each move, find the first frame where the arm visibly moves, and the joint-state time the move
+started: the difference, minus about half a frame period, is the camera's offset from real capture
+to `publish_time`. Repeat a few times to check it's steady (if it jitters by more than a few ms,
+that changes the alignment plan). The result goes into `data/robot.conf` next to the camera's
+settings, and from there into each log header's camera settings, so the converter applies the
+offset that was true for that session.
 
 ### 6. Degrees are only meaningful with their calibration
 
