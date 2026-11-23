@@ -93,7 +93,7 @@ policy; either can be clipped before it reaches the follower. So:
   number for a camera, the producer's own count for joint state, targets and ticks.
 - **A sequence gap proves the host lost something; it doesn't prove the camera didn't skip a
   frame.** The V4L2 counter counts frames the driver received, not frames the camera never sent.
-  That was camera 2's failure in the camera spike: under auto exposure it fell to 16-20 fps with no
+  That was the icSpring's failure in the camera spike: under auto exposure it fell to 16-20 fps with no
   gaps in its counter. So a drop is defined as **a sequence gap, or a capture interval longer than
   1.5 × the camera's nominal period**. The reader and the converter report both kinds, separately.
 
@@ -158,7 +158,7 @@ roll 68 ms (no lead), gripper 106 ms. That's the ~50 ms servo dead time plus the
 `/projects/spikes/cam-offset/teleop-135403/` on the Spark.
 
 **Measured: the wrist camera's exposure starts about 10 ms before its kernel stamp** (contract 3).
-On the Spark, 2026-11-23, the icSpring, mounted on the wrist that day (its image turned with wrist roll) at 640x480 MJPG, manual exposure 30 ms, frame
+On the Spark, 2026-11-23, the wrist camera (the icSpring) at 640x480 MJPG, manual exposure 30 ms, frame
 period 32.2 ms. A script held the follower still and stepped wrist flex by 10 degrees every 2 s,
 logging joint positions (600 reads/s, stamped at the request/reply midpoint) and the camera's kernel
 timestamps from `v4l2-ctl`. Fitting the image change between frames against the wrist's movement
@@ -225,7 +225,7 @@ re-assembly), and older logs would describe slightly wrong poses relative to the
 
 ### 7. A policy runs at the camera settings it was trained at
 
-Camera 2 forgets its settings when unplugged; `act record` re-applies them, and the runtime must
+The wrist camera (the icSpring) forgets its settings when unplugged; `act record` re-applies them, and the runtime must
 too, or a policy trained at one exposure runs at another.
 - Every log's header stores, per camera role, **the physical device** (its `/dev/v4l/by-id/` path
   or serial) and **the settings read back from it** at session start, in recordings and runs
