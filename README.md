@@ -26,6 +26,7 @@ data/            what isn't code
 docs/
   part2-spec.md    the plan for Part 2
   phase0.md        the contracts: what each part can rely on, and the log format
+  phase1.md        the Phase 1 design: the control loop's nested rates, on fakes
   devlog/          dated entries: what was tried, how, and what it showed
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
