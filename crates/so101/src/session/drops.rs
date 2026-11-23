@@ -1,18 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use super::event::TOPIC_LOG_DROPS;
-use super::Log;
+use super::event::TOPIC_RECORDER_DROPS;
+use super::Session;
 use crate::{Event, Message};
 
-impl Log {
+impl Session {
     /// Every drop in the log (contract 3), by topic then sequence.
     pub fn drops(&self) -> Vec<Drop> {
         let mut out = Vec::new();
         // What the recorder itself dropped, so those gaps aren't reported twice.
         let mut recorder_ranges: HashMap<&str, Vec<(u32, u32)>> = HashMap::new();
         for e in &self.events {
-            if let Message::LogDrop(d) = &e.message {
+            if let Message::RecorderDrop(d) = &e.message {
                 recorder_ranges.entry(d.topic.as_str()).or_default().push((d.first_sequence, d.last_sequence));
                 out.push(Drop {
                     topic: d.topic.clone(),
@@ -22,7 +22,7 @@ impl Log {
         }
         let mut by_topic: BTreeMap<&str, Vec<&Event>> = BTreeMap::new();
         for e in &self.events {
-            if e.topic() != TOPIC_LOG_DROPS {
+            if e.topic() != TOPIC_RECORDER_DROPS {
                 by_topic.entry(e.topic()).or_default().push(e);
             }
         }

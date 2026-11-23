@@ -9,7 +9,7 @@ use super::{Attachment, Error, Header, Result, SessionEnd};
 use crate::{Event, Message};
 
 #[derive(Debug)]
-pub struct Log {
+pub struct Session {
     pub header: Header,
     /// `None` if the writer never finished (killed, power loss).
     pub end: Option<SessionEnd>,
@@ -18,18 +18,18 @@ pub struct Log {
     pub attachments: Vec<Attachment>,
 }
 
-impl Log {
+impl Session {
     /// Reads the whole file into memory. A damaged or truncated file is an error: recover it
     /// first (`so101 log recover`).
-    pub fn open(path: impl AsRef<Path>) -> Result<Log> {
+    pub fn open(path: impl AsRef<Path>) -> Result<Session> {
         Self::from_bytes(&std::fs::read(path)?)
     }
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Log> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Session> {
         Self::decode(RawLog::parse(bytes, false)?)
     }
 
-    pub(crate) fn decode(raw: RawLog<'_>) -> Result<Log> {
+    pub(crate) fn decode(raw: RawLog<'_>) -> Result<Session> {
         let mut header = None;
         let mut end = None;
         for m in &raw.metadata {
@@ -62,7 +62,7 @@ impl Log {
             .iter()
             .map(|(h, d)| Attachment { name: h.name.clone(), media_type: h.media_type.clone(), data: d.to_vec() })
             .collect();
-        let log = Log { header, end, events, attachments };
+        let log = Session { header, end, events, attachments };
         for (name, hash) in &log.header.calibrations {
             let file = log
                 .calibration(name)

@@ -63,7 +63,7 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 | `control/` | The loop: grid of slots, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
 | `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunStep, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |
 | `runtime/` | Step runner and sequencer (Phase 3) | hanoi_fsm; opus_agent in the last phase | RunStep, CheckResult, Task goal, scene Frame | StepResult, Command |
-| `log/` | The session log: protobuf in MCAP | recorder, reader, recover, export | Every Event | Log store, versioned datasets |
+| `session/` | A recorded session: protobuf in MCAP | recorder, reader, recover, export | Every Event | Log store, versioned datasets |
 | `ml/export` | Offline script | — | Checkpoint, logged observations | act.onnx, export parity report |
 
 Rules that keep it swappable: messages in LeRobot's keys and units; one writer to the arm; safety as a wrapper that code above can't bypass; one clock with timestamps on everything; a conformance test suite per trait that mock, replay, and real implementations all pass.

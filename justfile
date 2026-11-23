@@ -10,12 +10,12 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# The control loop talks to arms through the Arm trait: never ServoArm, the servos, the UART, the simulator, calibration, or the log
+# The control loop talks to arms through the Arm trait: never ServoArm, the servos, the UART, the simulator, calibration, or the session
 check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
-    if grep -rnE 'crate::log\b|crate::arm::(servos|uart|sim|calibration)\b|\bServoArm\b' control/; then
+    if grep -rnE 'crate::session\b|crate::arm::(servos|uart|simulated_servos|calibration)\b|\bServoArm\b' control/; then
         echo "error: control/ reaches past the Arm trait (above)"; exit 1
     fi
 
@@ -31,13 +31,13 @@ fmt:
 build:
     cargo build --release
 
-# Teleop against the simulated arms, logging to a new timestamped file in data/logs/
+# Teleop against the simulated arms, tracing every byte to a new timestamped file in data/traces/
 sim ticks="300":
-    cargo run --release -- --sim --log data/logs/sim-$(date +%Y%m%d-%H%M%S).jsonl teleop --ticks {{ticks}}
+    cargo run --release -- --sim --trace data/traces/sim-$(date +%Y%m%d-%H%M%S).jsonl teleop --ticks {{ticks}}
 
-# Teleop the real arms (set LEADER and FOLLOWER to the ports); logs to a new timestamped file in data/logs/
+# Teleop the real arms (set LEADER and FOLLOWER to the ports); traces every byte to a new timestamped file in data/traces/
 teleop:
-    cargo run --release -- --log data/logs/teleop-$(date +%Y%m%d-%H%M%S).jsonl teleop \
+    cargo run --release -- --trace data/traces/teleop-$(date +%Y%m%d-%H%M%S).jsonl teleop \
       --leader "$LEADER" --follower "$FOLLOWER" \
       --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json
 

@@ -189,7 +189,7 @@ wire_struct!(Tick => Tick {
     requested: requested,
     clipped: clipped,
 });
-wire_struct!(LogDrop => LogDrop {
+wire_struct!(RecorderDrop => RecorderDrop {
     t: t_ns,
     topic: topic,
     first_sequence: first_sequence,

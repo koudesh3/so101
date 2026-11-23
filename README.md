@@ -8,11 +8,11 @@ written to learn how they work.
 ```
 crates/so101/    the Rust code, one crate, one folder per thing (src/):
   arm/             the arm: joints, poses, the `Arm` trait the loop uses, and `ServoArm`, the
-                   SO-101 on its STS3215 servos (servos.rs), their UART, calibration, a simulator
+                   SO-101 on its STS3215 servos (servos.rs), their UART, calibration, simulated servos
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop: the grid of slots, ticks, events, the event bus, and teleop
-  log/             the session log: protobuf in MCAP, recorder, reader, recovery
+  session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   bin/so101.rs     the `so101` command line, which puts the pieces together
 ml/              the LeRobot side
@@ -39,11 +39,13 @@ One concept, one name, one home.
 | `Joint` | one of the six, in LeRobot's order | `arm` |
 | `Pose` | where all six are: degrees, gripper 0-100 | `arm` |
 | `Counts` | raw encoder readings, one per joint | `arm` |
-| `Calibration` | maps `Counts` to a `Pose`, and how to make one | `arm` |
+| `Calibration` | the measured mapping from an arm's `Counts` to its `Pose` (homing offsets and ranges), and the procedure that measures it | `arm` |
 | `Arm` | what the loop can do with an arm: read its state, write a goal, read its actuators (a trait) | `arm` |
 | `ServoArm` | the SO-101 on its STS3215 servos: the real `Arm` | `arm` |
 | `Servos` | the STS3215 servos on their UART, addressed by ID, and their registers | `arm/servos.rs` |
-| `Transport` | the UART to the servos: the real serial port, or the simulator; either can record every byte | `arm/uart.rs` |
+| `Transport` | the UART to the servos: a `SerialPort`, or `SimulatedServos`; either can be `Traced` | `arm/uart.rs` |
+| `SimulatedServos` | STS3215 servos simulated byte for byte behind a fake UART, for tests and `--sim` | `arm` |
+| `ByteTrace` | every byte on every serial line, with times (`--trace`) | `arm/uart.rs` |
 | `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
@@ -52,7 +54,7 @@ One concept, one name, one home.
 | `Tick` | what the loop saw and sent at one control step | `control` |
 | `Source` | who produced a target: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
-| `Log` | the session recording | `log` |
+| `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |
 | `Clock` / `Timestamp` | where time comes from | `clock` |
 
 ## Where it's going
@@ -86,11 +88,11 @@ calibrate each arm, then teleoperate:
 ```
 so101 calibrate --port <leader port> --arm-id leader --out leader.json
 so101 calibrate --port <follower port> --arm-id follower --out follower.json
-so101 --log run.jsonl teleop --leader <port> --follower <port> \
+so101 --trace bytes.jsonl teleop --leader <port> --follower <port> \
   --leader-calibration leader.json --follower-calibration follower.json
 ```
 
-`just teleop` runs the last of these with the files in `data/calibration/`, logging to `data/logs/`, taking the ports from
+`just teleop` runs the last of these with the files in `data/calibration/`, tracing to `data/traces/`, taking the ports from
 `LEADER` and `FOLLOWER`.
 
 ## The Spark

@@ -263,9 +263,9 @@ Export to a LeRobot dataset is then a straight copy, given one calibration (cont
 
 | Failure | What happens | What it costs |
 |---|---|---|
-| **Slow or stalled disk** | The control loop always wins: publishing never blocks it. The recorder's queues are bounded. When it falls behind it **drops camera frames first**, and logs each drop (topic and sequence range) on `/log/drops` | Some frames, never the session. Small messages have a much larger queue; only if that fills too (the disk is effectively dead) does the recorder stop, mark the log incomplete, and report it |
+| **Slow or stalled disk** | The control loop always wins: publishing never blocks it. The recorder's queues are bounded. When it falls behind it **drops camera frames first**, and logs each drop (topic and sequence range) on `/session/drops` | Some frames, never the session. Small messages have a much larger queue; only if that fills too (the disk is effectively dead) does the recorder stop, mark the log incomplete, and report it |
 | **Process crash** (error return or panic) | The MCAP writer finishes the file as it unwinds | Nothing |
-| **Kill or power loss** | The file is cut short | At most the last 1 MB chunk. `so101 log recover` rewrites the rest so Python can open it |
+| **Kill or power loss** | The file is cut short | At most the last 1 MB chunk. `so101 session recover` rewrites the rest so Python can open it |
 | **A servo read overruns its slot** | The next slot is skipped and the loop resumes on the grid (contract 5) | One joint sample, visible as a sequence gap; the loop never drifts |
 | **Dropped camera frames** | Detected as defined in contract 3 (sequence gap, or long capture interval) | Reported per camera by the reader and the converter; never silently passed through |
 | **Mismatched model and stats** | The policy refuses to load (contract 4) | A failed start instead of a wrong-but-plausible run |
@@ -294,7 +294,7 @@ Only what Phases 0-2 write (the runtime on fakes, then the policy):
   was written, so a tick can be recomputed from raw ticks under another calibration
 - `Chunk {t_obs, period, k, actions[k][6], checkpoint_id}`: every predicted chunk, with the time
   between its actions stated rather than assumed
-- `LogDrop {topic, first_sequence, last_sequence, count}`: what the recorder dropped
+- `RecorderDrop {topic, first_sequence, last_sequence, count}`: what the recorder dropped
 
 Arriving later, each with its phase: `RunStep`, `StepResult`, `CheckResult` and `Command` (Phase 3),
 episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase 9).
@@ -323,7 +323,7 @@ header's host and clock source keep the two from being confused. Names follow
 |---|---|---|
 | Log container | MCAP, one file per session, one channel per topic, no compression | Indexed, self-describing, maintained Rust and Python readers, opens in Foxglove. JPEG doesn't compress, and leaving compression off drops the C dependencies |
 | Encoding | Protobuf on every channel, frames as vendored `foxglove.CompressedImage` | Versioned messages shared by Rust and Python |
-| Rust types | Domain types in each thing's folder; protobuf only inside `log/wire.rs` | Fixed `[f32; 6]` arrays and validation; nothing outside the log sees a generated type |
+| Rust types | Domain types in each thing's folder; protobuf only inside `session/wire.rs` | Fixed `[f32; 6]` arrays and validation; nothing outside the log sees a generated type |
 | Concurrency | Plain threads, blocking calls, no async | Matches the existing code; nothing needs async |
 | LeRobot | Our log, plus a converter to LeRobotDataset v3 (`ml/export`, Phase 4) | LeRobot's format can't hold real timestamps, servo-rate state, the original JPEGs or async events, and its writer isn't crash-safe |
 
@@ -344,11 +344,11 @@ proto/                     shared by every language in the repo
 crates/so101/              one crate, one folder per thing
   src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, the `Arm` trait
                                and `ServoArm` (mod.rs); calibration; the STS3215 servos and their
-                               registers (servos.rs); the UART; a simulator
+                               registers (servos.rs); the UART; simulated servos
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
   src/control/                 the loop: grid (slots), Tick, events, bus, teleop
-  src/log/                     the session log: wire (protobuf conversions, generated from a field
+  src/session/                 a recorded session: wire (protobuf conversions, generated from a field
                                map), recorder, reader, drops, replay, recover
   src/clock.rs                 Timestamp, Clock, MonotonicClock, ReplayClock
   src/bin/so101.rs             the command line: puts the pieces together
@@ -356,13 +356,13 @@ crates/so101/              one crate, one folder per thing
 ```
 
 `just check` enforces the one layering rule: `control/` reaches arms only through the `Arm` trait,
-never `ServoArm`, the servos, the UART, the simulator, calibration or the log.
+never `ServoArm`, the servos, the UART, the simulated servos, calibration or the session.
 
 - **Bus:** in-process fan-out of `Event` (an enum over every message, with its topic). Publishing
   never blocks.
 - **Recorder:** one thread owns the MCAP writer (it isn't `Sync`). Topics: `/follower/state`,
   `/follower/actuators`, `/follower/target`, `/leader/target`, `/tick`, `/cam/wrist`, `/cam/scene`, `/policy/chunk`,
-  `/log/drops`. Header as in contract 1, with the full config file as an attachment.
+  `/session/drops`. Header as in contract 1, with the full config file as an attachment.
 - **Reader:** a typed iterator of Events in time order, optionally by topic, which also reports
   drops (contract 3).
 - **New dependencies:** `prost` and `bytes` (runtime), `protox` and `prost-build` (build only),
@@ -375,7 +375,7 @@ never `ServoArm`, the servos, the UART, the simulator, calibration or the log.
 2. Drops: a camera stream with a sequence gap, and one with a long capture interval but no gap,
    are each reported, as different kinds.
 3. Slow disk: with the writer stalled, the publisher never blocks, frames are dropped first, and
-   every drop appears on `/log/drops`.
+   every drop appears on `/session/drops`.
 4. Replay timing: a recorded run replayed on `ReplayClock` reproduces its inter-event times.
 5. Schema snapshot: the compiled descriptors match the frozen `so101.v1` snapshot.
 6. Recovery: a file truncated mid-write recovers every complete chunk.

@@ -3,10 +3,10 @@
 # dependencies = ["mcap>=1.6", "mcap-protobuf-support>=0.6"]
 # ///
 """Contract 1: a log is readable from Python with no generated code. Decodes every message of
-a log using only the schemas embedded in the file. Run by `python_reads_a_log_without_generated_code`
-in log.rs, on the sample session.
+a log using only the schemas embedded in the file. Run by `python_reads_a_session_without_generated_code`
+in session.rs, on the sample session.
 
-usage: uv run crates/so101/tests/read_log.py LOG.mcap
+usage: uv run crates/so101/tests/read_session.py SESSION.mcap
 """
 import hashlib
 import sys

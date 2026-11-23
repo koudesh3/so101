@@ -4,7 +4,7 @@
 
 pub mod calibration;
 pub mod servos;
-pub mod sim;
+pub mod simulated_servos;
 pub mod uart;
 
 use self::calibration::Calibration;

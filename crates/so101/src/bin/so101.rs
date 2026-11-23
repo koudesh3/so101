@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 use so101::arm::calibration::{self, Calibration};
 use so101::arm::servos::Servos;
 use so101::arm::servos::{Error, Result};
-use so101::arm::sim::{demo, SimulatedServos};
-use so101::arm::uart::{ByteLog, Recorder, SerialTransport, Transport};
+use so101::arm::simulated_servos::{demo, SimulatedServos};
+use so101::arm::uart::{ByteTrace, SerialPort, Traced, Transport};
 use so101::arm::{FollowerGains, ServoArm};
 use so101::arm::{Pose, IDS, JOINT_COUNT};
 use so101::control::grid::Grid;
@@ -20,7 +20,7 @@ use so101::{ArmRole, Joint, Limit, Message, Tick};
 struct Cli {
     /// Record every byte on every serial line to this JSON-lines file.
     #[arg(long, global = true)]
-    log: Option<PathBuf>,
+    trace: Option<PathBuf>,
     /// Use simulated servos instead of serial ports.
     #[arg(long, global = true)]
     sim: bool,
@@ -103,15 +103,15 @@ enum Command {
         #[arg(long)]
         actuators: bool,
     },
-    /// Session logs (MCAP).
-    Log {
+    /// Recorded sessions (MCAP files).
+    Session {
         #[command(subcommand)]
-        command: LogCommand,
+        command: SessionCommand,
     },
 }
 
 #[derive(Subcommand)]
-enum LogCommand {
+enum SessionCommand {
     /// Rewrite a log cut short (kill, power loss) into a complete file any reader can open.
     /// Keeps everything up to the last complete chunk. Never overwrites OUTPUT.
     Recover { input: PathBuf, output: PathBuf },
@@ -144,11 +144,11 @@ impl Role {
 
 fn main() {
     let cli = Cli::parse();
-    let log = cli
-        .log
+    let trace = cli
+        .trace
         .as_ref()
-        .map(|p| ByteLog::create(p).unwrap_or_else(|e| fail(&format!("cannot create log {}: {e}", p.display()))));
-    let open = |role: Role, port: Option<String>| open_servos(role, port, cli.sim, &log);
+        .map(|p| ByteTrace::create(p).unwrap_or_else(|e| fail(&format!("cannot create trace {}: {e}", p.display()))));
+    let open = |role: Role, port: Option<String>| open_servos(role, port, cli.sim, &trace);
     let result = match cli.command {
         Command::Ping { port, id } => cmd_ping(open(Role::Single, port), id),
         Command::Scan { port } => cmd_scan(open(Role::Single, port)),
@@ -168,8 +168,8 @@ fn main() {
             wrist_lead_ms,
             actuators,
         } => {
-            let leader_servos = open_servos(Role::Leader, leader, cli.sim, &log);
-            let follower_servos = open_servos(Role::Follower, follower, cli.sim, &log);
+            let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
+            let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
             let cals = (leader_calibration, follower_calibration);
             let gains = FollowerGains { p: p_gain, d: FollowerGains::LEROBOT.d, grip_torque: grip_torque * 10 };
             let lead = Joint::ALL.map(|j| {
@@ -179,10 +179,10 @@ fn main() {
             let tuning = (gains, lead);
             cmd_teleop(leader_servos, follower_servos, cals, hz, max_step, ticks, tuning, cli.sim, actuators)
         }
-        Command::Log { command: LogCommand::Recover { input, output } } => cmd_log_recover(&input, &output),
+        Command::Session { command: SessionCommand::Recover { input, output } } => cmd_session_recover(&input, &output),
     };
-    if let Some(log) = &log {
-        log.flush();
+    if let Some(trace) = &trace {
+        trace.flush();
     }
     if let Err(e) = result {
         fail(&e.to_string());
@@ -194,21 +194,21 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1)
 }
 
-fn open_servos(role: Role, port: Option<String>, sim: bool, log: &Option<Arc<ByteLog>>) -> Servos {
+fn open_servos(role: Role, port: Option<String>, sim: bool, trace: &Option<Arc<ByteTrace>>) -> Servos {
     let label = role.label();
     let transport: Box<dyn Transport> = if sim {
-        recorded(role.simulated(), label, log)
+        traced(role.simulated(), label, trace)
     } else {
         let path = port.unwrap_or_else(|| fail(&format!("--port for {label} is required (or pass --sim)")));
-        let serial = SerialTransport::open(&path).unwrap_or_else(|e| fail(&format!("open {path}: {e}")));
-        recorded(serial, label, log)
+        let serial = SerialPort::open(&path).unwrap_or_else(|e| fail(&format!("open {path}: {e}")));
+        traced(serial, label, trace)
     };
     Servos::new(transport)
 }
 
-fn recorded<T: Transport + 'static>(t: T, label: &str, log: &Option<Arc<ByteLog>>) -> Box<dyn Transport> {
-    match log {
-        Some(log) => Box::new(Recorder::new(t, label, log.clone())),
+fn traced<T: Transport + 'static>(t: T, label: &str, trace: &Option<Arc<ByteTrace>>) -> Box<dyn Transport> {
+    match trace {
+        Some(trace) => Box::new(Traced::new(t, label, trace.clone())),
         None => Box::new(t),
     }
 }
@@ -421,12 +421,12 @@ fn cmd_teleop(
     Ok(())
 }
 
-fn cmd_log_recover(input: &Path, output: &Path) -> Result<()> {
+fn cmd_session_recover(input: &Path, output: &Path) -> Result<()> {
     let bytes = std::fs::read(input)?;
     // OUTPUT may be an existing recording, so never overwrite it.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(output)?;
     let (_, summary) =
-        so101::log::recover(&bytes, std::io::BufWriter::new(file)).map_err(|e| Error::Other(e.to_string()))?;
+        so101::session::recover(&bytes, std::io::BufWriter::new(file)).map_err(|e| Error::Other(e.to_string()))?;
     match summary.truncated {
         Some(why) => {
             println!("recovered {} messages -> {} (input stopped early: {why})", summary.messages, output.display())

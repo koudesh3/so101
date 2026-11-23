@@ -10,10 +10,10 @@ pub(crate) const SCHEMA_ACTUATOR: &str = "so101.v1.ActuatorStatus";
 pub(crate) const SCHEMA_JOINT_TARGET: &str = "so101.v1.JointTarget";
 pub(crate) const SCHEMA_TICK: &str = "so101.v1.Tick";
 pub(crate) const SCHEMA_CHUNK: &str = "so101.v1.Chunk";
-pub(crate) const SCHEMA_LOG_DROP: &str = "so101.v1.LogDrop";
+pub(crate) const SCHEMA_RECORDER_DROP: &str = "so101.v1.RecorderDrop";
 pub(crate) const SCHEMA_IMAGE: &str = "foxglove.CompressedImage";
 
-pub(crate) const TOPIC_LOG_DROPS: &str = "/log/drops";
+pub(crate) const TOPIC_RECORDER_DROPS: &str = "/session/drops";
 
 impl Message {
     pub fn topic(&self) -> &'static str {
@@ -31,7 +31,7 @@ impl Message {
                 Camera::Scene => "/cam/scene",
             },
             Message::Chunk(_) => "/policy/chunk",
-            Message::LogDrop(_) => TOPIC_LOG_DROPS,
+            Message::RecorderDrop(_) => TOPIC_RECORDER_DROPS,
         }
     }
 
@@ -43,7 +43,7 @@ impl Message {
             Message::Tick(_) => SCHEMA_TICK,
             Message::Frame(_) => SCHEMA_IMAGE,
             Message::Chunk(_) => SCHEMA_CHUNK,
-            Message::LogDrop(_) => SCHEMA_LOG_DROP,
+            Message::RecorderDrop(_) => SCHEMA_RECORDER_DROP,
         }
     }
 
@@ -56,7 +56,7 @@ impl Message {
             Message::Tick(m) => m.to_pb().encode_to_vec(),
             Message::Frame(f) => super::wire::frame_to_pb(f).encode_to_vec(),
             Message::Chunk(m) => m.to_pb().encode_to_vec(),
-            Message::LogDrop(m) => m.to_pb().encode_to_vec(),
+            Message::RecorderDrop(m) => m.to_pb().encode_to_vec(),
         }
     }
 
@@ -82,7 +82,9 @@ impl Message {
                 Message::Frame(super::wire::frame_from_pb(fpb::CompressedImage::decode(data)?, sequence, log_time)?)
             }
             ["policy", "chunk"] => Message::Chunk(Wire::from_pb(pb::Chunk::decode(data)?, "Chunk")?),
-            ["log", "drops"] => Message::LogDrop(Wire::from_pb(pb::LogDrop::decode(data)?, "LogDrop")?),
+            ["session", "drops"] => {
+                Message::RecorderDrop(Wire::from_pb(pb::RecorderDrop::decode(data)?, "RecorderDrop")?)
+            }
             _ => return Err(Error::Format(format!("unknown topic {topic}"))),
         })
     }

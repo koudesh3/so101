@@ -3,3 +3,4 @@ target/
 *.jsonl
 __pycache__/
 .claude/
+/data/traces/

@@ -44,12 +44,12 @@ pub trait Transport: Send {
 }
 
 // note: the SO-101 bus board is 1 Mbaud, 8N1, no flow control.
-pub struct SerialTransport {
+pub struct SerialPort {
     port: Box<dyn serialport::SerialPort>,
     path: String,
 }
 
-impl SerialTransport {
+impl SerialPort {
     pub fn open(path: &str) -> Result<Self, TransportError> {
         let port = serialport::new(path, BAUD_RATE)
             .data_bits(serialport::DataBits::Eight)
@@ -67,7 +67,7 @@ fn other(e: serialport::Error) -> TransportError {
     TransportError::Io(io::Error::other(e.to_string()))
 }
 
-impl Transport for SerialTransport {
+impl Transport for SerialPort {
     fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
         self.port.write_all(bytes)?;
         self.port.flush()?;
@@ -126,34 +126,34 @@ impl Direction {
     }
 }
 
-// One line of the byte log: `{"t_us":..,"port":..,"dir":"tx"|"rx","hex":"FFFF.."}`.
+// One line of the byte trace: `{"t_us":..,"port":..,"dir":"tx"|"rx","hex":"FFFF.."}`.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
-pub struct LogRecord {
+pub struct TraceRecord {
     pub t_us: u64,
     pub port: String,
     pub dir: String,
     pub hex: String,
 }
 
-impl LogRecord {
+impl TraceRecord {
     pub fn bytes(&self) -> Vec<u8> {
         (0..self.hex.len()).step_by(2).filter_map(|i| u8::from_str_radix(&self.hex[i..i + 2], 16).ok()).collect()
     }
 }
 
-// One log file shared by every transport in the process, on one clock.
-pub struct ByteLog {
+// One trace file shared by every transport in the process, on one clock.
+pub struct ByteTrace {
     writer: Mutex<BufWriter<File>>,
     epoch: Instant,
 }
 
-impl ByteLog {
+impl ByteTrace {
     pub fn create(path: &Path) -> io::Result<Arc<Self>> {
         Ok(Arc::new(Self { writer: Mutex::new(BufWriter::new(File::create(path)?)), epoch: Instant::now() }))
     }
 
     pub fn record(&self, port: &str, dir: Direction, bytes: &[u8]) {
-        let rec = LogRecord {
+        let rec = TraceRecord {
             t_us: self.epoch.elapsed().as_micros() as u64,
             port: port.to_string(),
             dir: dir.as_str().to_string(),
@@ -172,21 +172,21 @@ impl ByteLog {
     }
 }
 
-pub struct Recorder<T: Transport> {
+pub struct Traced<T: Transport> {
     inner: T,
     label: String,
-    log: Arc<ByteLog>,
+    trace: Arc<ByteTrace>,
 }
 
-impl<T: Transport> Recorder<T> {
-    pub fn new(inner: T, label: &str, log: Arc<ByteLog>) -> Self {
-        Self { inner, label: label.to_string(), log }
+impl<T: Transport> Traced<T> {
+    pub fn new(inner: T, label: &str, trace: Arc<ByteTrace>) -> Self {
+        Self { inner, label: label.to_string(), trace }
     }
 }
 
-impl<T: Transport> Transport for Recorder<T> {
+impl<T: Transport> Transport for Traced<T> {
     fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.log.record(&self.label, Direction::HostToServos, bytes);
+        self.trace.record(&self.label, Direction::HostToServos, bytes);
         self.inner.send(bytes)
     }
 
@@ -198,7 +198,7 @@ impl<T: Transport> Transport for Recorder<T> {
             Err(_) => 0,
         };
         if got > 0 {
-            self.log.record(&self.label, Direction::BusToHost, &buf[..got]);
+            self.trace.record(&self.label, Direction::BusToHost, &buf[..got]);
         }
         result
     }
@@ -212,7 +212,7 @@ impl<T: Transport> Transport for Recorder<T> {
     }
 }
 
-pub fn read_log(path: &Path) -> io::Result<Vec<LogRecord>> {
+pub fn read_trace(path: &Path) -> io::Result<Vec<TraceRecord>> {
     let text = std::fs::read_to_string(path)?;
     Ok(text.lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect())
 }

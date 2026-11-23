@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 
 use super::DESCRIPTOR_SET;
-use crate::{Clock, LogDrop};
+use crate::{Clock, RecorderDrop};
 use mcap::records::{MessageHeader, Metadata};
 use mcap::{WriteOptions, Writer};
 
@@ -188,9 +188,14 @@ impl<W: Write + Seek + Send + 'static> Recorder<W> {
                 let mut write_drops = |w: &mut LogWriter<W>, all: bool| -> Result<()> {
                     for (topic, first, last, count) in thread_shared.take_drops(all) {
                         let t = clock.now();
-                        let drop =
-                            LogDrop { t, topic: topic.to_string(), first_sequence: first, last_sequence: last, count };
-                        w.write(&Event::new(Message::LogDrop(drop), drop_sequence, t))?;
+                        let drop = RecorderDrop {
+                            t,
+                            topic: topic.to_string(),
+                            first_sequence: first,
+                            last_sequence: last,
+                            count,
+                        };
+                        w.write(&Event::new(Message::RecorderDrop(drop), drop_sequence, t))?;
                         drop_sequence = drop_sequence.wrapping_add(1);
                     }
                     Ok(())

@@ -1,12 +1,12 @@
-//! The session log's tests (docs/phase0.md). The schema snapshot is in `schema_snapshot.rs`.
+//! The session's tests (docs/phase0.md). The schema snapshot is in `schema_snapshot.rs`.
 
 use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use so101::control::bus::EventBus;
-use so101::log::sample::{self, joints};
-use so101::log::{recover, replay, Attachment, CameraInfo, DropKind, Header, Log, Recorder, RecorderOptions};
+use so101::session::sample::{self, joints};
+use so101::session::{recover, replay, Attachment, CameraInfo, DropKind, Header, Recorder, RecorderOptions, Session};
 use so101::{ArmRole, Camera, Clock, Event, JointState, Message, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 
 const MS: u64 = 1_000_000;
@@ -43,7 +43,7 @@ fn header() -> Header {
     header_and_attachments().0
 }
 
-fn write(events: &[Event], options: RecorderOptions) -> (Vec<u8>, so101::log::RecordSummary) {
+fn write(events: &[Event], options: RecorderOptions) -> (Vec<u8>, so101::session::RecordSummary) {
     let (header, attachments) = header_and_attachments();
     let recorder =
         Recorder::start(Cursor::new(Vec::new()), &header, &attachments, Arc::new(MonotonicClock), options).unwrap();
@@ -76,7 +76,7 @@ fn round_trip_is_identical() {
     assert_eq!(summary.messages_written as usize, events.len());
     assert!(summary.complete);
 
-    let log = Log::from_bytes(&bytes).unwrap();
+    let log = Session::from_bytes(&bytes).unwrap();
     assert_eq!(log.events, events);
     assert_eq!(log.header, header());
     let end = log.end.clone().unwrap();
@@ -112,7 +112,7 @@ fn drops_are_reported_by_kind() {
         events.push(state(slot, slot as u64 * 10 * MS)); // slot 4 overran: skipped (contract 5)
     }
     let (bytes, _) = write(&events, RecorderOptions::default());
-    let drops = Log::from_bytes(&bytes).unwrap().drops();
+    let drops = Session::from_bytes(&bytes).unwrap().drops();
 
     let kinds: Vec<(&str, &DropKind)> = drops.iter().map(|d| (d.topic.as_str(), &d.kind)).collect();
     assert_eq!(kinds.len(), 3, "{drops:?}");
@@ -196,14 +196,14 @@ fn a_stalled_disk_drops_frames_not_the_session() {
     assert_eq!(summary.messages_lost, 0);
 
     let bytes = disk.data.lock().unwrap().get_ref().clone();
-    let log = Log::from_bytes(&bytes).unwrap();
+    let log = Session::from_bytes(&bytes).unwrap();
     assert_eq!(log.topic("/follower/state").count(), 300, "joint states were lost");
     let frames = log.topic("/cam/wrist").count() as u64;
     let recorded_drops: u64 = log
         .events
         .iter()
         .filter_map(|e| match &e.message {
-            Message::LogDrop(d) => Some(d.count as u64),
+            Message::RecorderDrop(d) => Some(d.count as u64),
             _ => None,
         })
         .sum();
@@ -237,7 +237,7 @@ fn a_dead_disk_marks_the_log_incomplete() {
     let (_, summary) = recorder.finish().unwrap();
     assert!(!summary.complete);
     assert!(summary.messages_lost > 0);
-    let log = Log::from_bytes(&disk.data.lock().unwrap().get_ref().clone()).unwrap();
+    let log = Session::from_bytes(&disk.data.lock().unwrap().get_ref().clone()).unwrap();
     assert!(!log.end.unwrap().complete);
 }
 
@@ -248,7 +248,7 @@ fn replay_reproduces_timing() {
     let t0 = 7_000_000_000;
     let events: Vec<Event> = offsets_ms.iter().enumerate().map(|(i, ms)| state(i as u32, t0 + ms * MS)).collect();
     let (bytes, _) = write(&events, RecorderOptions::default());
-    let log = Log::from_bytes(&bytes).unwrap();
+    let log = Session::from_bytes(&bytes).unwrap();
     let ordered = log.by_time();
 
     // As fast as possible: the clock reports each event's exact log time.
@@ -283,11 +283,11 @@ fn a_truncated_log_recovers_its_complete_chunks() {
     }
     let (bytes, _) = write(&events, RecorderOptions { chunk_size: 256 * 1024, ..Default::default() });
     let cut = &bytes[..bytes.len() * 7 / 10];
-    assert!(Log::from_bytes(cut).is_err(), "a truncated file must not read as complete");
+    assert!(Session::from_bytes(cut).is_err(), "a truncated file must not read as complete");
 
     let (out, summary) = recover(cut, Cursor::new(Vec::new())).unwrap();
     assert!(summary.truncated.is_some());
-    let log = Log::from_bytes(out.get_ref()).unwrap();
+    let log = Session::from_bytes(out.get_ref()).unwrap();
     let n = log.events.len();
     assert!(n > events.len() / 2 && n < events.len(), "recovered {n} of {}", events.len());
     assert_eq!(log.events[..], events[..n], "recovered messages must be an exact prefix");
@@ -311,17 +311,17 @@ fn a_calibration_that_doesnt_match_its_hash_is_refused() {
     )
     .unwrap();
     let (out, _) = recorder.finish().unwrap();
-    let err = Log::from_bytes(out.get_ref()).unwrap_err();
+    let err = Session::from_bytes(out.get_ref()).unwrap_err();
     assert!(err.to_string().contains("doesn't match its hash"), "{err}");
 }
 
-/// Contract 1: Python decodes a log using only the schemas embedded in it (`read_log.py`).
+/// Contract 1: Python decodes a log using only the schemas embedded in it (`read_session.py`).
 #[test]
-fn python_reads_a_log_without_generated_code() {
+fn python_reads_a_session_without_generated_code() {
     let (bytes, _) = write(&sample::session(Timestamp(5_000 * MS)), RecorderOptions::default());
     let path = std::env::temp_dir().join(format!("so101-python-{}.mcap", std::process::id()));
     std::fs::write(&path, bytes).unwrap();
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/read_log.py");
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/read_session.py");
     let out = std::process::Command::new("uv")
         .args(["run", "-q", script])
         .arg(&path)

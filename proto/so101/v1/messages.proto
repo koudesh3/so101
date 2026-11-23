@@ -118,7 +118,8 @@ message Chunk {
   string checkpoint_id = 5;
 }
 
-message LogDrop {
+// Messages the recorder had to drop because it fell behind.
+message RecorderDrop {
   uint64 t_ns = 1;
   string topic = 2;
   uint32 first_sequence = 3;

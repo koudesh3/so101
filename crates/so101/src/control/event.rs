@@ -14,7 +14,7 @@ pub enum Message {
     Tick(Tick),
     Frame(Frame),
     Chunk(Chunk),
-    LogDrop(LogDrop),
+    RecorderDrop(RecorderDrop),
 }
 
 impl Message {
@@ -27,7 +27,7 @@ impl Message {
             Message::Tick(m) => m.t,
             Message::Frame(f) => f.t_capture,
             Message::Chunk(m) => m.t_obs,
-            Message::LogDrop(m) => m.t,
+            Message::RecorderDrop(m) => m.t,
         }
     }
 
@@ -64,7 +64,7 @@ impl Event {
 
 /// A run of consecutive messages on one topic that a consumer dropped because it fell behind.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LogDrop {
+pub struct RecorderDrop {
     pub t: Timestamp,
     pub topic: String,
     pub first_sequence: u32,

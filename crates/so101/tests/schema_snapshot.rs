@@ -19,7 +19,7 @@ fn snapshot_path() -> PathBuf {
 }
 
 fn current() -> FileDescriptorSet {
-    let all = FileDescriptorSet::decode(so101::log::DESCRIPTOR_SET).expect("descriptor set decodes");
+    let all = FileDescriptorSet::decode(so101::session::DESCRIPTOR_SET).expect("descriptor set decodes");
     let mut files: Vec<FileDescriptorProto> =
         all.file.into_iter().filter(|f| f.package.as_deref() == Some(PACKAGE)).collect();
     // Source info (comments, spans) isn't part of the wire contract.
