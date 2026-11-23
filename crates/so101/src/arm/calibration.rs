@@ -4,13 +4,13 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::arm::servos::{CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::{Counts, Joint, Pose, ServoArm, Unit, JOINT_COUNT};
 use crate::arm::{Error, Result};
-use crate::control::Grid;
 
 pub const DEGREES_PER_COUNT: f64 = 360.0 / COUNTS_PER_TURN as f64;
 
@@ -188,9 +188,12 @@ impl TryFrom<CalibrationFile> for Calibration {
 
 pub fn sweep(arm: &mut ServoArm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool) -> Result<Sweep> {
     let mut sweep = Sweep { min: [i32::MAX; JOINT_COUNT], max: [i32::MIN; JOINT_COUNT] };
-    let mut grid = Grid::new(hz, arm.clock());
+    let clock = arm.clock();
+    let period = Duration::from_secs_f64(1.0 / hz);
+    let mut next = clock.now();
     loop {
-        grid.wait();
+        clock.sleep_until(next);
+        next = next + period;
         // A voltage flag does not fail the read (Servos::take_flags), so hand-driven
         // sweeps on a marginal 5 V supply keep every sample.
         let counts = arm.read_counts()?;

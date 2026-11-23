@@ -347,7 +347,7 @@ crates/so101/              one crate, one folder per thing
                                STS3215 servos and their registers (servos.rs); the UART; simulated servos
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
-  src/control/                 the loop: grid (cycles), Tick, events, bus, teleop
+  src/control/                 the loop: run, grid (cycles), Tick, events, bus; pilots/ (teleop)
   src/session/                 a recorded session: mod.rs (the header, the end-of-session record,
                                errors), wire.rs (protobuf conversions generated from a field map, each
                                message's topic and schema), recorder.rs, reader.rs (open, drops,

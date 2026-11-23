@@ -10,11 +10,22 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# The control loop talks to arms through the Arm trait: never ServoArm, the servos, the UART, the simulator, calibration, or the session
+# Each module uses only the ones below it (clock, camera, arm, policy, control, session), and the
+# control loop reaches arms only through the Arm trait
 check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
+    order=(clock camera arm policy control session)
+    for i in "${!order[@]}"; do
+        module=${order[$i]}
+        path=$module; [ -d "$module" ] || path=$module.rs
+        for above in "${order[@]:$((i + 1))}"; do
+            if grep -rnE "crate::$above\b" "$path"; then
+                echo "error: $module uses $above, which sits above it (order: ${order[*]})"; exit 1
+            fi
+        done
+    done
     if grep -rnE 'crate::session\b|crate::arm::(servos|uart|simulated_servos|calibration)\b|\bServoArm\b' control/; then
         echo "error: control/ reaches past the Arm trait (above)"; exit 1
     fi

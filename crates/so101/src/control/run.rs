@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::arm::{Arm, Error, Joint, JointTarget, Result, JOINT_COUNT};
+use crate::arm::{Arm, Error, Joint, Result, JOINT_COUNT};
 use crate::clock::Clock;
-use crate::control::{ArmRole, Clip, Event, EventBus, Grid, Message, Pilot, Tick};
+use crate::control::{ArmRole, Clip, Event, EventBus, Grid, JointTarget, Message, Pilot, Tick};
 
 // How long a follower may fail every cycle before the loop stops.
 const FAILSAFE_AFTER: Duration = Duration::from_millis(500);

@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
-use crate::arm::{Arm, JointState, Pose, Result, Source, JOINT_COUNT};
+use crate::arm::{Arm, JointState, Pose, Result, JOINT_COUNT};
 use crate::clock::Timestamp;
-use crate::control::{ArmRole, Message, Pilot};
+use crate::control::{ArmRole, Message, Pilot, Source};
 
 pub struct Teleop<L: Arm> {
     leader: L,

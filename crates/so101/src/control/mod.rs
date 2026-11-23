@@ -3,21 +3,21 @@
 //! each step's `Tick`).
 
 mod grid;
+mod pilots;
 mod run;
-mod teleop;
 
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 
-use crate::arm::Result;
-use crate::arm::{ActuatorStatus, Joint, JointState, JointTarget, Limit, Pose, Source};
+use crate::arm::{ActuatorStatus, Counts, Joint, JointState, Limit, Pose};
 use crate::camera::{Frame, FrameRef};
 use crate::clock::Timestamp;
+use crate::policy::CheckpointId;
 use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
+pub use pilots::{Pilot, Teleop};
 pub use run::{run, RunOptions, RunStats};
-pub use teleop::Teleop;
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).
 #[derive(Clone, Debug, PartialEq)]
@@ -87,19 +87,26 @@ pub struct EventBus {
 
 struct ChannelSink(mpsc::Sender<Event>);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Teleop,
+    Script(String),
+    Policy(CheckpointId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct JointTarget {
+    pub t: Timestamp,
+    pub pose: Pose,
+    pub source: Source,
+    /// `None` when not written to servos.
+    pub counts: Option<Counts>,
+}
+
 /// `accept` must return without blocking, dropping (and saying so) rather than waiting: the
 /// control loop publishes.
 pub trait Sink: Send + Sync {
     fn accept(&self, event: &Event);
-}
-
-/// What decides the follower's target each tick: teleop now; a script and the action queue next.
-pub trait Pilot: Send {
-    /// Recorded with every target it produces.
-    fn source(&self) -> Source;
-    /// The target for this tick, given the follower's latest state, and anything the pilot
-    /// observed to decide it (the leader's state, say), to be recorded.
-    fn target(&mut self, now: Timestamp, follower: &JointState) -> Result<(Pose, Vec<Message>)>;
 }
 
 impl Message {

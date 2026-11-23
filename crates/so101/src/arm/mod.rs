@@ -9,7 +9,6 @@ mod uart;
 
 use self::servos::ServoError;
 use crate::clock::Timestamp;
-use crate::policy::CheckpointId;
 
 pub use calibration::{check_centred, sweep, Calibration, Sweep};
 pub use servo_arm::{FollowerGains, ServoArm, IDS};
@@ -44,28 +43,12 @@ pub struct Pose(pub [f32; JOINT_COUNT]);
 /// Raw encoder counts, one per joint.
 pub type Counts = [i32; JOINT_COUNT];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Source {
-    Teleop,
-    Script(String),
-    Policy(CheckpointId),
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct JointState {
     pub t: Timestamp,
     /// Under the calibration stored in the log (contract 6).
     pub pose: Pose,
     /// `None` when not read from servos (a mock or a replay).
-    pub counts: Option<Counts>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct JointTarget {
-    pub t: Timestamp,
-    pub pose: Pose,
-    pub source: Source,
-    /// `None` when not written to servos.
     pub counts: Option<Counts>,
 }
 

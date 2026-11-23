@@ -12,7 +12,8 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
                    (servos.rs); their UART; simulated servos; calibration
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
-  control/         the loop: the grid of cycles, ticks, events, the event bus, and teleop
+  control/         the loop (run.rs) on its grid of cycles, ticks, events, the event bus, and the
+                   pilots that drive it (pilots/: teleop so far)
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   cli.rs     the `so101` command line, which puts the pieces together
@@ -47,7 +48,8 @@ justfile         the commands for the whole repo; mise.toml pins the tools they 
 - **Unit tests sit in the file whose logic they test.** `tests/` is for behaviour that crosses
   folders: teleop against simulated servos, a session written and read back, the schema.
 - **Comments only say what the code can't:** units, outside conventions, measured facts, and why.
-- **`control/` reaches arms only through the `Arm` trait** (`just check` enforces it).
+- **Modules depend only downward:** clock, camera, arm, policy, control, session, then `cli.rs`
+  on top. `control/` reaches arms only through the `Arm` trait. `just check` enforces both.
 
 ## Glossary
 
@@ -66,14 +68,15 @@ One concept, one name, one home.
 | `Transport` | the UART to the servos: a `SerialPort`, or `SimulatedServos`; either can be `Traced` | `arm/uart.rs` |
 | `SimulatedServos` | STS3215 servos simulated byte for byte behind a fake UART, for tests and `--sim` | `arm` |
 | `ByteTrace` | every byte on every serial line, with times (`--trace`) | `arm/uart.rs` |
-| `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
+| `JointState` | a pose read from an arm, with its time and counts | `arm` |
+| `JointTarget` | a pose the loop commanded, with its time, counts and source | `control` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
 | `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
-| `Pilot` | what decides the follower's target each tick: teleop now, a script or the action queue next (a trait) | `control` |
-| `Source` | which pilot produced a target, as recorded: teleop, script, policy | `arm` |
+| `Pilot` | what decides the follower's target each tick: teleop now, a script or the action queue next (a trait) | `control/pilots` |
+| `Source` | which pilot produced a target, as recorded: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
 | `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |
 | `Clock` / `Timestamp` | where time comes from | `clock` |
