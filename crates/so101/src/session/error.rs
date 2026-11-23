@@ -7,7 +7,9 @@ pub enum Error {
     Io(std::io::Error),
     Mcap(mcap::McapError),
     Decode(prost::DecodeError),
-    Wire(super::WireError),
+    /// A message that doesn't satisfy its schema: a wrong array length, a missing required
+    /// field, an unknown enum value.
+    Wire(String),
     /// The file isn't a log this crate wrote (unknown topic or schema, missing metadata, ...).
     Format(String),
 }
@@ -18,7 +20,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "{e}"),
             Error::Mcap(e) => write!(f, "mcap: {e}"),
             Error::Decode(e) => write!(f, "protobuf: {e}"),
-            Error::Wire(e) => write!(f, "{e}"),
+            Error::Wire(s) => write!(f, "invalid message: {s}"),
             Error::Format(s) => write!(f, "log format: {s}"),
         }
     }
@@ -41,11 +43,5 @@ impl From<mcap::McapError> for Error {
 impl From<prost::DecodeError> for Error {
     fn from(e: prost::DecodeError) -> Self {
         Error::Decode(e)
-    }
-}
-
-impl From<super::WireError> for Error {
-    fn from(e: super::WireError) -> Self {
-        Error::Wire(e)
     }
 }

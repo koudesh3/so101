@@ -6,10 +6,15 @@ use std::time::Duration;
 
 use super::pb::foxglove as fpb;
 use super::pb::so101::v1 as pb;
-use super::WireError;
+use super::Error;
 use crate::*;
+use prost::Message as _;
 
-type Result<T> = std::result::Result<T, WireError>;
+type Result<T> = std::result::Result<T, Error>;
+
+fn invalid(msg: impl Into<String>) -> Error {
+    Error::Wire(msg.into())
+}
 
 pub(crate) trait Wire: Sized {
     type Pb;
@@ -44,7 +49,7 @@ macro_rules! wire_enum {
             fn from_pb(v: i32, field: &str) -> Result<$t> {
                 match pb::$pb::try_from(v) {
                     $(Ok(pb::$pb::$v) => Ok($t::$v),)*
-                    _ => Err(WireError::new(format!("{field}: unknown value {v}"))),
+                    _ => Err(invalid(format!("{field}: unknown value {v}"))),
                 }
             }
         }
@@ -84,7 +89,7 @@ impl Wire for Pose {
     }
     fn from_pb(v: Vec<f32>, field: &str) -> Result<Self> {
         let n = v.len();
-        let a = v.try_into().map_err(|_| WireError::new(format!("{field}: expected {JOINT_COUNT} values, got {n}")))?;
+        let a = v.try_into().map_err(|_| invalid(format!("{field}: expected {JOINT_COUNT} values, got {n}")))?;
         Ok(Pose(a))
     }
 }
@@ -100,9 +105,7 @@ impl Wire for Option<Counts> {
             return Ok(None);
         }
         let n = v.len();
-        let a = v
-            .try_into()
-            .map_err(|_| WireError::new(format!("{field}: expected 0 or {JOINT_COUNT} counts, got {n}")))?;
+        let a = v.try_into().map_err(|_| invalid(format!("{field}: expected 0 or {JOINT_COUNT} counts, got {n}")))?;
         Ok(Some(a))
     }
 }
@@ -139,12 +142,12 @@ impl Wire for Source {
         Some(pb::Source { kind: kind as i32, name })
     }
     fn from_pb(v: Option<pb::Source>, field: &str) -> Result<Self> {
-        let s = v.ok_or_else(|| WireError::new(format!("{field}: missing")))?;
+        let s = v.ok_or_else(|| invalid(format!("{field}: missing")))?;
         match pb::SourceKind::try_from(s.kind) {
             Ok(pb::SourceKind::Teleop) => Ok(Source::Teleop),
             Ok(pb::SourceKind::Script) => Ok(Source::Script(s.name)),
             Ok(pb::SourceKind::Policy) => Ok(Source::Policy(CheckpointId(s.name))),
-            _ => Err(WireError::new(format!("{field}: unknown source kind {}", s.kind))),
+            _ => Err(invalid(format!("{field}: unknown source kind {}", s.kind))),
         }
     }
 }
@@ -212,10 +215,10 @@ impl Wire for Chunk {
     fn from_pb(m: pb::Chunk, _: &str) -> Result<Self> {
         let want = m.k as usize * JOINT_COUNT;
         if m.actions.len() != want {
-            return Err(WireError::new(format!("Chunk: k = {} needs {want} values, got {}", m.k, m.actions.len())));
+            return Err(invalid(format!("Chunk: k = {} needs {want} values, got {}", m.k, m.actions.len())));
         }
         if m.period_ns == 0 {
-            return Err(WireError::new("Chunk.period_ns: must be set"));
+            return Err(invalid("Chunk.period_ns: must be set"));
         }
         let actions = m
             .actions
@@ -247,12 +250,12 @@ pub(crate) fn frame_to_pb(f: &Frame) -> fpb::CompressedImage {
 
 /// The frame's sequence and receive time come from its MCAP record, not the image message.
 pub(crate) fn frame_from_pb(img: fpb::CompressedImage, sequence: u32, t_receive: Timestamp) -> Result<Frame> {
-    let ts = img.timestamp.ok_or_else(|| WireError::new("CompressedImage: missing timestamp"))?;
+    let ts = img.timestamp.ok_or_else(|| invalid("CompressedImage: missing timestamp"))?;
     if ts.seconds < 0 || !(0..1_000_000_000).contains(&ts.nanos) {
-        return Err(WireError::new("CompressedImage: timestamp out of range"));
+        return Err(invalid("CompressedImage: timestamp out of range"));
     }
     let camera = Camera::from_name(&img.frame_id)
-        .ok_or_else(|| WireError::new(format!("CompressedImage: unknown camera {:?}", img.frame_id)))?;
+        .ok_or_else(|| invalid(format!("CompressedImage: unknown camera {:?}", img.frame_id)))?;
     Ok(Frame {
         camera,
         sequence,
@@ -262,6 +265,95 @@ pub(crate) fn frame_from_pb(img: fpb::CompressedImage, sequence: u32, t_receive:
     })
 }
 
+// ---- Topics and schemas: where each message goes in the MCAP file ----
+
+pub(crate) const SCHEMA_JOINT_STATE: &str = "so101.v1.JointState";
+pub(crate) const SCHEMA_ACTUATOR: &str = "so101.v1.ActuatorStatus";
+pub(crate) const SCHEMA_JOINT_TARGET: &str = "so101.v1.JointTarget";
+pub(crate) const SCHEMA_TICK: &str = "so101.v1.Tick";
+pub(crate) const SCHEMA_CHUNK: &str = "so101.v1.Chunk";
+pub(crate) const SCHEMA_RECORDER_DROP: &str = "so101.v1.RecorderDrop";
+pub(crate) const SCHEMA_IMAGE: &str = "foxglove.CompressedImage";
+
+pub(crate) const TOPIC_RECORDER_DROPS: &str = "/session/drops";
+
+impl Message {
+    pub fn topic(&self) -> &'static str {
+        use ArmRole::*;
+        match self {
+            Message::JointState(Leader, _) => "/leader/state",
+            Message::JointState(Follower, _) => "/follower/state",
+            Message::Actuator(Leader, _) => "/leader/actuators",
+            Message::Actuator(Follower, _) => "/follower/actuators",
+            Message::JointTarget(Leader, _) => "/leader/target",
+            Message::JointTarget(Follower, _) => "/follower/target",
+            Message::Tick(_) => "/tick",
+            Message::Frame(f) => match f.camera {
+                Camera::Wrist => "/cam/wrist",
+                Camera::Scene => "/cam/scene",
+            },
+            Message::Chunk(_) => "/policy/chunk",
+            Message::RecorderDrop(_) => TOPIC_RECORDER_DROPS,
+        }
+    }
+
+    pub(crate) fn schema(&self) -> &'static str {
+        match self {
+            Message::JointState(..) => SCHEMA_JOINT_STATE,
+            Message::Actuator(..) => SCHEMA_ACTUATOR,
+            Message::JointTarget(..) => SCHEMA_JOINT_TARGET,
+            Message::Tick(_) => SCHEMA_TICK,
+            Message::Frame(_) => SCHEMA_IMAGE,
+            Message::Chunk(_) => SCHEMA_CHUNK,
+            Message::RecorderDrop(_) => SCHEMA_RECORDER_DROP,
+        }
+    }
+
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        match self {
+            Message::JointState(_, m) => m.to_pb().encode_to_vec(),
+            Message::Actuator(_, m) => m.to_pb().encode_to_vec(),
+            Message::JointTarget(_, m) => m.to_pb().encode_to_vec(),
+            Message::Tick(m) => m.to_pb().encode_to_vec(),
+            Message::Frame(f) => frame_to_pb(f).encode_to_vec(),
+            Message::Chunk(m) => m.to_pb().encode_to_vec(),
+            Message::RecorderDrop(m) => m.to_pb().encode_to_vec(),
+        }
+    }
+
+    /// A frame's sequence and receive time come from its record, not its payload.
+    pub(crate) fn decode(topic: &str, data: &[u8], sequence: u32, log_time: Timestamp) -> Result<Message> {
+        let role = |name: &str| match name {
+            "leader" => Ok(ArmRole::Leader),
+            "follower" => Ok(ArmRole::Follower),
+            _ => Err(Error::Format(format!("unknown arm in topic {topic}"))),
+        };
+        let parts: Vec<&str> = topic.trim_start_matches('/').split('/').collect();
+        Ok(match parts.as_slice() {
+            [a, "state"] => Message::JointState(role(a)?, Wire::from_pb(pb::JointState::decode(data)?, "JointState")?),
+            [a, "actuators"] => {
+                Message::Actuator(role(a)?, Wire::from_pb(pb::ActuatorStatus::decode(data)?, "ActuatorStatus")?)
+            }
+            [a, "target"] => {
+                Message::JointTarget(role(a)?, Wire::from_pb(pb::JointTarget::decode(data)?, "JointTarget")?)
+            }
+            ["tick"] => Message::Tick(Wire::from_pb(pb::Tick::decode(data)?, "Tick")?),
+            ["cam", _] => Message::Frame(frame_from_pb(fpb::CompressedImage::decode(data)?, sequence, log_time)?),
+            ["policy", "chunk"] => Message::Chunk(Wire::from_pb(pb::Chunk::decode(data)?, "Chunk")?),
+            ["session", "drops"] => {
+                Message::RecorderDrop(Wire::from_pb(pb::RecorderDrop::decode(data)?, "RecorderDrop")?)
+            }
+            _ => return Err(Error::Format(format!("unknown topic {topic}"))),
+        })
+    }
+}
+
+impl Event {
+    pub fn topic(&self) -> &'static str {
+        self.message.topic()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,7 +361,7 @@ mod tests {
     #[test]
     fn a_pose_needs_six_values() {
         let err = JointState::from_pb(pb::JointState { t_ns: 1, pose: vec![1.0; 5], counts: vec![] }, "").unwrap_err();
-        assert!(err.0.contains("JointState.pose: expected 6"), "{err}");
+        assert!(err.to_string().contains("JointState.pose: expected 6"), "{err}");
     }
 
     #[test]
@@ -283,13 +375,13 @@ mod tests {
     #[test]
     fn a_missing_source_is_rejected() {
         let m = pb::JointTarget { t_ns: 0, pose: vec![0.0; 6], source: None, counts: vec![] };
-        assert!(JointTarget::from_pb(m, "").unwrap_err().0.contains("JointTarget.source: missing"));
+        assert!(JointTarget::from_pb(m, "").unwrap_err().to_string().contains("JointTarget.source: missing"));
     }
 
     #[test]
     fn an_unknown_enum_value_is_rejected() {
         let m = pb::Clip { joint: 42, limit: 1 };
-        assert!(Clip::from_pb(m, "").unwrap_err().0.contains("Clip.joint: unknown value 42"));
+        assert!(Clip::from_pb(m, "").unwrap_err().to_string().contains("Clip.joint: unknown value 42"));
     }
 
     #[test]

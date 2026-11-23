@@ -349,7 +349,8 @@ crates/so101/              one crate, one folder per thing
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
   src/control/                 the loop: grid (slots), Tick, events, bus, teleop
   src/session/                 a recorded session: wire (protobuf conversions, generated from a field
-                               map), recorder, reader, drops, replay, recover
+                               map, with each message's topic and schema), recorder, reader (and replay),
+                               drops, recover
   src/clock.rs                 Timestamp, Clock, MonotonicClock, ReplayClock
   src/cli.rs             the command line: puts the pieces together
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set

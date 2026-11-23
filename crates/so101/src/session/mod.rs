@@ -2,26 +2,21 @@
 
 mod drops;
 mod error;
-mod event;
 mod header;
 mod raw;
 mod reader;
 mod recorder;
 mod recover;
-mod replay;
 #[doc(hidden)]
 pub mod sample;
 mod wire;
-mod wire_error;
 
 pub use drops::{Drop, DropKind};
 pub use error::{Error, Result};
 pub use header::{Attachment, CameraInfo, Header, SessionEnd};
-pub use reader::Session;
+pub use reader::{replay, Session};
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
 pub use recover::{recover, RecoverSummary};
-pub use replay::replay;
-pub use wire_error::WireError;
 
 /// Generated from `proto/`.
 pub mod pb {

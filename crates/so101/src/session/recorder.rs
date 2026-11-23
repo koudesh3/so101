@@ -16,7 +16,7 @@ use mcap::{WriteOptions, Writer};
 
 use super::header::{META_SESSION, META_SESSION_END};
 use super::{Attachment, Error, Header, Result, SessionEnd};
-use crate::control::bus::Sink;
+use crate::control::event::Sink;
 use crate::{Event, Message};
 
 #[derive(Clone, Debug)]

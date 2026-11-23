@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
-use super::event::TOPIC_RECORDER_DROPS;
+use super::wire::TOPIC_RECORDER_DROPS;
 use super::Session;
 use crate::{Event, Message};
 

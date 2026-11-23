@@ -11,7 +11,7 @@ pub mod session;
 pub use arm::{ActuatorStatus, Counts, Fault, Joint, JointState, JointTarget, Pose, Source, Unit, JOINT_COUNT};
 pub use camera::{Camera, Frame, FrameRef};
 pub use clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
-pub use control::event::{ArmRole, Event, Message, RecorderDrop};
+pub use control::event::{ArmRole, Event, EventBus, Message, RecorderDrop};
 pub use control::tick::{Clip, Limit, Tick};
 pub use policy::{CheckpointId, Chunk, Obs};
 

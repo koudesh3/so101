@@ -4,7 +4,7 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use so101::control::bus::EventBus;
+use so101::control::event::EventBus;
 use so101::session::sample::{self, joints};
 use so101::session::{recover, replay, Attachment, CameraInfo, DropKind, Header, Recorder, RecorderOptions, Session};
 use so101::{ArmRole, Camera, Clock, Event, JointState, Message, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
