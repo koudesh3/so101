@@ -136,6 +136,16 @@ than 0.5 ms late, which doesn't skip a slot. On the September logs, recorded on 
 of ticks would have overrun at 120 Hz; the Spark's USB stack and scheduler are faster. Byte log:
 `/projects/logs/hz120-20261123-133445.jsonl` on the Spark.
 
+**Measured: the wrist camera and the 120 Hz loop don't disturb each other.** Same day, 90 s of
+teleop at 120 Hz with the wrist camera streaming 640x480 MJPG on the same Spark: bus work per tick
+4.5 ms typical, 6.8 ms p99; 2 of 10,800 ticks (0.02%) ran over the 8.3 ms slot (the current
+`Ticker` didn't count them as overruns; Phase 1's skip rule will). The camera delivered 2,709
+frames at 29.8 fps with no sequence gaps and no interval over 1.5x the median (intervals 32.3 ms
+typical, 36.6 ms at most). Leader to follower lag, from cross-correlating joint velocities: pan
+42 ms, lift 38 ms, elbow 46 ms (these three have the 40 ms teleop lead), wrist flex 70 ms, wrist
+roll 68 ms (no lead), gripper 106 ms. That's the ~50 ms servo dead time plus the loop. Data:
+`/projects/spikes/cam-offset/teleop-135403/` on the Spark.
+
 **Measured: the wrist camera's exposure starts about 10 ms before its kernel stamp** (contract 3).
 On the Spark, 2026-11-23, icSpring wrist camera at 640x480 MJPG, manual exposure 30 ms, frame
 period 32.2 ms. A script held the follower still and stepped wrist flex by 10 degrees every 2 s,
