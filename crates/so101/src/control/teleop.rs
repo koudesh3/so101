@@ -183,9 +183,9 @@ fn run_loop(
         if options.max_ticks.is_some_and(|max| stats.ticks >= max) {
             break;
         }
-        let slot = grid.wait();
+        let cycle = grid.wait();
         let work_started = Instant::now();
-        let outcome = one_step(leader, follower, options, &mut state, slot.index, stats.ticks);
+        let outcome = one_step(leader, follower, options, &mut state, cycle.index, stats.ticks);
         let work_time = work_started.elapsed();
         stats.ticks += 1;
         stats.worst_work_time = stats.worst_work_time.max(work_time);
@@ -218,7 +218,7 @@ fn one_step(
     follower: &mut impl Arm,
     options: TeleopOptions,
     state: &mut LoopState,
-    slot: u64,
+    cycle: u64,
     tick: u64,
 ) -> Result<Vec<Event>> {
     let follower_state = follower.read_state()?;
@@ -300,22 +300,22 @@ fn one_step(
         })
         .collect();
 
-    let slot = slot as u32;
+    let cycle = cycle as u32;
     let mut events = vec![
-        state_event(ArmRole::Follower, follower_state, slot),
-        state_event(ArmRole::Leader, leader_state, slot),
+        state_event(ArmRole::Follower, follower_state, cycle),
+        state_event(ArmRole::Leader, leader_state, cycle),
         Event::new(
             Message::JointTarget(
                 ArmRole::Follower,
                 JointTarget { t: t_sent, pose: action, source: Source::Teleop, counts: Some(sent) },
             ),
-            slot,
+            cycle,
             t_sent,
         ),
         Event::new(
             Message::Tick(Tick {
                 t: t_sent,
-                slot,
+                cycle,
                 state: follower_pose,
                 wrist: None,
                 scene: None,
@@ -334,15 +334,15 @@ fn one_step(
         let joint = Joint::ALL[(tick % JOINT_COUNT as u64) as usize];
         if let Ok(status) = follower.read_actuator(joint) {
             let t = status.t;
-            events.push(Event::new(Message::Actuator(ArmRole::Follower, status), slot, t));
+            events.push(Event::new(Message::Actuator(ArmRole::Follower, status), cycle, t));
         }
     }
     Ok(events)
 }
 
-fn state_event(role: ArmRole, state: JointState, slot: u32) -> Event {
+fn state_event(role: ArmRole, state: JointState, cycle: u32) -> Event {
     let t = state.t;
-    Event::new(Message::JointState(role, state), slot, t)
+    Event::new(Message::JointState(role, state), cycle, t)
 }
 
 /// Teleop's stall logic works in encoder counts, so it needs an arm that reports them.

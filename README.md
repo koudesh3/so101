@@ -12,7 +12,7 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
                    (servos.rs); their UART; simulated servos; calibration
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
-  control/         the loop: the grid of slots, ticks, events, the event bus, and teleop
+  control/         the loop: the grid of cycles, ticks, events, the event bus, and teleop
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   cli.rs     the `so101` command line, which puts the pieces together
@@ -68,9 +68,9 @@ One concept, one name, one home.
 | `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
-| `Chunk` | a policy's predicted poses | `policy` |
-| `Grid` / `Slot` | the servo loop's fixed schedule / one step of it | `control` |
-| `Tick` | what the loop saw and sent at one control step | `control` |
+| `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
+| `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one servo cycle on it (read, step toward the target, write) | `control` |
+| `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
 | `Source` | who produced a target: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
 | `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |

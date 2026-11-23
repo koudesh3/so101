@@ -305,7 +305,7 @@ wire_struct!(Clip => Clip { joint: joint, limit: limit });
 
 wire_struct!(Tick => Tick {
     t: t_ns,
-    slot: slot,
+    cycle: cycle,
     state: state,
     wrist: wrist,
     scene: scene,

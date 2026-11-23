@@ -95,13 +95,13 @@ fn write(events: &[Event], options: RecorderOptions) -> (Vec<u8>, so101::session
     (out.into_inner(), summary)
 }
 
-fn state(slot: u32, t: u64) -> Event {
+fn state(cycle: u32, t: u64) -> Event {
     Event::new(
         Message::JointState(
             ArmRole::Follower,
-            JointState { t: Timestamp(t), pose: joints(slot as f32), counts: Some([2048; 6]) },
+            JointState { t: Timestamp(t), pose: joints(cycle as f32), counts: Some([2048; 6]) },
         ),
-        slot,
+        cycle,
         Timestamp(t),
     )
 }
@@ -147,8 +147,8 @@ fn drops_are_reported_by_kind() {
         t += if seq == 7 { 70 } else { 33 } * MS; // the camera itself skipped: no gap in its counter
         events.push(Event::frame(sample::frame(Camera::Scene, seq, Timestamp(t), 500)));
     }
-    for slot in (0..10).filter(|s| *s != 4) {
-        events.push(state(slot, slot as u64 * 10 * MS)); // slot 4 overran: skipped (contract 5)
+    for cycle in (0..10).filter(|s| *s != 4) {
+        events.push(state(cycle, cycle as u64 * 10 * MS)); // cycle 4 overran: skipped (contract 5)
     }
     let (bytes, _) = write(&events, RecorderOptions::default());
     let drops = Session::from_bytes(&bytes).unwrap().drops();
@@ -283,7 +283,10 @@ fn a_truncated_log_recovers_its_complete_chunks() {
         events.push(Event::frame(sample::frame(Camera::Wrist, i, t, 40_000)));
         events.push(state(i, t.0));
     }
-    let (bytes, _) = write(&events, RecorderOptions { chunk_size: 256 * 1024, ..Default::default() });
+    // A frame queue as long as the run, so a busy machine can't make the recorder drop frames:
+    // this test is about recovering a cut file, and needs every message written.
+    let options = RecorderOptions { chunk_size: 256 * 1024, frame_queue: events.len(), ..Default::default() };
+    let (bytes, _) = write(&events, options);
     let cut = &bytes[..bytes.len() * 7 / 10];
     assert!(Session::from_bytes(cut).is_err(), "a truncated file must not read as complete");
 
@@ -372,21 +375,21 @@ mod sample {
     pub fn session(t0: Timestamp) -> Vec<Event> {
         let t = |ms: u64| Timestamp(t0.0 + ms * MS);
         let mut out = Vec::new();
-        for slot in 0..30u32 {
-            let ms = slot as u64 * 10;
-            let pos = joints(slot as f32 * 0.5);
-            let counts = Some([2048 + slot as i32, 1900, 2100, 2048, 1024, 3000]);
+        for cycle in 0..30u32 {
+            let ms = cycle as u64 * 10;
+            let pos = joints(cycle as f32 * 0.5);
+            let counts = Some([2048 + cycle as i32, 1900, 2100, 2048, 1024, 3000]);
             out.push(Event::new(
                 Message::JointState(ArmRole::Follower, JointState { t: t(ms), pose: pos, counts }),
-                slot,
+                cycle,
                 t(ms + 1),
             ));
             out.push(Event::new(
                 Message::JointState(ArmRole::Leader, JointState { t: t(ms), pose: pos, counts: None }),
-                slot,
+                cycle,
                 t(ms + 1),
             ));
-            let joint = Joint::ALL[slot as usize % 6];
+            let joint = Joint::ALL[cycle as usize % 6];
             out.push(Event::new(
                 Message::Actuator(
                     ArmRole::Follower,
@@ -398,14 +401,14 @@ mod sample {
                         voltage_v: Some(12.1),
                         temperature_c: Some(31.0),
                         current_a: Some(0.11),
-                        faults: if slot % 5 == 0 { vec![Fault::Overload] } else { vec![] },
+                        faults: if cycle % 5 == 0 { vec![Fault::Overload] } else { vec![] },
                     },
                 ),
-                slot,
+                cycle,
                 t(ms + 2),
             ));
-            if slot % 3 == 0 {
-                let tick = slot / 3;
+            if cycle % 3 == 0 {
+                let tick = cycle / 3;
                 let wrist = frame(Camera::Wrist, tick, t(ms), 2000);
                 let scene = frame(Camera::Scene, tick + 100, t(ms + 1), 3000);
                 let wrist_id = wrist.id();
@@ -428,7 +431,7 @@ mod sample {
                 out.push(Event::new(
                     Message::Tick(Tick {
                         t: t(ms + 3),
-                        slot,
+                        cycle,
                         state: pos,
                         wrist: Some(wrist_id),
                         scene: Some(FrameRef { camera: Camera::Scene, sequence: scene_id.sequence }),

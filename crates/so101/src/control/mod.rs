@@ -1,5 +1,5 @@
 //! The control loop: what it publishes (`Event`s on the `EventBus`, each step's `Tick`), the grid
-//! of servo slots it runs on, and teleop.
+//! of servo cycles it runs on, and teleop.
 
 mod grid;
 mod teleop;
@@ -12,16 +12,16 @@ use crate::camera::{Frame, FrameRef};
 use crate::clock::Timestamp;
 use crate::policy::Chunk;
 
-pub use grid::{Grid, Slot};
+pub use grid::{Cycle, Grid};
 pub use teleop::{run as teleop, TeleopOptions, TeleopStats};
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tick {
     pub t: Timestamp,
-    /// The servo slot whose `JointState` this tick used and in which its target was written, so
+    /// The servo cycle whose `JointState` this tick used and in which its target was written, so
     /// `state` and `action` can be recomputed from raw counts under another calibration.
-    pub slot: u32,
+    pub cycle: u32,
     pub state: Pose,
     pub wrist: Option<FrameRef>,
     pub scene: Option<FrameRef>,
@@ -68,7 +68,7 @@ pub enum Message {
 /// An event with when it happened, when we received it, and its producer's counter (contract 3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Event {
-    /// The slot index for joint state (contract 5), the kernel's frame number for a camera.
+    /// The cycle index for joint state (contract 5), the kernel's frame number for a camera.
     pub sequence: u32,
     pub log_time: Timestamp,
     pub publish_time: Timestamp,

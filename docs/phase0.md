@@ -76,7 +76,7 @@ policy; either can be clipped before it reaches the follower. So:
   fine, as long as the bias is known:
   - **Joint state:** stamped when the sync read returns. The servos sampled sometime in the
     ~1 ms round trip before that. Phase 1 stamps the midpoint of request and reply instead, which
-    bounds the error to about ±0.5 ms against a 10 ms slot.
+    bounds the error to about ±0.5 ms against a 10 ms cycle.
   - **V4L2 camera on Linux:** the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
     which the UVC driver marks as start of exposure (`ts-src-soe`). Measured for the wrist camera
     (below): exposure actually starts about 10 ms before the stamp; no correction is applied yet. Each camera model needs
@@ -87,7 +87,7 @@ policy; either can be clipped before it reaches the follower. So:
 - **Nothing may assume a camera delivers frames at its nominal rate.** The icSpring delivers
   29.35-29.8 fps, not 30, with intervals alternating between about 32.3 and 36.6 ms at any exposure
   (measured below). Numbering frames 0, 1, 2… as 33.3 ms apart drifts 0.4-1.2 s per minute. The
-  converter places frames on its 30 Hz grid by `publish_time`, nearest frame per slot; the runtime
+  converter places frames on its 30 Hz grid by `publish_time`, nearest frame per cycle; the runtime
   uses a tick's latest frame by time. Pairing a frame with joint state happens in one function.
 - Every record's **`sequence`** is a per-source counter set by the producer: the kernel's frame
   number for a camera, the producer's own count for joint state, targets and ticks.
@@ -114,17 +114,17 @@ policy; either can be clipped before it reaches the follower. So:
 
 ### 5. The servo loop keeps to its grid
 
-- Slot *n* starts at `t0 + n × period`, a fixed grid (120 Hz, see below), never one period
+- Cycle *n* starts at `t0 + n × period`, a fixed grid (120 Hz, see below), never one period
   after the previous work finished, so the loop can't drift.
-- **An overrun skips, never starts late.** If slot *n*'s work is still running when slot *n+1*
-  should start, slot *n+1* is skipped, and the loop sleeps until the first grid point after the
+- **An overrun skips, never starts late.** If cycle *n*'s work is still running when cycle *n+1*
+  should start, cycle *n+1* is skipped, and the loop sleeps until the first grid point after the
   work ends. Waking slightly late from a sleep (OS scheduling, about a quarter of ticks by 0.5 ms or
-  more in the September logs) is not an overrun: that slot runs, and its lateness is recorded.
-- **`JointState.sequence` is the slot index**, not a count of reads, so a skipped slot is a
+  more in the September logs) is not an overrun: that cycle runs, and its lateness is recorded.
+- **`JointState.sequence` is the cycle index**, not a count of reads, so a skipped cycle is a
   sequence gap in the joint stream, and the log says exactly when it happened. The 30 Hz tick runs
-  on every third or fourth slot of the same grid; if its slot is skipped, that `Tick` is skipped
+  on every third or fourth cycle of the same grid; if its cycle is skipped, that `Tick` is skipped
   too, and shows up as a gap in the tick stream.
-- Today's `Grid` (`control/grid.rs`) is already grid-based but starts a slot late when the
+- Today's `Grid` (`control/grid.rs`) is already grid-based but starts a cycle late when the
   work overruns into its window; Phase 1 changes it to this rule and moves it onto `Clock`.
 
 ### Rates, as measured
@@ -139,17 +139,17 @@ Each tick's bus work (follower read, leader read, follower write, one telemetry 
 typically and 7-8 ms at p99; about a quarter of ticks also wake more than 0.5 ms late, which is OS
 scheduling rather than the bus. Those two together explain the 14 ms p99 interval.
 
-**Decided: the servo loop runs at 120 Hz** (four slots per 30 Hz tick). Measured on the Spark
+**Decided: the servo loop runs at 120 Hz** (four cycles per 30 Hz tick). Measured on the Spark
 on 2026-11-23: `so101 teleop --hz 120` with telemetry on, arms moved by hand including fast moves,
 17,486 ticks (2.4 minutes). Bus work per tick was 3.7 ms typical and 5.7 ms p99, against an 8.3 ms
-slot: 0 overruns (the one 11.8 ms tick was the Ctrl-C that ended the run). 16% of ticks woke more
-than 0.5 ms late, which doesn't skip a slot. On the September logs, recorded on the Mac, 0.5-0.9%
+cycle: 0 overruns (the one 11.8 ms tick was the Ctrl-C that ended the run). 16% of ticks woke more
+than 0.5 ms late, which doesn't skip a cycle. On the September logs, recorded on the Mac, 0.5-0.9%
 of ticks would have overrun at 120 Hz; the Spark's USB stack and scheduler are faster. Byte log:
 `/projects/logs/hz120-20261123-133445.jsonl` on the Spark.
 
 **Measured: the wrist camera and the 120 Hz loop don't disturb each other.** Same day, 90 s of
 teleop at 120 Hz with the wrist camera streaming 640x480 MJPG on the same Spark: bus work per tick
-4.5 ms typical, 6.8 ms p99; 2 of 10,800 ticks (0.02%) ran over the 8.3 ms slot (the current
+4.5 ms typical, 6.8 ms p99; 2 of 10,800 ticks (0.02%) ran over the 8.3 ms cycle (the current
 `Ticker` didn't count them as overruns; Phase 1's skip rule will). The camera delivered 2,709
 frames at 29.8 fps with no sequence gaps and no interval over 1.5x the median (intervals 32.3 ms
 typical, 36.6 ms at most). Leader to follower lag, from cross-correlating joint velocities: pan
@@ -266,7 +266,7 @@ Export to a LeRobot dataset is then a straight copy, given one calibration (cont
 | **Slow or stalled disk** | The control loop always wins: publishing never blocks it. The recorder's queues are bounded. When it falls behind it **drops camera frames first**, and logs each drop (topic and sequence range) on `/session/drops` | Some frames, never the session. Small messages have a much larger queue; only if that fills too (the disk is effectively dead) does the recorder stop, mark the log incomplete, and report it |
 | **Process crash** (error return or panic) | The MCAP writer finishes the file as it unwinds | Nothing |
 | **Kill or power loss** | The file is cut short | At most the last 1 MB chunk. `so101 session recover` rewrites the rest so Python can open it |
-| **A servo read overruns its slot** | The next slot is skipped and the loop resumes on the grid (contract 5) | One joint sample, visible as a sequence gap; the loop never drifts |
+| **A servo read overruns its cycle** | The next cycle is skipped and the loop resumes on the grid (contract 5) | One joint sample, visible as a sequence gap; the loop never drifts |
 | **Dropped camera frames** | Detected as defined in contract 3 (sequence gap, or long capture interval) | Reported per camera by the reader and the converter; never silently passed through |
 | **Mismatched model and stats** | The policy refuses to load (contract 4) | A failed start instead of a wrong-but-plausible run |
 | **The arm is recalibrated** | New logs carry the new calibration and its hash; raw ticks are logged throughout (contract 6) | Nothing lost: old logs can be recomputed; the converter won't silently mix them |
@@ -282,21 +282,21 @@ Only what Phases 0-2 write (the runtime on fakes, then the policy):
 - `JointState {t, pose[6], ticks[6]}`, 120 Hz: one sync read of all six positions, as a pose and
   as the raw servo ticks behind it (contract 6)
 - `ActuatorStatus {t, joint, velocity, load, voltage, temperature, current, faults[]}`: one per
-  read. The driver reads one actuator per slot, rotating, so each joint comes round with its own
+  read. The driver reads one actuator per cycle, rotating, so each joint comes round with its own
   timestamp. A combined six-joint message would invent readings or blur their times. `faults` are
   decoded by the driver (overheat, overload, ...), so nothing above it reads a servo register
 - `JointTarget {t, pose[6], source, ticks[6]}`, 30 Hz. `source` is teleop, script, or a policy ID;
   `ticks` are the raw goals actually written
 - Frame: `foxglove.CompressedImage {timestamp = t_capture, frame_id = camera, data = jpeg, format = "jpeg"}`,
   so Foxglove plays both cameras as video. A frame's identity is `(camera, sequence)`
-- `Tick {t, slot, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`,
-  30 Hz (contract 2). `slot` is the servo slot whose `JointState` it used and in which its target
+- `Tick {t, cycle, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`,
+  30 Hz (contract 2). `cycle` is the servo cycle whose `JointState` it used and in which its target
   was written, so a tick can be recomputed from raw ticks under another calibration
 - `Chunk {t_obs, period, k, actions[k][6], checkpoint_id}`: every predicted chunk, with the time
   between its actions stated rather than assumed
 - `RecorderDrop {topic, first_sequence, last_sequence, count}`: what the recorder dropped
 
-Arriving later, each with its phase: `RunStep`, `StepResult`, `CheckResult` and `Command` (Phase 3),
+Arriving later, each with its phase: `RunSubtask`, `SubtaskResult`, `CheckResult` and `Command` (Phase 3),
 episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase 9).
 
 ## Clock and traits
@@ -347,7 +347,7 @@ crates/so101/              one crate, one folder per thing
                                STS3215 servos and their registers (servos.rs); the UART; simulated servos
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
-  src/control/                 the loop: grid (slots), Tick, events, bus, teleop
+  src/control/                 the loop: grid (cycles), Tick, events, bus, teleop
   src/session/                 a recorded session: mod.rs (the header, the end-of-session record,
                                errors), wire.rs (protobuf conversions generated from a field map, each
                                message's topic and schema), recorder.rs, reader.rs (open, drops,

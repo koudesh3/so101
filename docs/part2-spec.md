@@ -9,7 +9,7 @@ Part 2 builds a single-arm robot that solves 4-disc Tower of Hanoi, 15 moves in 
 What the post shows, each as a measured result on this task:
 
 1. How ACT learns one skill: success at 25, 50, and 100 demos.
-2. The product rule: predicted chain success from per-step rates against measured.
+2. The product rule: predicted chain success from per-subtask rates against measured.
 3. What retries and seam data buy.
 4. Last and optional: a deterministic sequencer against an Opus sequencer.
 
@@ -60,9 +60,9 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 | `arm/` (leader) | The leader as a target source | the leader `Arm`, replay | Leader joints | JointTarget |
 | `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
 | `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |
-| `control/` | The loop: grid of slots, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
-| `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunStep, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |
-| `runtime/` | Step runner and sequencer (Phase 3) | hanoi_fsm; opus_agent in the last phase | RunStep, CheckResult, Task goal, scene Frame | StepResult, Command |
+| `control/` | The loop: servo cycles on a grid, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
+| `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunSubtask, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |
+| `runtime/` | Subtask runner and sequencer (Phase 3) | hanoi_fsm; opus_agent in the last phase | RunSubtask, CheckResult, Task goal, scene Frame | SubtaskResult, Command |
 | `session/` | A recorded session: protobuf in MCAP | recorder, reader, recover, export | Every Event | Log store, versioned datasets |
 | `ml/export` | Offline script | — | Checkpoint, logged observations | act.onnx, export parity report |
 
@@ -147,9 +147,9 @@ Each boundary is a versioned message type, so any layer can be swapped or replay
 | | In | JointTarget {t, pos[6], source} | 30 Hz | source = teleop, script, or policy ID |
 | Cameras → recorder, policy | Out | Frame {t_capture, t_receive, cam_id, jpeg} | 30 fps | Both timestamps, so you can measure staleness |
 | Policy | In → out | Obs {t, wrist_frame, joints, skill, args} → Chunk {t_obs, period, k, actions[k][6], checkpoint_id} | Once per n_action_steps ticks | In-process via ort; the action queue in Rust pops one action per tick; every chunk is logged |
-| Step runner | In → out | RunStep {skill, args, timeout, max_tries} → StepResult {outcome, tries, duration, checks_fired} | Per step | outcome: done, retryable, fatal, timeout |
+| Subtask runner | In → out | RunSubtask {skill, args, timeout, max_tries} → SubtaskResult {outcome, tries, duration, checks_fired} | Per subtask | outcome: done, retryable, fatal, timeout |
 | Checks | Out | CheckResult {name, value, confidence, source_frame_ids} | 5–10 Hz | Deterministic first; frame IDs let any check be re-run offline |
-| Skill catalog | Sequencer → runtime | list_skills, run_step, check_scene, go_home, request_human | Per boundary | Plain Rust calls for the deterministic sequencer; an MCP server or Opus wraps the same catalog later |
+| Skill catalog | Sequencer → runtime | list_skills, run_subtask, check_scene, go_home, request_human | Per boundary | Plain Rust calls for the deterministic sequencer; an MCP server or Opus wraps the same catalog later |
 | Teleop takeover | Human → runtime | Takeover {reason} → episode recorded with origin = takeover | On demand | Becomes seam or correction data |
 
 ## Logging spec
@@ -163,7 +163,7 @@ Nothing gets thrown away. Every artifact is immutable, has an ID, and records th
 | Training runs | Config, dataset version, seed, SHA; L1 and KL losses, learning rate, grad norm | Every step | Local tracker (W&B offline, MLflow, or Parquet) | Small |
 | Checkpoints | Weights; optimizer state only in the latest | Every 5k steps, all kept | Safetensors | About 0.3 GB each for an 80M model in fp32, ~6 GB per 100k-step run |
 | Checkpoint probes | Predicted vs true action chunks on a fixed held-out episode set; z statistics; cross-attention maps on fixed frames | Every checkpoint | Arrays + rendered PNGs | Small |
-| Rollouts | Both camera videos, joint traces, every predicted chunk, executed targets, check outputs, step outcomes, failure class, checkpoint ID | Full rate | Same schema as teleop | Like teleop |
+| Rollouts | Both camera videos, joint traces, every predicted chunk, executed targets, check outputs, subtask outcomes, failure class, checkpoint ID | Full rate | Same schema as teleop | Like teleop |
 | Sequencer | Every decision; for Opus also prompt, image IDs, response, latency, tokens | Per call | JSONL | Small |
 | Dev notes | Daily notes, hypotheses before each run, surprises after | Daily | Markdown in the repo | — |
 
@@ -181,7 +181,7 @@ Each phase leaves a working system and produces one dev-log result. Later phases
 - **Phase 2: policy artifact.** Build ONNX Runtime with CUDA on the Spark from source; no prebuilt aarch64 GPU binaries existed as of April 2026. Train a wrist-camera ACT on the public lerobot/svla_so101_pickplace dataset, export it, and load it with ort.
   - Exit: export parity passes on 100 observations, compared in degrees in and degrees out, with normalization wrapped into the exported graph (the spike's graph left it outside; see [phase0.md](phase0.md), contract 4); the image boundary test passes (one log through the runtime path, JPEG decoded in Rust, and the training path, MP4 decoded in Python: channel order, value range and size match exactly, and the pixel difference stays within a set tolerance); inference latency is logged; open-loop replay of a held-out episode through the Rust runtime matches PyTorch's predictions.
   - Dev log: the Rust/Python boundary and what a policy file is.
-- **Phase 3: deterministic solver on a fake world.** The skill catalog, step runner, and hanoi_fsm, run against stub skills and checks with set success rates; fault injection for a missed grasp, a dropped disc, and a disc on the wrong peg.
+- **Phase 3: deterministic solver on a fake world.** The skill catalog, subtask runner, and hanoi_fsm, run against stub skills and checks with set success rates; fault injection for a missed grasp, a dropped disc, and a disc on the wrong peg.
   - Transit waypoints are stored as targets (what was commanded), not as where the follower ended up, and "arrived" uses a per-joint tolerance from measurement (within 0.7° at P 32 in a reaching pose).
   - Exit: a 4-disc solve end to end on stubs; each injected fault produces the specified retry, stop, or takeover request; Monte Carlo runs match the success budget's predictions.
 - **Stop here until the hardware is set up.**
@@ -191,12 +191,12 @@ Each phase leaves a working system and produces one dev-log result. Later phases
 - **Phase 5: first skill, grasp.** Train at 25, 50, and 100 demos and probe every checkpoint; export each checkpoint and run it in Rust.
   - Exit: ≥ 85% first-try over 40 trials across all disc sizes and stack heights.
   - Dev log: the learning curve and what the checkpoint probes show.
-- **Phase 6: second skill, checks, retries.** `place`, the done and failure checks on the scene camera, and retries, with the phase 3 step runner now calling real skills.
+- **Phase 6: second skill, checks, retries.** `place`, the done and failure checks on the scene camera, and retries, with the phase 3 subtask runner now calling real skills.
   - Exit: one full move (transit, grasp, transit, place) at ≥ 90% with retries over 40 trials; check accuracy measured against hand labels.
   - Dev log: first-try vs with-retry success; how often the done check is wrong.
 - **Phase 7: 3-disc Hanoi (7 moves), deterministic sequencer.**
   - Exit: 20 full runs, logged.
-  - Dev log: predicted chain success (product of per-step rates) against measured; where the seams cost.
+  - Dev log: predicted chain success (product of per-subtask rates) against measured; where the seams cost.
 - **Phase 8: seam data, then 4-disc Hanoi (15 moves, ~5 min).** One round of takeover data at failed seams, retrain, then run 4 discs.
   - Exit: 20 full 4-disc runs.
   - Dev log: before and after seam data; the 5-minute result.

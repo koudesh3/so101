@@ -1,5 +1,5 @@
-//! The servo loop's grid (contract 5): slot k starts at start + k * period, not one period after
-//! the previous slot's work finished. A slot that would start late is skipped.
+//! The servo loop's grid (contract 5): cycle k starts at start + k * period, not one period after
+//! the previous cycle's work finished. A cycle that would start late is skipped.
 
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ pub struct Grid {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Slot {
+pub struct Cycle {
     pub index: u64,
     pub lateness: Duration,
     // Grid points skipped because the previous work ran long.
@@ -27,7 +27,7 @@ impl Grid {
         self.period
     }
 
-    pub fn wait(&mut self) -> Slot {
+    pub fn wait(&mut self) -> Cycle {
         let now = Instant::now();
         let mut index = self.next_index;
         let mut deadline = self.start + self.period * index as u32;
@@ -44,7 +44,7 @@ impl Grid {
             std::thread::sleep(deadline - now);
         }
         self.next_index = index + 1;
-        Slot { index, lateness: Instant::now().saturating_duration_since(deadline), skipped }
+        Cycle { index, lateness: Instant::now().saturating_duration_since(deadline), skipped }
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -59,7 +59,7 @@ mod tests {
     // Known flaky under heavy parallel load (seen once on 2026-11-22, 15/15 passes alone): it
     // asserts real OS wake-up lateness under 3 ms.
     #[test]
-    fn slots_land_on_the_grid_not_after_the_work() {
+    fn cycles_land_on_the_grid_not_after_the_work() {
         let mut t = Grid::new(200.0);
         let t0 = Instant::now();
         for _ in 0..20 {

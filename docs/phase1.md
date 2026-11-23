@@ -14,14 +14,15 @@ below it and gets observations back. The code follows the same layers.
 
 | Loop | Rate | Decides | Hands down | Gets back | Code |
 |---|---|---|---|---|---|
-| Task | per Hanoi move, ~0.05 Hz | which disc goes where next | a step | step results | `runtime/` (Phase 3) |
-| Step | 2-10 s | run a skill until its check says done or failed | a policy or script | check results | skills, checks (Phase 3) |
-| Chunk | each inference, ~1-3 s | the next stretch of motion | a `Chunk` of poses | an `Obs` | `policy/` (Phase 2) and the action queue |
+| Task | per Hanoi move, ~0.05 Hz | which disc goes where next | a subtask | subtask results | `runtime/` (Phase 3) |
+| Subtask | 2-10 s | run a skill (grasp, place, transit) until its check says done or failed | a policy or script | check results | skills, checks (Phase 3) |
+| Action chunk | each inference, ~1-3 s | the next stretch of motion | a `Chunk` of poses | an `Obs` | `policy/` (Phase 2) and the action queue |
 | **Tick** | **30 Hz** (the camera) | this tick's target, within safety | a target `Pose` | `JointState`, latest `Frame` | `control/` |
-| **Slot** | **120 Hz** (the servo grid) | the goal to write now, stall holds, slew limit | goal `Counts` | `Counts`, faults | `control/` and `arm/` |
-| Servo firmware | ~kHz, in each STS3215 | motor current | — | encoder | not ours; only its gains (contract 8) |
+| **Servo cycle** | **120 Hz** (the grid) | the goal to write now, stall holds, slew limit | goal `Counts` | `Counts`, faults | `control/` and `arm/` |
 
-Phase 1 builds the two loops in bold, and the action queue at the boundary with the chunk loop.
+Phase 1 builds the two loops in bold, and the action queue at the boundary with the action chunk
+loop. Below the servo cycle, each STS3215 runs its own position loop in firmware; it isn't ours,
+and only its gains are (contract 8).
 
 **Rules.**
 1. **A slower loop never blocks a faster one.** Inference runs on its own thread and hands chunks
@@ -30,26 +31,26 @@ Phase 1 builds the two loops in bold, and the action queue at the boundary with 
 2. **Each loop talks only to its neighbours.** The tick never sees servos (the `Arm` trait is the
    boundary, enforced by `just check`); the sequencer never sees ticks.
 3. **Safety lives at the fastest loop that can see the danger.** Stall holds and the slew limit
-   need counts and faults on every write, so they run per slot. Joint ranges are clipped per tick.
-   A wrong plan is caught by checks at the step loop.
-4. **Setpoints go down and observations come up, in glossary types:** step → `Chunk` → target
+   need counts and faults on every write, so they run per cycle. Joint ranges are clipped per tick.
+   A wrong plan is caught by checks at the subtask loop.
+4. **Setpoints go down and observations come up, in glossary types:** subtask → `Chunk` → target
    `Pose` → goal `Counts`; `Counts` → `JointState` → `Tick` and `Obs` → check result.
 
 ## Decisions
 
-- **One thread runs both slots and ticks.** The grid runs at 120 Hz; every 4th slot is also a tick
+- **One thread runs both cycles and ticks.** The grid runs at 120 Hz; every 4th cycle is also a tick
   (120 / 30). One thread keeps the timing deterministic, needs no locks, and lets every timing test
-  run on a replayed `Clock`. Two threads would only earn their keep if tick work overran a slot;
+  run on a replayed `Clock`. Two threads would only earn their keep if tick work overran a cycle;
   inference is already off-thread.
-- **Slots step linearly toward the tick's target.** A tick sets a target; the four slots up to the
+- **Cycles step linearly toward the tick's target.** A tick sets a target; the four cycles up to the
   next tick move the goal in equal steps from the previous target to the new one. Smoother than
-  holding the target for four slots (LeRobot's behaviour), and it means the teleop lead is
+  holding the target for four cycles (LeRobot's behaviour), and it means the teleop lead is
   extrapolated 30 times a second and smoothed, not 120 times a second on noisy velocity: the
   measured cause of target jitter (phase0.md).
 - **Ensembling, when used, lives in the action queue at the tick**, the only place that sees
   overlapping chunks. The default stays the spec's: play `n_action_steps` of each chunk, ensembling
   off, as `lerobot-eval` does.
-- **`Tick.clipped` covers its four slots:** a joint is listed if any of its slots was clipped,
+- **`Tick.clipped` covers its four cycles:** a joint is listed if any of its cycles was clipped,
   with the most severe reason (`Stall`, then `Step`, then `Range`).
 
 ## What gets built
@@ -58,24 +59,24 @@ All in `crates/so101/src/control/` unless noted. Every part works through the `A
 runs on `ServoArm` and the mock arm alike.
 
 **The grid, on `Clock`.** `Grid` takes its time from the `Clock` port instead of `Instant`, and
-follows contract 5: slot *n* starts at `t0 + n × period`; an overrun skips the next slot and the
-loop resumes on the grid. Slot index is `JointState`'s sequence, so a skipped slot is a gap in the
+follows contract 5: cycle *n* starts at `t0 + n × period`; an overrun skips the next cycle and the
+loop resumes on the grid. Cycle index is `JointState`'s sequence, so a skipped cycle is a gap in the
 log. On a `ReplayClock` the timing tests become exact, which retires the two flaky tests (the
 grid's wake-up test and teleop's tremor test both assert real OS scheduling today).
 
-**The slot step** (120 Hz): read the follower's `JointState` and faults; update the stall watch
-(teleop's logic today, unchanged); compute this slot's goal by stepping toward the tick's target;
-apply the slew limit and any hold; write the goal; on one slot in four, read one actuator's
+**The cycle step** (120 Hz): read the follower's `JointState` and faults; update the stall watch
+(teleop's logic today, unchanged); compute this cycle's goal by stepping toward the tick's target;
+apply the slew limit and any hold; write the goal; on one cycle in four, read one actuator's
 `ActuatorStatus`, rotating. Publishes `JointState`, the follower's `JointTarget`, and
 `ActuatorStatus` when read.
 
-**The tick** (30 Hz, every 4th slot): take the latest `JointState` and the latest `Frame` from each
+**The tick** (30 Hz, every 4th cycle): take the latest `JointState` and the latest `Frame` from each
 camera; ask the active source for a target; clip it to the joint ranges; hand it to the next four
-slots; publish a `Tick` with what was requested, what was sent and why they differ.
+cycles; publish a `Tick` with what was requested, what was sent and why they differ.
 
 **Sources**, one interface: given the tick's observation, return a target `Pose` or nothing.
 - **Teleop:** reads the leader `Arm` and returns its pose plus the lead. The lead's velocity is
-  filtered (it multiplied target jitter 1.2-2.1× when computed per slot), and the lead belongs here,
+  filtered (it multiplied target jitter 1.2-2.1× when computed per cycle), and the lead belongs here,
   before clipping, never after (contract 2).
 - **Script:** a list of waypoints, stored as targets (what was commanded), each with a duration.
 - **Action queue:** turns `Chunk`s into one target per tick. Asks for the next chunk early enough
@@ -91,11 +92,11 @@ Takeover from the leader (Phase 4) is a mux switch.
 | Check | Loop | Action |
 |---|---|---|
 | Joint range | tick | clip the target (`Limit::Range`) |
-| Slew limit | slot | limit each goal's step from the last (`Limit::Step`) |
-| Stall or overload | slot | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
-| Actuator health | slot | act on the median of each joint's last 5 temperature and voltage readings (single readings are sometimes junk); count impossible values (contract 8) |
-| E-stop | slot | torque off on the next slot; the session records why |
-| Follower failing | slot | after 0.5 s of failed slots, torque off and stop (today's fail-safe) |
+| Slew limit | cycle | limit each goal's step from the last (`Limit::Step`) |
+| Stall or overload | cycle | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
+| Actuator health | cycle | act on the median of each joint's last 5 temperature and voltage readings (single readings are sometimes junk); count impossible values (contract 8) |
+| E-stop | cycle | torque off on the next cycle; the session records why |
+| Follower failing | cycle | after 0.5 s of failed cycles, torque off and stop (today's fail-safe) |
 
 **Shake measure.** Per joint, the follower's motion in the 5-30 Hz band against its target's in
 the same band, from the 120 Hz `JointState` stream. Follower moving more than it was told to is
@@ -121,15 +122,15 @@ defaults to 120 Hz and the gripper to LeRobot's 50% torque.
 
 ## Tests (written first)
 
-- Grid on a `ReplayClock`: slots land on the grid; an overrun skips exactly the next slot and shows
-  as a sequence gap; ticks fall on every 4th slot.
-- Stepping: four slots move the goal in equal steps from one target to the next; a skipped slot
+- Grid on a `ReplayClock`: cycles land on the grid; an overrun skips exactly the next cycle and shows
+  as a sequence gap; ticks fall on every 4th cycle.
+- Stepping: four cycles move the goal in equal steps from one target to the next; a skipped cycle
   doesn't change where the next tick's target lands.
 - Action queue: `n_action_steps` of each chunk, in order; the next chunk is requested in time; a
   late chunk holds the last target; ensembling, when on, matches LeRobot's weights.
 - Mux: one active source; a switch starts from the present pose; `Tick.source` changes on that tick.
 - Safety: range, slew and stall each clip and report the right `Limit`; the most severe wins in
-  `Tick.clipped`; e-stop turns torque off within one slot; the health filter ignores single junk
+  `Tick.clipped`; e-stop turns torque off within one cycle; the health filter ignores single junk
   readings and trips on real ones.
 - One conformance suite for the `Arm` trait, passed by `ServoArm` on `SimulatedServos` and by the
   mock arm.

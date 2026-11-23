@@ -43,7 +43,7 @@ message Source {
   string name = 2;
 }
 
-// In the servo loop the record's sequence is the slot index (contract 5).
+// In the servo loop the record's sequence is the cycle index (contract 5).
 message JointState {
   uint64 t_ns = 1;
   repeated float pose = 2;
@@ -67,7 +67,7 @@ enum Fault {
   OVERLOAD = 6;
 }
 
-// One joint's actuator, read one joint per slot in rotation. Optional because 0 is a valid reading.
+// One joint's actuator, read one joint per cycle in rotation. Optional because 0 is a valid reading.
 message ActuatorStatus {
   uint64 t_ns = 1;
   Joint joint = 2;
@@ -87,7 +87,7 @@ message FrameRef {
 // What the control loop used at one tick (contract 2).
 message Tick {
   uint64 t_ns = 1;
-  uint32 slot = 2;  // the servo slot whose JointState this tick used and in which its target was written
+  uint32 cycle = 2;  // the servo cycle whose JointState this tick used and in which its target was written
   repeated float state = 3;
   FrameRef wrist = 4;
   FrameRef scene = 5;
