@@ -4,12 +4,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+use so101::arm::bus::Error;
+use so101::arm::bus::ServoBus;
 use so101::arm::calibration::{self, Calibration};
-use so101::arm::servo::bus::ServoBus;
-use so101::arm::servo::registers;
-use so101::arm::servo::sim::{SimClock, SimulatedBus};
-use so101::arm::servo::transport::{read_log, ByteLog, Recorder};
-use so101::arm::servo::Error;
+use so101::arm::registers;
+use so101::arm::serial::{read_log, ByteLog, Recorder};
+use so101::arm::sim::{SimClock, SimulatedBus};
 use so101::arm::teleop::{self, TeleopOptions};
 use so101::arm::Arm;
 use so101::arm::{ActuatorStatus, Counts, Joint, IDS, JOINT_COUNT};
@@ -282,7 +282,7 @@ fn actuator_status_decodes_every_field_in_one_read() {
 
 #[test]
 fn a_blocked_gripper_shows_load_and_no_speed() {
-    use so101::arm::servo::sim::demo;
+    use so101::arm::sim::demo;
     let clock = SimClock::manual();
     let sim = SimulatedBus::new("follower", &IDS, clock.clone()).with_obstacle(demo::object());
     let mut arm = sim_arm(sim, "follower");
@@ -343,7 +343,7 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
     // 200 Hz the command may move 8000 counts/s, so the follower should run at
     // its own top speed (3100 counts/s in the sim), not crawl behind a goal
     // pinned 40 counts ahead of it.
-    let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 2848.0 } else { 2048.0 }));
+    let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 2848.0 } else { 2048.0 }));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
     let options = TeleopOptions {
@@ -368,7 +368,7 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
     // 1600; after 0.7 s the leader opens to 2600. The capped gripper overloads.
     // Teleop must keep ticking, hold the gripper where it stopped, then follow
     // the leader open again.
-    let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, t: f64| {
+    let hand: so101::arm::sim::Hand = Arc::new(|id: u8, t: f64| {
         Some(if id == 6 {
             if t < 0.7 {
                 1600.0
@@ -379,7 +379,7 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
             2048.0
         })
     });
-    let object: so101::arm::servo::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
+    let object: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(object), "follower");
     follower.configure_follower().unwrap();
@@ -432,7 +432,7 @@ fn lead_closes_the_gap_to_a_moving_leader() {
     // Leader pan sweeps at a constant 1200 counts/s. Commanding 60 ms ahead
     // should leave the follower closer to the leader than no lead does.
     let gap = |lead_ms: u64| {
-        let hand: so101::arm::servo::sim::Hand =
+        let hand: so101::arm::sim::Hand =
             Arc::new(|id: u8, t: f64| Some(if id == 1 { 1200.0 + 1200.0 * t.min(1.5) } else { 2048.0 }));
         let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
         let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
@@ -492,8 +492,8 @@ impl SlowEepromAcks {
     }
 }
 
-impl so101::arm::servo::transport::Transport for SlowEepromAcks {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::servo::transport::TransportError> {
+impl so101::arm::serial::Transport for SlowEepromAcks {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
         let now = std::time::Instant::now();
         self.inner.send(bytes)?;
         let (id, instr, addr) = (bytes[2], bytes[4], bytes[5]);
@@ -503,7 +503,7 @@ impl so101::arm::servo::transport::Transport for SlowEepromAcks {
             out.push(b[0]);
         }
         let mut rest = &out[..];
-        while let Ok((frame, used)) = so101::arm::servo::protocol::parse_frame(rest) {
+        while let Ok((frame, used)) = so101::arm::bus::parse_packet(rest) {
             let busy = self.busy_until.get(&frame.id).copied().filter(|t| *t > now);
             self.in_flight.push((busy.unwrap_or(now + Self::TURNAROUND), rest[..used].to_vec()));
             rest = &rest[used..];
@@ -520,11 +520,7 @@ impl so101::arm::servo::transport::Transport for SlowEepromAcks {
         Ok(())
     }
 
-    fn receive_exact(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
-    ) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
         let deadline = std::time::Instant::now() + timeout;
         let mut got = 0;
         while got < buf.len() {
@@ -535,7 +531,7 @@ impl so101::arm::servo::transport::Transport for SlowEepromAcks {
                     got += 1;
                 }
                 None if std::time::Instant::now() >= deadline => {
-                    return Err(so101::arm::servo::transport::TransportError::Timeout { wanted: buf.len(), got })
+                    return Err(so101::arm::serial::TransportError::Timeout { wanted: buf.len(), got })
                 }
                 None => std::thread::sleep(Duration::from_micros(100)),
             }
@@ -544,7 +540,7 @@ impl so101::arm::servo::transport::Transport for SlowEepromAcks {
     }
 
     // Like a real port: only bytes that have already arrived are thrown away.
-    fn discard_input(&mut self) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
         self.land_due();
         self.arrived.clear();
         Ok(())
@@ -577,7 +573,7 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
     // trembles on wall-clock time while teleop ticks in real time, so how much tremor each tick
     // samples depends on OS wake-ups. Don't loosen the assertion to hide it.
     let spread = |lead_ms: u64| {
-        let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, t: f64| {
+        let hand: so101::arm::sim::Hand = Arc::new(|id: u8, t: f64| {
             Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 })
         });
         let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
@@ -606,8 +602,8 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     // Pan is blocked at 2000 while the leader asks for 1900: a 100-tick gap,
     // well under saturation, so the servo never raises a flag. Teleop must
     // notice the stall by itself and hold at the contact point.
-    let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 1900.0 } else { 2048.0 }));
-    let wall: so101::arm::servo::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 1).then_some(2000.0));
+    let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 1900.0 } else { 2048.0 }));
+    let wall: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 1).then_some(2000.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(wall), "follower");
     let options = TeleopOptions {
@@ -636,25 +632,21 @@ struct DiesAfter {
     sends_left: usize,
 }
 
-impl so101::arm::servo::transport::Transport for DiesAfter {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::servo::transport::TransportError> {
+impl so101::arm::serial::Transport for DiesAfter {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
         if self.sends_left == 0 {
             return Ok(());
         }
         self.sends_left -= 1;
         self.inner.send(bytes)
     }
-    fn receive_exact(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
-    ) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
         if self.sends_left == 0 {
-            return Err(so101::arm::servo::transport::TransportError::Timeout { wanted: buf.len(), got: 0 });
+            return Err(so101::arm::serial::TransportError::Timeout { wanted: buf.len(), got: 0 });
         }
         self.inner.receive_exact(buf, timeout)
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -692,15 +684,11 @@ struct StaleGripperFlags {
     flagged_left: usize,
 }
 
-impl so101::arm::servo::transport::Transport for StaleGripperFlags {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::servo::transport::TransportError> {
+impl so101::arm::serial::Transport for StaleGripperFlags {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
-    ) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if self.flagged_left > 0 && buf.len() >= 6 && buf[2] == 6 {
             self.flagged_left -= 1;
@@ -710,7 +698,7 @@ impl so101::arm::servo::transport::Transport for StaleGripperFlags {
         }
         Ok(())
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -723,7 +711,7 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
     // Hardware, grab1.jsonl: overcurrent left over from the previous run showed
     // in the first 0.09 s, the first tick latched a hold, and the gripper stayed
     // shut for the whole run. A free gripper must follow the leader open.
-    let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 6 { 2600.0 } else { 2048.0 }));
+    let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 6 { 2600.0 } else { 2048.0 }));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     let stale = StaleGripperFlags { inner: SimulatedBus::arm("follower"), flagged_left: 8 };
     let mut follower = Arm::new("follower", ServoBus::new(Box::new(stale)), Calibration::identity("follower"));
@@ -752,15 +740,11 @@ struct GripperFlagWindow {
     to: usize,
 }
 
-impl so101::arm::servo::transport::Transport for GripperFlagWindow {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::servo::transport::TransportError> {
+impl so101::arm::serial::Transport for GripperFlagWindow {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(
-        &mut self,
-        buf: &mut [u8],
-        timeout: Duration,
-    ) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if buf.len() >= 6 && buf[2] == 6 {
             self.seen += 1;
@@ -772,7 +756,7 @@ impl so101::arm::servo::transport::Transport for GripperFlagWindow {
         }
         Ok(())
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::servo::transport::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -786,7 +770,7 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
     // overload flag on; opening the leader released the hold, the flag was still
     // set for a few ticks while the jaws had not started moving, and a second
     // hold latched ~30 counts open. It stayed until the leader closed again.
-    let hand: so101::arm::servo::sim::Hand = Arc::new(|id: u8, t: f64| {
+    let hand: so101::arm::sim::Hand = Arc::new(|id: u8, t: f64| {
         Some(if id == 6 {
             if t < 0.6 {
                 1600.0
@@ -797,7 +781,7 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
             2048.0
         })
     });
-    let object: so101::arm::servo::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
+    let object: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
     let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
     // Flag on from the grip until ~0.15 s after the leader opens.
     let window =

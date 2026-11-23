@@ -5,9 +5,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::arm::servo::protocol::{encode_status, parse_frame, Instruction, ParseError, ServoError, BROADCAST_ID};
-use crate::arm::servo::registers::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
-use crate::arm::servo::transport::{Transport, TransportError};
+use crate::arm::bus::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
+use crate::arm::registers::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
+use crate::arm::serial::{Transport, TransportError};
 use crate::arm::IDS;
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
@@ -353,7 +353,7 @@ impl Transport for SimulatedBus {
     fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
         self.pending_input.extend_from_slice(bytes);
         loop {
-            match parse_frame(&self.pending_input) {
+            match parse_packet(&self.pending_input) {
                 Ok((frame, used)) => {
                     self.pending_input.drain(..used);
                     if let Some(instr) = frame.instruction() {

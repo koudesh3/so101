@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::arm::servo::error::{Error, Result};
-use crate::arm::servo::protocol::ServoError;
+use crate::arm::bus::ServoError;
+use crate::arm::bus::{Error, Result};
 use crate::arm::{Arm, Counts, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
 use crate::control::grid::Grid;
 use crate::{ArmRole, Clip, Event, Limit, Message, MonotonicClock, Tick, Timestamp};

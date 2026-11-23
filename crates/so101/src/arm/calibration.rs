@@ -7,8 +7,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::arm::servo::error::{Error, Result};
-use crate::arm::servo::registers::{CENTER_COUNT, COUNTS_PER_TURN};
+use crate::arm::bus::{Error, Result};
+use crate::arm::registers::{CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::{Arm, Counts, Joint, Pose, Unit, JOINT_COUNT};
 use crate::control::grid::Grid;
 
@@ -238,7 +238,7 @@ pub fn check_centred(sweep: &Sweep) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arm::servo::registers::CENTER_COUNT;
+    use crate::arm::registers::CENTER_COUNT;
 
     fn cal() -> JointCalibration {
         JointCalibration { homing_offset: 0, range_min: 769, range_max: 3156 }

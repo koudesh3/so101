@@ -341,9 +341,9 @@ proto/                     shared by every language in the repo
   foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
 crates/so101/              one crate, one folder per thing
-  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, calibration,
-                               driver (the SO-101 on its servo bus), servo/ (STS3215 protocol,
-                               registers, bus, transport, simulator); Part 1's teleop until Phase 1
+  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus and `Arm` (mod.rs),
+                               calibration, the STS3215 servo bus (bus.rs) and its register map,
+                               the serial port, a simulator; Part 1's teleop until Phase 1
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
   src/control/                 the loop: grid (slots), Tick, events, bus

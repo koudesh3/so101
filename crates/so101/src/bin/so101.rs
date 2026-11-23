@@ -4,11 +4,11 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 
+use so101::arm::bus::ServoBus;
+use so101::arm::bus::{Error, Result};
 use so101::arm::calibration::{self, Calibration};
-use so101::arm::servo::bus::ServoBus;
-use so101::arm::servo::sim::{demo, SimulatedBus};
-use so101::arm::servo::transport::{ByteLog, Recorder, SerialTransport, Transport};
-use so101::arm::servo::{Error, Result};
+use so101::arm::serial::{ByteLog, Recorder, SerialTransport, Transport};
+use so101::arm::sim::{demo, SimulatedBus};
 use so101::arm::teleop::{self, TeleopOptions};
 use so101::arm::{Arm, FollowerGains};
 use so101::arm::{Pose, IDS, JOINT_COUNT};

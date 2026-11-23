@@ -52,12 +52,12 @@ At run time, the scene camera serves the sequencer and the checks, the wrist cam
 
 The system is one runtime boundary with five inputs and three outputs, in one Rust crate (`crates/so101`) organised one folder per thing: each thing's types, its hardware and its later implementations live together. A trait arrives with a thing's second implementation (a mock beside the real arm, stubs beside the ONNX policy), in that thing's folder.
 
-Hardware never appears inside the boundary: the SO-101 is reached only through `arm::driver`, which reads LeRobot's calibration file and converts servo ticks to LeRobot's units (degrees, gripper 0–100). Joint state flows from the arm to the checks and skills through the bus; the diagram leaves those lines out for readability.
+Hardware never appears inside the boundary: the SO-101 is reached only through `arm::Arm`, which reads LeRobot's calibration file and converts servo ticks to LeRobot's units (degrees, gripper 0–100). Joint state flows from the arm to the checks and skills through the bus; the diagram leaves those lines out for readability.
 
 | Folder | Holds | Implementations | Consumes | Produces |
 |---|---|---|---|---|
-| `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the arm trait (Phase 1) | `driver` on `servo/` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
-| `arm/` (leader) | The leader as a target source | leader on `servo/`, replay | Leader joints | JointTarget |
+| `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the arm trait (Phase 1) | `Arm` on `ServoBus` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
+| `arm/` (leader) | The leader as a target source | the leader `Arm`, replay | Leader joints | JointTarget |
 | `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
 | `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |
 | `control/` | The loop: grid of slots, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |

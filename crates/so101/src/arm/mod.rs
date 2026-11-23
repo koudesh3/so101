@@ -1,16 +1,16 @@
 //! The SO-101 arm: what its joints and poses are, and `Arm`, which reads and commands it over its
 //! STS3215 servo bus. Positions on `Arm` are in the calibrated coordinate; it's the only code
-//! above `servo::bus` that names registers.
+//! above `bus` that names registers.
 
+pub mod bus;
 pub mod calibration;
-pub mod servo;
+pub mod registers;
+pub mod serial;
+pub mod sim;
 pub mod teleop;
 
+use self::bus::{Error, Result, ServoBus, ServoError};
 use self::calibration::Calibration;
-use self::servo::bus::ServoBus;
-use self::servo::error::{Error, Result};
-use self::servo::protocol::ServoError;
-use self::servo::registers;
 use crate::{CheckpointId, MonotonicClock, Timestamp};
 use std::time::Duration;
 

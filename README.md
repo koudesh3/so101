@@ -7,8 +7,9 @@ written to learn how they work.
 
 ```
 crates/so101/    the Rust code, one crate, one folder per thing (src/):
-  arm/             the arm: joints, poses, calibration, `Arm`, and servo/ (the STS3215 bus underneath);
-                   Part 1's teleop loop until Phase 1 moves it into control/
+  arm/             the arm: joints, poses, calibration, `Arm`, the STS3215 servo bus and its
+                   register map, the serial port, a simulator; Part 1's teleop loop until
+                   Phase 1 moves it into control/
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop: the grid of slots, ticks, events, the event bus
@@ -41,7 +42,7 @@ One concept, one name, one home.
 | `Counts` | raw encoder readings, one per joint | `arm` |
 | `Calibration` | maps `Counts` to a `Pose`, and how to make one | `arm` |
 | `Arm` | the physical arm: read its pose, send a target, read its actuators | `arm` |
-| `ServoBus` | the STS3215 wire protocol underneath `Arm` | `arm/servo` |
+| `ServoBus` | the STS3215 wire protocol underneath `Arm` | `arm` |
 | `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
