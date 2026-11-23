@@ -72,10 +72,9 @@ policy; either can be clipped before it reaches the follower. So:
     ~1 ms round trip before that. Phase 1 stamps the midpoint of request and reply instead, which
     bounds the error to about ±0.5 ms against a 10 ms slot.
   - **V4L2 camera on Linux:** the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
-    which for UVC cameras is roughly when the frame starts arriving over USB, after exposure and
-    the camera's readout. The real capture is earlier by an unmeasured offset, possibly tens of
-    ms. With manual, fixed exposure it should be roughly constant per camera and settings, so it's
-    measured (below) and subtracted by the converter, not baked into the log.
+    which the UVC driver marks as start of exposure (`ts-src-soe`). Measured for the wrist camera
+    (below), it holds to within one frame, so no correction is applied. Each camera model needs
+    its own check: the driver's claim depends on the camera's own clock reports.
   - **Synthetic camera:** when the frame was generated (exact). **Replayed camera:** the original
     capture time, offset onto the replay's clock.
   - **Ticks and targets:** the moment the loop made the decision (exact; we are the source).
@@ -137,14 +136,20 @@ than 0.5 ms late, which doesn't skip a slot. On the September logs, recorded on 
 of ticks would have overrun at 120 Hz; the Spark's USB stack and scheduler are faster. Byte log:
 `/projects/logs/hz120-20261123-133445.jsonl` on the Spark.
 
-**Open measurement: each camera's capture offset** (contract 3). Run teleop on the Spark with both
-cameras recording at their `robot.conf` settings, and move one joint sharply from rest a few times.
-For each move, find the first frame where the arm visibly moves, and the joint-state time the move
-started: the difference, minus about half a frame period, is the camera's offset from real capture
-to `publish_time`. Repeat a few times to check it's steady (if it jitters by more than a few ms,
-that changes the alignment plan). The result goes into `data/robot.conf` next to the camera's
-settings, and from there into each log header's camera settings, so the converter applies the
-offset that was true for that session.
+**Measured: the wrist camera's capture offset is within about one frame** (contract 3). On the
+Spark, 2026-11-23, icSpring wrist camera at 640x480 MJPG, manual exposure 30 ms: the follower was
+moved by hand with torque off for 40 s while a script logged its joint positions (~730 reads/s,
+stamped at the request/reply midpoint) and the camera's kernel timestamps (`v4l2-ctl`, which reports
+them as `ts-monotonic, ts-src-soe`: start of exposure). Two clean flicks showed image motion 16-23 ms
+before the joint onset, as an accurate start-of-exposure stamp predicts. Correlating joint motion
+with frame-to-frame image change over the whole session peaked with the image +12 to +24 ms later
+than `ts + exposure/2`, but the peak is flat to about ±40 ms, because hand moves are smooth. So
+nothing is lagging by tens of ms, and the true offset is somewhere between 0 and one frame (33 ms).
+**Decision:** no correction for now; the converter uses the kernel stamp as is. If sub-frame
+alignment matters later (Phase 5 parity), measure with an abrupt event instead, such as an LED
+the camera can see, switched by a GPIO the host timestamps. The scene camera (Innomaker) still
+needs the same check once it's plugged in. The spike lives at `/projects/spikes/cam-offset` on the
+Spark (`capture.py`, `analyze.py`, `run-133941/`).
 
 ### 6. Degrees are only meaningful with their calibration
 
