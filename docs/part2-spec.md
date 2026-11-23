@@ -56,7 +56,7 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 
 | Folder | Holds | Implementations | Consumes | Produces |
 |---|---|---|---|---|
-| `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the arm trait (Phase 1) | `Arm` on its `Servos` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
+| `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the `Arm` trait | `Arm` on its `Servos` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
 | `arm/` (leader) | The leader as a target source | the leader `Arm`, replay | Leader joints | JointTarget |
 | `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
 | `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |

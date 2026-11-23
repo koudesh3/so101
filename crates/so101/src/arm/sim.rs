@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::arm::registers::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
+use crate::arm::servos::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::servos::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
 use crate::arm::uart::{Transport, TransportError};
 use crate::arm::IDS;
@@ -77,7 +77,7 @@ impl SimServo {
         for (reg, value) in FACTORY_DEFAULTS {
             s.set(reg, value);
         }
-        s.set(registers::ID, id as i32);
+        s.set(servos::ID, id as i32);
         s
     }
 
@@ -92,11 +92,11 @@ impl SimServo {
     }
 
     pub fn torque_on(&self) -> bool {
-        self.get(registers::TORQUE_ENABLE) == 1
+        self.get(servos::TORQUE_ENABLE) == 1
     }
 
     pub fn homing_offset(&self) -> i32 {
-        self.get(registers::HOMING_OFFSET)
+        self.get(servos::HOMING_OFFSET)
     }
 
     pub fn present_counts(&self) -> i32 {
@@ -107,7 +107,7 @@ impl SimServo {
         let dt = (now - self.last_update_s).max(0.0);
         self.last_update_s = now;
         if self.torque_on() {
-            let goal_actual = (self.get(registers::GOAL_POSITION) + self.homing_offset()) as f64;
+            let goal_actual = (self.get(servos::GOAL_POSITION) + self.homing_offset()) as f64;
             let error = goal_actual - self.actual_counts;
             let wanted = error * LOOP_GAIN_PER_S * dt;
             let cap = MAX_SPEED_COUNTS_PER_S * dt;
@@ -119,26 +119,26 @@ impl SimServo {
             }
             let residual = goal_actual - self.actual_counts;
             if dt > 0.0 {
-                self.set(registers::PRESENT_SPEED, ((self.actual_counts - before) / dt).round() as i32);
+                self.set(servos::PRESENT_SPEED, ((self.actual_counts - before) / dt).round() as i32);
             }
-            self.set(registers::MOVING, if residual.abs() > 2.0 { 1 } else { 0 });
+            self.set(servos::MOVING, if residual.abs() > 2.0 { 1 } else { 0 });
             // Load: what the loop pushes against (error) plus the arm's weight,
             // capped by the torque limit, like the real output stage.
             let angle = (self.actual_counts - CENTER_COUNT as f64) / COUNTS_PER_TURN as f64 * std::f64::consts::TAU;
             let gravity = GRAVITY_LOAD[(self.id as usize).saturating_sub(1).min(5)] * angle.cos();
-            let cap = self.get(registers::TORQUE_LIMIT).min(self.get(registers::MAX_TORQUE)).max(0) as f64;
+            let cap = self.get(servos::TORQUE_LIMIT).min(self.get(servos::MAX_TORQUE)).max(0) as f64;
             let moving_fast = dt > 0.0 && ((self.actual_counts - before) / dt).abs() > 0.1 * MAX_SPEED_COUNTS_PER_S;
             self.set_effort((residual * LOAD_PER_COUNT_ERROR + gravity).clamp(-cap, cap), true, dt, moving_fast);
         } else {
             if let Some(counts) = hand.and_then(|h| h(self.id, now)) {
                 self.actual_counts = counts;
             }
-            self.set(registers::PRESENT_SPEED, 0);
-            self.set(registers::MOVING, 0);
+            self.set(servos::PRESENT_SPEED, 0);
+            self.set(servos::MOVING, 0);
             self.set_effort(0.0, false, dt, false);
         }
         self.actual_counts = self.actual_counts.clamp(0.0, (COUNTS_PER_TURN - 1) as f64);
-        self.set(registers::PRESENT_POSITION, self.present_counts());
+        self.set(servos::PRESENT_POSITION, self.present_counts());
     }
 
     // `moving_fast`: a spinning motor's back-EMF limits its current, so only a
@@ -149,15 +149,15 @@ impl SimServo {
         let heat = (magnitude / 1000.0).powi(2) * 2.2;
         self.temperature_c += (heat - (self.temperature_c - AMBIENT_C) * 0.012) * dt;
         let current = if torque_on { 6.0 + magnitude * 0.9 } else { 0.0 };
-        self.set(registers::PRESENT_LOAD, load.round() as i32);
-        self.set(registers::PRESENT_CURRENT, current.round() as i32);
-        self.set(registers::PRESENT_TEMPERATURE, self.temperature_c.round() as i32);
-        self.set(registers::PRESENT_VOLTAGE, (74.0 - current / 120.0).round() as i32);
-        let cap = self.get(registers::TORQUE_LIMIT).min(self.get(registers::MAX_TORQUE)).max(1) as f64;
+        self.set(servos::PRESENT_LOAD, load.round() as i32);
+        self.set(servos::PRESENT_CURRENT, current.round() as i32);
+        self.set(servos::PRESENT_TEMPERATURE, self.temperature_c.round() as i32);
+        self.set(servos::PRESENT_VOLTAGE, (74.0 - current / 120.0).round() as i32);
+        let cap = self.get(servos::TORQUE_LIMIT).min(self.get(servos::MAX_TORQUE)).max(1) as f64;
         self.saturated_s =
             if torque_on && magnitude >= cap * 0.98 && !moving_fast { self.saturated_s + dt } else { 0.0 };
         let overloaded = self.saturated_s >= PROTECTION_TIME_S;
-        self.set(registers::STATUS, if overloaded { ServoError::OVERLOAD as i32 } else { 0 });
+        self.set(servos::STATUS, if overloaded { ServoError::OVERLOAD as i32 } else { 0 });
     }
 
     fn write_bytes(&mut self, address: u8, bytes: &[u8]) -> ServoError {
@@ -165,19 +165,19 @@ impl SimServo {
         if a + bytes.len() > self.table.len() {
             return ServoError(ServoError::ANGLE_LIMIT);
         }
-        if registers::is_eeprom_address(address) && self.get(registers::LOCK) == 1 {
+        if servos::is_eeprom_address(address) && self.get(servos::LOCK) == 1 {
             return ServoError(0);
         }
-        let is_torque_enable = address == registers::TORQUE_ENABLE.address;
-        if is_torque_enable && bytes[0] as i32 == registers::TORQUE_RECENTER {
+        let is_torque_enable = address == servos::TORQUE_ENABLE.address;
+        if is_torque_enable && bytes[0] as i32 == servos::TORQUE_RECENTER {
             let offset = self.actual_counts.round() as i32 - CENTER_COUNT;
-            self.set(registers::HOMING_OFFSET, offset.clamp(-2047, 2047));
-            self.set(registers::TORQUE_ENABLE, 0);
+            self.set(servos::HOMING_OFFSET, offset.clamp(-2047, 2047));
+            self.set(servos::TORQUE_ENABLE, 0);
             return ServoError(0);
         }
         self.table[a..a + bytes.len()].copy_from_slice(bytes);
-        if is_torque_enable && bytes[0] == 1 && self.get(registers::GOAL_POSITION) == 0 {
-            self.set(registers::GOAL_POSITION, self.present_counts());
+        if is_torque_enable && bytes[0] == 1 && self.get(servos::GOAL_POSITION) == 0 {
+            self.set(servos::GOAL_POSITION, self.present_counts());
         }
         ServoError(0)
     }
@@ -190,19 +190,19 @@ impl SimServo {
 }
 
 const FACTORY_DEFAULTS: [(Register, i32); 13] = [
-    (registers::MODEL_NUMBER, registers::STS3215_MODEL_NUMBER),
-    (registers::RESPONSE_LEVEL, 1),
-    (registers::MAX_ANGLE_LIMIT, 4095),
-    (registers::MAX_TEMPERATURE, 70),
-    (registers::MAX_TORQUE, 1000),
-    (registers::PHASE, 12),
-    (registers::P_COEFFICIENT, 32),
-    (registers::D_COEFFICIENT, 32),
-    (registers::LOCK, 1),
-    (registers::TORQUE_LIMIT, 1000),
-    (registers::PRESENT_VOLTAGE, 74),
-    (registers::PRESENT_TEMPERATURE, 31),
-    (registers::RETURN_DELAY, 0),
+    (servos::MODEL_NUMBER, servos::STS3215_MODEL_NUMBER),
+    (servos::RESPONSE_LEVEL, 1),
+    (servos::MAX_ANGLE_LIMIT, 4095),
+    (servos::MAX_TEMPERATURE, 70),
+    (servos::MAX_TORQUE, 1000),
+    (servos::PHASE, 12),
+    (servos::P_COEFFICIENT, 32),
+    (servos::D_COEFFICIENT, 32),
+    (servos::LOCK, 1),
+    (servos::TORQUE_LIMIT, 1000),
+    (servos::PRESENT_VOLTAGE, 74),
+    (servos::PRESENT_TEMPERATURE, 31),
+    (servos::RETURN_DELAY, 0),
 ];
 
 pub struct SimulatedServos {
@@ -301,7 +301,7 @@ impl SimulatedServos {
                 for t in targets {
                     if let Some(s) = self.servo(t) {
                         let bytes = s.read_bytes(*address, *count);
-                        let status = ServoError(s.get(registers::STATUS) as u8);
+                        let status = ServoError(s.get(servos::STATUS) as u8);
                         self.reply(t, status, &bytes);
                     }
                 }
@@ -312,7 +312,7 @@ impl SimulatedServos {
                 for t in targets {
                     let Some(s) = self.servo_mut(t) else { continue };
                     let err = s.write_bytes(*address, data);
-                    let answers = s.get(registers::RESPONSE_LEVEL) == 1;
+                    let answers = s.get(servos::RESPONSE_LEVEL) == 1;
                     if !broadcast && answers {
                         self.reply(t, err, &[]);
                     }
@@ -324,7 +324,7 @@ impl SimulatedServos {
                 for &t in ids {
                     if let Some(s) = self.servo(t) {
                         let bytes = s.read_bytes(*address, *count);
-                        let status = ServoError(s.get(registers::STATUS) as u8);
+                        let status = ServoError(s.get(servos::STATUS) as u8);
                         self.reply(t, status, &bytes);
                     }
                 }

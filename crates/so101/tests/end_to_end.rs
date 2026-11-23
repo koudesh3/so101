@@ -5,14 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use so101::arm::calibration::{self, Calibration};
-use so101::arm::registers;
+use so101::arm::servos;
 use so101::arm::servos::Error;
 use so101::arm::servos::Servos;
 use so101::arm::sim::{SimClock, SimulatedServos};
-use so101::arm::teleop::{self, TeleopOptions};
 use so101::arm::uart::{read_log, ByteLog, Recorder};
-use so101::arm::Arm;
+use so101::arm::ServoArm;
 use so101::arm::{ActuatorStatus, Counts, Joint, IDS, JOINT_COUNT};
+use so101::control::teleop::{self, TeleopOptions};
 use so101::{ArmRole, Event, Fault, Limit, Message, Tick};
 
 /// One teleop step's events, by what they are.
@@ -56,8 +56,8 @@ fn sim_bus(name: &str) -> Servos {
     Servos::new(Box::new(SimulatedServos::arm(name)))
 }
 
-fn sim_arm(sim: SimulatedServos, label: &str) -> Arm {
-    Arm::new(label, Servos::new(Box::new(sim)), Calibration::identity(label))
+fn sim_arm(sim: SimulatedServos, label: &str) -> ServoArm {
+    ServoArm::new(label, Servos::new(Box::new(sim)), Calibration::identity(label))
 }
 
 #[test]
@@ -79,24 +79,24 @@ fn scan_finds_exactly_six() {
 #[test]
 fn write_then_read_a_ram_register() {
     let mut servos = sim_bus("servos");
-    servos.write(3, registers::ACCELERATION, 254).unwrap();
-    assert_eq!(servos.read(3, registers::ACCELERATION).unwrap(), 254);
+    servos.write(3, servos::ACCELERATION, 254).unwrap();
+    assert_eq!(servos.read(3, servos::ACCELERATION).unwrap(), 254);
 }
 
 #[test]
 fn eeprom_write_needs_unlock() {
     let mut servos = sim_bus("servos");
-    servos.write(1, registers::P_COEFFICIENT, 16).unwrap();
-    assert_eq!(servos.read(1, registers::P_COEFFICIENT).unwrap(), 32);
-    servos.write_eeprom(1, registers::P_COEFFICIENT, 16).unwrap();
-    assert_eq!(servos.read(1, registers::P_COEFFICIENT).unwrap(), 16);
-    assert_eq!(servos.read(1, registers::LOCK).unwrap(), 1);
+    servos.write(1, servos::P_COEFFICIENT, 16).unwrap();
+    assert_eq!(servos.read(1, servos::P_COEFFICIENT).unwrap(), 32);
+    servos.write_eeprom(1, servos::P_COEFFICIENT, 16).unwrap();
+    assert_eq!(servos.read(1, servos::P_COEFFICIENT).unwrap(), 16);
+    assert_eq!(servos.read(1, servos::LOCK).unwrap(), 1);
 }
 
 #[test]
 fn read_only_register_is_refused_before_touching_the_wire() {
     let mut servos = sim_bus("servos");
-    assert!(matches!(servos.write(1, registers::PRESENT_POSITION, 0), Err(Error::Refused(_))));
+    assert!(matches!(servos.write(1, servos::PRESENT_POSITION, 0), Err(Error::Refused(_))));
 }
 
 #[test]
@@ -104,17 +104,17 @@ fn servo_tracks_goal_within_speed_limit() {
     let clock = SimClock::manual();
     let sim = SimulatedServos::new("servos", &[1], clock.clone());
     let mut servos = Servos::new(Box::new(sim));
-    servos.write(1, registers::TORQUE_ENABLE, 1).unwrap();
-    servos.write(1, registers::GOAL_POSITION, 3048).unwrap();
+    servos.write(1, servos::TORQUE_ENABLE, 1).unwrap();
+    servos.write(1, servos::GOAL_POSITION, 3048).unwrap();
 
     clock.advance(Duration::from_millis(100));
-    let after_100ms = servos.read(1, registers::PRESENT_POSITION).unwrap();
+    let after_100ms = servos.read(1, servos::PRESENT_POSITION).unwrap();
     assert!(after_100ms > 2048 && after_100ms <= 2048 + 310, "{after_100ms}");
 
     clock.advance(Duration::from_secs(2));
-    let settled = servos.read(1, registers::PRESENT_POSITION).unwrap();
+    let settled = servos.read(1, servos::PRESENT_POSITION).unwrap();
     assert!((settled - 3048).abs() <= 2, "{settled}");
-    assert_eq!(servos.read(1, registers::MOVING).unwrap(), 0);
+    assert_eq!(servos.read(1, servos::MOVING).unwrap(), 0);
 }
 
 #[test]
@@ -122,20 +122,20 @@ fn sync_read_returns_in_id_order_and_fails_on_a_missing_servo() {
     let mut sim = SimulatedServos::arm("servos");
     sim.servo_mut(4).unwrap().actual_counts = 1000.0;
     let mut servos = Servos::new(Box::new(sim));
-    let v = servos.sync_read(&[1, 4, 6], registers::PRESENT_POSITION).unwrap();
+    let v = servos.sync_read(&[1, 4, 6], servos::PRESENT_POSITION).unwrap();
     assert_eq!(v, vec![2048, 1000, 2048]);
 
     let mut sim = SimulatedServos::arm("servos");
     sim.silenced_ids.push(3);
     let mut servos = Servos::new(Box::new(sim));
-    let err = servos.sync_read(&IDS, registers::PRESENT_POSITION).unwrap_err();
+    let err = servos.sync_read(&IDS, servos::PRESENT_POSITION).unwrap_err();
     assert!(matches!(err, Error::WrongId { expected: 3, got: 4 }), "{err}");
 }
 
 #[test]
 fn check_present_rejects_a_wrong_model() {
     let mut sim = SimulatedServos::arm("servos");
-    sim.servo_mut(2).unwrap().set(registers::MODEL_NUMBER, 1234);
+    sim.servo_mut(2).unwrap().set(servos::MODEL_NUMBER, 1234);
     let mut arm = sim_arm(sim, "a");
     let err = arm.check_present().unwrap_err();
     assert!(matches!(err, Error::UnexpectedModel { id: 2, model: 1234 }), "{err}");
@@ -182,13 +182,14 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
 
     let leader_sim = Recorder::new(SimulatedServos::waving_arm("leader"), "leader", log.clone());
     let follower_sim = Recorder::new(SimulatedServos::arm("follower"), "follower", log.clone());
-    let mut leader = Arm::new("leader", Servos::new(Box::new(leader_sim)), Calibration::identity("leader"));
-    let mut follower = Arm::new("follower", Servos::new(Box::new(follower_sim)), Calibration::identity("follower"));
+    let mut leader = ServoArm::new("leader", Servos::new(Box::new(leader_sim)), Calibration::identity("leader"));
+    let mut follower =
+        ServoArm::new("follower", Servos::new(Box::new(follower_sim)), Calibration::identity("follower"));
 
     leader.check_present().unwrap();
     follower.check_present().unwrap();
     follower.configure_follower().unwrap();
-    assert_eq!(follower.read_register(Joint::ShoulderPan, registers::P_COEFFICIENT).unwrap(), 16);
+    assert_eq!(follower.read_register(Joint::ShoulderPan, servos::P_COEFFICIENT).unwrap(), 16);
 
     let options = TeleopOptions {
         hz: 100.0,
@@ -223,7 +224,7 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
             assert!((pair[1].sent[i] - pair[0].sent[i]).abs() <= 200);
         }
     }
-    assert_eq!(follower.read_register(Joint::ShoulderPan, registers::TORQUE_ENABLE).unwrap(), 0);
+    assert_eq!(follower.read_register(Joint::ShoulderPan, servos::TORQUE_ENABLE).unwrap(), 0);
 
     let records = read_log(&log_path).unwrap();
     assert!(records.len() > 120 * 4, "only {} log records", records.len());
@@ -258,15 +259,11 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
 fn configure_follower_caps_the_gripper_only() {
     let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
     arm.configure_follower().unwrap();
-    assert_eq!(arm.read_register(Joint::Gripper, registers::MAX_TORQUE).unwrap(), 500);
-    assert_eq!(arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(), 250);
-    assert_eq!(arm.read_register(Joint::Gripper, registers::OVERLOAD_TORQUE).unwrap(), 25);
-    assert_eq!(arm.read_register(Joint::Gripper, registers::TORQUE_LIMIT).unwrap(), 500);
-    assert_ne!(
-        arm.read_register(Joint::ShoulderPan, registers::MAX_TORQUE).unwrap(),
-        500,
-        "arm joints keep full torque"
-    );
+    assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 500);
+    assert_eq!(arm.read_register(Joint::Gripper, servos::PROTECTION_CURRENT).unwrap(), 250);
+    assert_eq!(arm.read_register(Joint::Gripper, servos::OVERLOAD_TORQUE).unwrap(), 25);
+    assert_eq!(arm.read_register(Joint::Gripper, servos::TORQUE_LIMIT).unwrap(), 500);
+    assert_ne!(arm.read_register(Joint::ShoulderPan, servos::MAX_TORQUE).unwrap(), 500, "arm joints keep full torque");
 }
 
 #[test]
@@ -290,7 +287,7 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
     arm.torque_on_holding().unwrap();
     // Into the window where the object sits in the jaws, then squeeze past it.
     clock.advance(Duration::from_secs_f64(6.0));
-    arm.write_goal_counts([2048, 2048, 2048, 2048, 2048, 1600], None, None).unwrap();
+    arm.write_goal(&[2048, 2048, 2048, 2048, 2048, 1600]).unwrap();
     for _ in 0..50 {
         clock.advance(Duration::from_millis(20));
         let _ = arm.read_counts().unwrap();
@@ -414,16 +411,16 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     use so101::arm::FollowerGains;
     let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
     arm.configure_follower_with(FollowerGains { p: 28, d: 32, grip_torque: 800 }).unwrap();
-    assert_eq!(arm.read_register(Joint::Gripper, registers::MAX_TORQUE).unwrap(), 800);
-    assert_eq!(arm.read_register(Joint::Gripper, registers::TORQUE_LIMIT).unwrap(), 800);
+    assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 800);
+    assert_eq!(arm.read_register(Joint::Gripper, servos::TORQUE_LIMIT).unwrap(), 800);
     assert_eq!(
-        arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(),
+        arm.read_register(Joint::Gripper, servos::PROTECTION_CURRENT).unwrap(),
         250,
         "stall protection stays on"
     );
-    assert_eq!(arm.read_register(Joint::ElbowFlex, registers::P_COEFFICIENT).unwrap(), 28);
-    assert_eq!(arm.read_register(Joint::ElbowFlex, registers::MAXIMUM_ACCELERATION).unwrap(), 254);
-    assert_eq!(arm.read_register(Joint::ElbowFlex, registers::LOCK).unwrap(), 1);
+    assert_eq!(arm.read_register(Joint::ElbowFlex, servos::P_COEFFICIENT).unwrap(), 28);
+    assert_eq!(arm.read_register(Joint::ElbowFlex, servos::MAXIMUM_ACCELERATION).unwrap(), 254);
+    assert_eq!(arm.read_register(Joint::ElbowFlex, servos::LOCK).unwrap(), 1);
     assert_eq!(arm.configure_readings().unwrap(), 0, "factory Phase 12 has bit 4 clear");
 }
 
@@ -556,12 +553,12 @@ fn a_late_eeprom_ack_does_not_leak_into_the_next_transaction() {
     // The sequence that failed on hardware: clear the wrap bit on servo 3, then
     // on servo 4. Servo 3's late ack landed in servo 4's exchange.
     let mut servos = Servos::new(Box::new(SlowEepromAcks::new()));
-    servos.write_unlocked(3, registers::PHASE, 12).unwrap();
-    servos.write_unlocked(4, registers::PHASE, 12).unwrap();
-    assert_eq!(servos.read(5, registers::MODEL_NUMBER).unwrap(), 777);
+    servos.write_unlocked(3, servos::PHASE, 12).unwrap();
+    servos.write_unlocked(4, servos::PHASE, 12).unwrap();
+    assert_eq!(servos.read(5, servos::MODEL_NUMBER).unwrap(), 777);
     for id in [3, 4] {
-        assert_eq!(servos.read(id, registers::PHASE).unwrap(), 12);
-        assert_eq!(servos.read(id, registers::LOCK).unwrap(), 1, "servo {id} relocked");
+        assert_eq!(servos.read(id, servos::PHASE).unwrap(), 12);
+        assert_eq!(servos.read(id, servos::LOCK).unwrap(), 1, "servo {id} relocked");
     }
 }
 
@@ -658,7 +655,7 @@ impl so101::arm::uart::Transport for DiesAfter {
 fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
     let dying = DiesAfter { inner: SimulatedServos::arm("follower"), sends_left: 60 };
-    let mut follower = Arm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"));
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -714,7 +711,7 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
     let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 6 { 2600.0 } else { 2048.0 }));
     let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
     let stale = StaleGripperFlags { inner: SimulatedServos::arm("follower"), flagged_left: 8 };
-    let mut follower = Arm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"));
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -786,7 +783,7 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
     // Flag on from the grip until ~0.15 s after the leader opens.
     let window =
         GripperFlagWindow { inner: SimulatedServos::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
-    let mut follower = Arm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"));
+    let mut follower = ServoArm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),

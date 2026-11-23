@@ -7,12 +7,11 @@ written to learn how they work.
 
 ```
 crates/so101/    the Rust code, one crate, one folder per thing (src/):
-  arm/             the arm: joints, poses, calibration, `Arm`, its STS3215 servos (servos.rs,
-                   registers.rs), the UART to them, a simulator; Part 1's teleop loop until
-                   Phase 1 moves it into control/
+  arm/             the arm: joints, poses, the `Arm` trait the loop uses, and `ServoArm`, the
+                   SO-101 on its STS3215 servos (servos.rs), their UART, calibration, a simulator
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
-  control/         the loop: the grid of slots, ticks, events, the event bus
+  control/         the loop: the grid of slots, ticks, events, the event bus, and teleop
   log/             the session log: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   bin/so101.rs     the `so101` command line, which puts the pieces together
@@ -41,8 +40,9 @@ One concept, one name, one home.
 | `Pose` | where all six are: degrees, gripper 0-100 | `arm` |
 | `Counts` | raw encoder readings, one per joint | `arm` |
 | `Calibration` | maps `Counts` to a `Pose`, and how to make one | `arm` |
-| `Arm` | the physical arm: read its pose, send a target, read its actuators | `arm` |
-| `Servos` | the arm's STS3215 servos on their UART, addressed by ID | `arm` |
+| `Arm` | what the loop can do with an arm: read its state, write a goal, read its actuators (a trait) | `arm` |
+| `ServoArm` | the SO-101 on its STS3215 servos: the real `Arm` | `arm` |
+| `Servos` | the STS3215 servos on their UART, addressed by ID, and their registers | `arm/servos.rs` |
 | `Transport` | the UART to the servos: the real serial port, or the simulator; either can record every byte | `arm/uart.rs` |
 | `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |

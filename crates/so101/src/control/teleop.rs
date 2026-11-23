@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::arm::servos::ServoError;
-use crate::arm::servos::{Error, Result};
-use crate::arm::{Arm, Counts, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
+use crate::arm::{Arm, Counts, Fault, Joint, JointState, JointTarget, Pose, Source, JOINT_COUNT};
 use crate::control::grid::Grid;
-use crate::{ArmRole, Clip, Event, Limit, Message, MonotonicClock, Tick, Timestamp};
+use crate::{ArmRole, Clip, DynError, Event, Limit, Message, Tick};
+
+type Result<T> = std::result::Result<T, DynError>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct TeleopOptions {
@@ -37,18 +37,18 @@ pub struct TeleopStats {
 /// `on_step` gets each step's events, or why the step failed (the previous goal then holds).
 /// Follower torque is switched off on every exit path.
 pub fn run(
-    leader: &mut Arm,
-    follower: &mut Arm,
+    leader: &mut impl Arm,
+    follower: &mut impl Arm,
     options: TeleopOptions,
     stop: Arc<AtomicBool>,
     mut on_step: impl FnMut(std::result::Result<&[Event], &str>),
 ) -> Result<TeleopStats> {
     leader.torque_off()?;
-    follower.torque_on_holding()?;
-    // Status bits raised before this run (a trip at the end of the last one,
-    // say) describe nothing the loop did. Drop them so they cannot latch a hold.
-    let _ = follower.take_flags();
-    let _ = leader.take_flags();
+    follower.hold()?;
+    // Faults raised before this run (a trip at the end of the last one, say)
+    // describe nothing the loop did. Drop them so they cannot latch a hold.
+    let _ = follower.take_faults();
+    let _ = leader.take_faults();
 
     let loop_result = run_loop(leader, follower, options, &stop, &mut on_step);
     let torque_result = follower.torque_off();
@@ -61,8 +61,8 @@ pub fn run(
 }
 
 fn run_loop(
-    leader: &mut Arm,
-    follower: &mut Arm,
+    leader: &mut impl Arm,
+    follower: &mut impl Arm,
     options: TeleopOptions,
     stop: &AtomicBool,
     on_step: &mut impl FnMut(std::result::Result<&[Event], &str>),
@@ -95,9 +95,10 @@ fn run_loop(
                 if consecutive_errors >= fail_after {
                     // Fail-safe: never leave the follower holding a stale goal
                     // behind a fault. `run` switches its torque off on the way out.
-                    return Err(Error::Other(format!(
+                    return Err(format!(
                         "follower failed {consecutive_errors} ticks in a row ({e}); stopping with torque off"
-                    )));
+                    )
+                    .into());
                 }
                 on_step(Err(&e.to_string()));
             }
@@ -176,22 +177,19 @@ impl Direction {
 }
 
 fn one_step(
-    leader: &mut Arm,
-    follower: &mut Arm,
+    leader: &mut impl Arm,
+    follower: &mut impl Arm,
     options: TeleopOptions,
     state: &mut LoopState,
     slot: u64,
     tick: u64,
 ) -> Result<Vec<Event>> {
-    let follower_counts = follower.read_counts()?;
-    let t_follower = MonotonicClock::read();
-    let flags = follower.take_flags();
-    let leader_counts = leader.read_counts()?;
-    let t_leader = MonotonicClock::read();
-    let _ = leader.take_flags();
-
-    let leader_pose = leader.to_pose(&leader_counts);
-    let follower_pose = follower.to_pose(&follower_counts);
+    let follower_state = follower.read_state()?;
+    let faults = follower.take_faults();
+    let leader_state = leader.read_state()?;
+    let _ = leader.take_faults();
+    let follower_counts = counts(&follower_state)?;
+    let (follower_pose, leader_pose) = (follower_state.pose, leader_state.pose);
 
     let requested = state.predictor.ahead(Instant::now(), leader_pose, options.lead);
     let in_range = follower.to_counts(&requested);
@@ -213,7 +211,7 @@ fn one_step(
         // pin a free joint.
         let progress = step.map_or(i32::MAX, |d| d * gap.signum());
         let blocked = pushing_hard && progress <= STALL_STILL_COUNTS;
-        let flagged = flags[i].has(ServoError::OVERLOAD) || flags[i].has(ServoError::OVERCURRENT);
+        let flagged = faults[i].iter().any(|f| matches!(f, Fault::Overload | Fault::Overcurrent));
         let tripped = blocked && flagged && !stalls.flagged[i];
         stalls.flagged[i] = flagged;
         let stalled = stalls.stuck_s[i] >= STALL_TIME.as_secs_f64();
@@ -237,9 +235,13 @@ fn one_step(
     // position instead keeps the servo's error, and so its effort and speed,
     // pinned at `max_step`: measured on hardware, ~37 deg/s against a leader at
     // ~140 deg/s, and up to 1.5 s of lag.
-    let reference = state.last_goal.unwrap_or(follower_counts);
-    let sent = follower.write_goal_counts(goal, Some(reference), options.max_step_counts)?;
-    let t_sent = MonotonicClock::read();
+    let from = state.last_goal.unwrap_or(follower_counts);
+    let sent: Counts = match options.max_step_counts {
+        Some(max) => std::array::from_fn(|i| from[i] + (goal[i] - from[i]).clamp(-max, max)),
+        None => goal,
+    };
+    follower.write_goal(&sent)?;
+    let t_sent = crate::MonotonicClock::read();
     state.last_goal = Some(sent);
     let action = follower.to_pose(&sent);
 
@@ -263,8 +265,8 @@ fn one_step(
 
     let slot = slot as u32;
     let mut events = vec![
-        state_event(ArmRole::Follower, t_follower, follower_pose, follower_counts, slot),
-        state_event(ArmRole::Leader, t_leader, leader_pose, leader_counts, slot),
+        state_event(ArmRole::Follower, follower_state, slot),
+        state_event(ArmRole::Leader, leader_state, slot),
         Event::new(
             Message::JointTarget(
                 ArmRole::Follower,
@@ -301,8 +303,14 @@ fn one_step(
     Ok(events)
 }
 
-fn state_event(role: ArmRole, t: Timestamp, pose: Pose, counts: Counts, slot: u32) -> Event {
-    Event::new(Message::JointState(role, JointState { t, pose, counts: Some(counts) }), slot, t)
+fn state_event(role: ArmRole, state: JointState, slot: u32) -> Event {
+    let t = state.t;
+    Event::new(Message::JointState(role, state), slot, t)
+}
+
+/// Teleop's stall logic works in encoder counts, so it needs an arm that reports them.
+fn counts(state: &JointState) -> Result<Counts> {
+    state.counts.ok_or_else(|| "teleop needs an arm that reports encoder counts".into())
 }
 
 // Leader velocity, smoothed, for commanding a little ahead of the hand.

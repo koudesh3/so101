@@ -8,11 +8,11 @@ use so101::arm::calibration::{self, Calibration};
 use so101::arm::servos::Servos;
 use so101::arm::servos::{Error, Result};
 use so101::arm::sim::{demo, SimulatedServos};
-use so101::arm::teleop::{self, TeleopOptions};
 use so101::arm::uart::{ByteLog, Recorder, SerialTransport, Transport};
-use so101::arm::{Arm, FollowerGains};
+use so101::arm::{FollowerGains, ServoArm};
 use so101::arm::{Pose, IDS, JOINT_COUNT};
 use so101::control::grid::Grid;
+use so101::control::teleop::{self, TeleopOptions};
 use so101::{ArmRole, Joint, Limit, Message, Tick};
 
 #[derive(Parser)]
@@ -267,7 +267,7 @@ fn cmd_scan(mut servos: Servos) -> Result<()> {
 
 fn cmd_monitor(servos: Servos, calibration: Option<PathBuf>, hz: f64) -> Result<()> {
     let cal = load_calibration(calibration, "monitor", false)?;
-    let mut arm = Arm::new("arm", servos, cal);
+    let mut arm = ServoArm::new("arm", servos, cal);
     arm.check_present()?;
     let stop = ctrl_c_flag();
     let mut grid = Grid::new(hz);
@@ -300,7 +300,7 @@ fn cmd_monitor(servos: Servos, calibration: Option<PathBuf>, hz: f64) -> Result<
 }
 
 fn cmd_calibrate(servos: Servos, arm_id: &str, out: &Path) -> Result<()> {
-    let mut arm = Arm::new(arm_id, servos, Calibration::identity(arm_id));
+    let mut arm = ServoArm::new(arm_id, servos, Calibration::identity(arm_id));
     arm.check_present()?;
     let enter = stdin_lines();
 
@@ -362,8 +362,8 @@ fn cmd_teleop(
     sim: bool,
     actuators: bool,
 ) -> Result<()> {
-    let mut leader = Arm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
-    let mut follower = Arm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
+    let mut leader = ServoArm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
+    let mut follower = ServoArm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
     leader.check_present()?;
     follower.check_present()?;
     for arm in [&mut leader, &mut follower] {
@@ -409,7 +409,8 @@ fn cmd_teleop(
         if steps.is_multiple_of((hz as u64).max(1)) {
             println!("tick {steps:>6}\n   leader   {}\n   follower {}", format_pose(&poses[0]), format_pose(&poses[1]));
         }
-    })?;
+    })
+    .map_err(|e| Error::Other(e.to_string()))?;
     println!(
         "stopped after {} ticks: {} overruns, {} errors, worst tick work {:.2} ms",
         stats.ticks,

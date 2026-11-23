@@ -7,9 +7,9 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::arm::registers::{CENTER_COUNT, COUNTS_PER_TURN};
 use crate::arm::servos::{Error, Result};
-use crate::arm::{Arm, Counts, Joint, Pose, Unit, JOINT_COUNT};
+use crate::arm::servos::{CENTER_COUNT, COUNTS_PER_TURN};
+use crate::arm::{Counts, Joint, Pose, ServoArm, Unit, JOINT_COUNT};
 use crate::control::grid::Grid;
 
 pub const DEGREES_PER_COUNT: f64 = 360.0 / COUNTS_PER_TURN as f64;
@@ -187,7 +187,7 @@ pub struct Sweep {
     pub max: Counts,
 }
 
-pub fn sweep(arm: &mut Arm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool) -> Result<Sweep> {
+pub fn sweep(arm: &mut ServoArm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool) -> Result<Sweep> {
     let mut sweep = Sweep { min: [i32::MAX; JOINT_COUNT], max: [i32::MIN; JOINT_COUNT] };
     let mut grid = Grid::new(hz);
     loop {
@@ -238,7 +238,7 @@ pub fn check_centred(sweep: &Sweep) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arm::registers::CENTER_COUNT;
+    use crate::arm::servos::CENTER_COUNT;
 
     fn cal() -> JointCalibration {
         JointCalibration { homing_offset: 0, range_min: 769, range_max: 3156 }

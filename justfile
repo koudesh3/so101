@@ -10,13 +10,13 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# The control loop uses the arm's types, never its hardware or the log; only bin/ wires those in
+# The control loop talks to arms through the Arm trait: never ServoArm, the servos, the UART, the simulator, calibration, or the log
 check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
-    if grep -rnE 'crate::(log|arm::(Arm|servos|registers|uart|sim|teleop|calibration))\b' control/; then
-        echo "error: control/ reaches into hardware or the log (above)"; exit 1
+    if grep -rnE 'crate::log\b|crate::arm::(servos|uart|sim|calibration)\b|\bServoArm\b' control/; then
+        echo "error: control/ reaches past the Arm trait (above)"; exit 1
     fi
 
 # Refresh the so101.v1 schema snapshot after an allowed (additive) .proto change

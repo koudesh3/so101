@@ -304,8 +304,9 @@ episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase
 - `Clock`: `now() -> Timestamp`, `sleep_until(Timestamp)`. `MonotonicClock` reads
   `clock_gettime(CLOCK_MONOTONIC)` (Rust's `Instant` can't give the raw value; macOS has the call
   too). `ReplayClock` is driven by a log's timestamps, at real speed or as fast as possible.
-- **A trait arrives with its second implementation, not before.** The arm trait comes in Phase 1
-  with the mock arm beside the real one; the camera trait with the replay camera; the policy trait
+- **A trait arrives when something needs it, not before.** `Arm` exists because the control loop
+  must reach arms only through it (teleop is its first user; the mock arm joins `ServoArm` in
+  Phase 1); the camera trait with the replay camera; the policy trait
   with Phase 3's stubs beside the ONNX policy, carrying contract 4 in its docs and constructor.
   Each lives in its thing's folder.
 
@@ -341,12 +342,12 @@ proto/                     shared by every language in the repo
   foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
 crates/so101/              one crate, one folder per thing
-  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus and `Arm` (mod.rs),
-                               calibration, the STS3215 servos (servos.rs) and their register map,
-                               the UART to them, a simulator; Part 1's teleop until Phase 1
+  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, the `Arm` trait
+                               and `ServoArm` (mod.rs); calibration; the STS3215 servos and their
+                               registers (servos.rs); the UART; a simulator
   src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
   src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
-  src/control/                 the loop: grid (slots), Tick, events, bus
+  src/control/                 the loop: grid (slots), Tick, events, bus, teleop
   src/log/                     the session log: wire (protobuf conversions, generated from a field
                                map), recorder, reader, drops, replay, recover
   src/clock.rs                 Timestamp, Clock, MonotonicClock, ReplayClock
@@ -354,8 +355,8 @@ crates/so101/              one crate, one folder per thing
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
 ```
 
-`just check` enforces the one layering rule: `control/` uses the arm's types but never its
-hardware or the log.
+`just check` enforces the one layering rule: `control/` reaches arms only through the `Arm` trait,
+never `ServoArm`, the servos, the UART, the simulator, calibration or the log.
 
 - **Bus:** in-process fan-out of `Event` (an enum over every message, with its topic). Publishing
   never blocks.
