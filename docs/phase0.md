@@ -73,7 +73,7 @@ policy; either can be clipped before it reaches the follower. So:
     bounds the error to about ±0.5 ms against a 10 ms slot.
   - **V4L2 camera on Linux:** the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
     which the UVC driver marks as start of exposure (`ts-src-soe`). Measured for the wrist camera
-    (below): exposure actually starts about 8 ms before the stamp; no correction is applied yet. Each camera model needs
+    (below): exposure actually starts about 10 ms before the stamp; no correction is applied yet. Each camera model needs
     its own check: the driver's claim depends on the camera's own clock reports.
   - **Synthetic camera:** when the frame was generated (exact). **Replayed camera:** the original
     capture time, offset onto the replay's clock.
@@ -136,25 +136,28 @@ than 0.5 ms late, which doesn't skip a slot. On the September logs, recorded on 
 of ticks would have overrun at 120 Hz; the Spark's USB stack and scheduler are faster. Byte log:
 `/projects/logs/hz120-20261123-133445.jsonl` on the Spark.
 
-**Measured: the wrist camera's exposure starts about 8 ms before its kernel stamp** (contract 3).
+**Measured: the wrist camera's exposure starts about 10 ms before its kernel stamp** (contract 3).
 On the Spark, 2026-11-23, icSpring wrist camera at 640x480 MJPG, manual exposure 30 ms, frame
 period 32.2 ms. A script held the follower still and stepped wrist flex by 10 degrees every 2 s,
 logging joint positions (600 reads/s, stamped at the request/reply midpoint) and the camera's kernel
 timestamps from `v4l2-ctl`. Fitting the image change between frames against the wrist's movement
-between their exposure windows peaks sharply (r 0.96) with exposure starting at `ts - 8 ms`, about
-±5 ms. So a frame stamped `ts` shows the arm as the joint log has it over `ts - 8` to `ts + 22 ms`,
-centred about 7 ms after `ts`. That's relative to the joint log's clock, which is what alignment
+between their exposure windows peaks sharply with exposure starting at `ts - 8 ms` (r 0.96); a
+second run stepping wrist roll by 30 degrees, which turns the camera itself, gave `ts - 12 ms`
+(r 0.97). Call it 10 ms, ±5. So a frame stamped `ts` shows the arm as the joint log has it over
+`ts - 10` to `ts + 20 ms`, centred about 5 ms after `ts`. That's relative to the joint log's clock, which is what alignment
 needs. An earlier run with the arm moved by hand only bounded it within a frame (hand moves are too
 smooth); the driver labels its stamps start of exposure (`ts-src-soe`), which is close but not
 exact. **Decision:** the offset is under a quarter of a frame, so the converter uses the kernel
-stamp as is for now; if Phase 5 parity needs it, subtract 8 ms. The scene camera isn't a policy
+stamp as is for now; if Phase 5 parity needs it, subtract 10 ms. The scene camera isn't a policy
 input, so it doesn't need this check. The spike lives at `/projects/spikes/cam-offset` on the Spark
-(`step.py`, `step_analyze.py`, `step_fit.py`, run `step-134517/`; the hand-moved run is `run-133941/`).
+(`step.py`, `step_analyze.py`, `step_fit.py`, runs `step-134517/` and `roll-134728/`; the hand-moved run is `run-133941/`).
 
-**Measured: the follower takes about 66 ms to start moving after a goal write.** Same step test:
-58-72 ms from writing wrist flex's goal to its reported position moving 3 ticks, with acceleration
-at maximum (254), no speed limit, P 32, D 32, I 0. Steps down settled within 5 ticks in 170 ms;
-steps up, against gravity, stopped short of 5 ticks (no integral term). Whether that's the motor or
+**Measured: the follower takes about 50 ms to start moving after a goal write, more under load.**
+Same step tests, with acceleration at maximum (254), no speed limit, P 32, D 32, I 0, measured from
+writing the goal to the reported position moving 3 ticks. Wrist roll, which carries no gravity
+load: 50.6 ms median, 49.6-53.2 ms, and a 30 degree step settles within 5 ticks in 295 ms. Wrist
+flex, 10 degree steps: 58-72 ms; steps down settled in 170 ms, steps up, against gravity, stopped
+short of 5 ticks (no integral term). Whether that's the motor or
 a delay in the reported position, it's what the loop sees: an action shows up about two camera
 frames later. It probably explains why Part 1's 40 ms teleop lead helped. A policy trained on
 teleop data learns this delay implicitly; the runtime shouldn't try to hide it.
