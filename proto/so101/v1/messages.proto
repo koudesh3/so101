@@ -1,13 +1,14 @@
 // The messages the robot writes into its session logs. See docs/phase0.md.
 //
 // - Times are nanoseconds of the host's CLOCK_MONOTONIC (contract 3).
-// - Positions are degrees, LeRobot's units; the gripper is 0-100.
-// - Joint arrays have exactly six entries, in LeRobot's order: shoulder_pan, shoulder_lift,
+// - Poses are degrees, LeRobot's units; the gripper is 0-100.
+// - Pose arrays have exactly six entries, in LeRobot's order: shoulder_pan, shoulder_lift,
 //   elbow_flex, wrist_flex, wrist_roll, gripper.
 // - Camera frames are foxglove.CompressedImage (proto/foxglove), not a message here.
 //
 // Evolution rules (contract 1): never reuse or renumber a field; removed fields become
-// `reserved`; breaking changes go in so101.v2. The schema snapshot test enforces this.
+// `reserved`; breaking changes go in so101.v2. The schema snapshot test enforces this. The
+// snapshot was reset once, on 2026-11-23, before the first real log was recorded.
 
 syntax = "proto3";
 
@@ -36,64 +37,71 @@ enum SourceKind {
   POLICY = 3;
 }
 
-// Who produced a target or action. `name` is the script's name or the policy's checkpoint ID.
+// `name` is the script's name or the policy's checkpoint ID.
 message Source {
   SourceKind kind = 1;
   string name = 2;
 }
 
-// All six positions from one sync read. In the servo loop, the record's sequence is the slot
-// index (contract 5), so a skipped slot is a sequence gap.
+// In the servo loop the record's sequence is the slot index (contract 5).
 message JointState {
   uint64 t_ns = 1;
-  repeated float pos = 2;  // degrees: only meaningful with the calibration in the log header
-  repeated int32 ticks = 3;  // the raw servo readings behind `pos`; empty if not from servos
+  repeated float pose = 2;
+  repeated int32 counts = 3;  // raw encoder counts behind `pose`; empty if not read from servos
 }
 
-// One servo's telemetry block. The driver reads one servo per slot, rotating, so each joint
-// has its own time. Fields are optional because 0 is a valid reading.
-message ServoTelemetry {
+message JointTarget {
+  uint64 t_ns = 1;
+  repeated float pose = 2;
+  Source source = 3;
+  repeated int32 counts = 4;  // raw goals written, in encoder counts; empty if not sent to servos
+}
+
+enum Fault {
+  FAULT_UNSPECIFIED = 0;
+  VOLTAGE = 1;
+  SENSOR = 2;
+  OVERHEAT = 3;
+  OVERCURRENT = 4;
+  ANGLE_LIMIT = 5;
+  OVERLOAD = 6;
+}
+
+// One joint's actuator, read one joint per slot in rotation. Optional because 0 is a valid reading.
+message ActuatorStatus {
   uint64 t_ns = 1;
   Joint joint = 2;
   optional float velocity_deg_s = 3;
   optional float load_percent = 4;  // of maximum torque, signed
   optional float voltage_v = 5;
   optional float temperature_c = 6;
-  optional uint32 current_raw = 7;  // Present_Current, raw register counts
-  uint32 status = 8;                // the servo's status (error) byte
-  bool moving = 9;
+  optional float current_a = 7;
+  repeated Fault faults = 8;
 }
 
-message JointTarget {
-  uint64 t_ns = 1;
-  repeated float pos = 2;
-  Source source = 3;
-  repeated int32 ticks = 4;  // the raw servo goals actually written; empty if not sent to servos
-}
-
-// A camera frame's identity: its camera and the kernel's frame number (the record's sequence).
 message FrameRef {
   Camera camera = 1;
-  uint32 sequence = 2;
+  uint32 sequence = 2;  // the kernel's frame number
 }
 
-// What the control loop used at one 30 Hz tick (contract 2): the truth downstream reads.
+// What the control loop used at one tick (contract 2).
 message Tick {
   uint64 t_ns = 1;
-  repeated float state = 2;
-  FrameRef wrist = 3;
-  FrameRef scene = 4;
-  repeated float action = 5;     // the target actually sent to the follower, after clipping
-  Source source = 6;
-  repeated float requested = 7;  // what the source asked for, before clipping
-  repeated Clip clipped = 8;     // the joints where action differs from requested, and why
+  uint32 slot = 2;  // the servo slot whose JointState this tick used and in which its target was written
+  repeated float state = 3;
+  FrameRef wrist = 4;
+  FrameRef scene = 5;
+  repeated float action = 6;     // sent to the follower, after clipping
+  Source source = 7;
+  repeated float requested = 8;  // what the source asked for, before clipping
+  repeated Clip clipped = 9;
 }
 
-// Which limit made the sent target differ from the requested one.
 enum Limit {
   LIMIT_UNSPECIFIED = 0;
-  STEP = 1;   // the per-tick step limit (LeRobot's max_relative_target)
-  RANGE = 2;  // the joint's allowed range
+  STEP = 1;   // LeRobot's max_relative_target
+  RANGE = 2;
+  STALL = 3;  // held at a contact point after a stall or an overload trip
 }
 
 message Clip {
@@ -101,15 +109,15 @@ message Clip {
   Limit limit = 2;
 }
 
-// A predicted action chunk: k rows of six positions, row-major.
+// k rows of six, row-major.
 message Chunk {
   uint64 t_obs_ns = 1;
-  uint32 k = 2;
-  repeated float actions = 3;
-  string ckpt_id = 4;
+  uint64 period_ns = 2;
+  uint32 k = 3;
+  repeated float actions = 4;
+  string checkpoint_id = 5;
 }
 
-// A contiguous run of messages the recorder dropped because it fell behind.
 message LogDrop {
   uint64 t_ns = 1;
   string topic = 2;

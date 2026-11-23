@@ -50,24 +50,20 @@ At run time, the scene camera serves the sequencer and the checks, the wrist cam
 
 ### Modules
 
-The system is one runtime boundary with five inputs and three outputs. Every edge inside it carries a named message from `contracts`, so any module can be swapped as long as it speaks the same messages.
+The system is one runtime boundary with five inputs and three outputs, in one Rust crate (`crates/so101`) organised one folder per thing: each thing's types, its hardware and its later implementations live together. A trait arrives with a thing's second implementation (a mock beside the real arm, stubs beside the ONNX policy), in that thing's folder.
 
-Hardware never appears inside the boundary: the SO-101 is reached only through `drivers::arm::so101`, which reads LeRobot's calibration file and converts servo ticks to LeRobot's units (degrees, gripper 0–100). Joint state flows from the arm driver to the checks and skills through the bus; the diagram leaves those lines out for readability.
+Hardware never appears inside the boundary: the SO-101 is reached only through `arm::driver`, which reads LeRobot's calibration file and converts servo ticks to LeRobot's units (degrees, gripper 0–100). Joint state flows from the arm to the checks and skills through the bus; the diagram leaves those lines out for readability.
 
-| Module | Trait it implements or owns | Implementations | Consumes | Produces |
+| Folder | Holds | Implementations | Consumes | Produces |
 |---|---|---|---|---|
-| `contracts` | Message types, `Clock` | wall, replay | — | Shared types for Rust and Python |
-| `drivers::arm` | `ArmDriver` | so101, replay, mock | JointTarget | JointState |
-| `drivers::camera` | `FrameSource` | v4l2_usb (wrist, scene), replay, synthetic | USB video | Frame |
-| `drivers::leader` | `TargetSource` | so101_leader, replay | Leader joints | JointTarget |
-| `control::safety` | Wraps any `ArmDriver` | — | JointTarget | Clamped JointTarget, e-stop |
-| `control::mux` | Picks the active `TargetSource` | — | Targets from leader, scripts, action queue | One JointTarget stream |
-| `control::action_queue` | — | LeRobot's queue: n_action_steps per chunk; ensembling optional | Chunk | Per-tick JointTarget |
-| `skills` | `Skill`, `Policy` | transit (scripted), grasp, place (ACT via ort), replay | RunStep, Obs | Chunk or JointTarget |
-| `checks` | `Check` | holding_rule, scene_slot | Frame, JointState | CheckResult |
-| `runtime::step_runner` | — | — | RunStep, CheckResult | StepResult |
-| `runtime::sequencer` | `Sequencer` | hanoi_fsm; opus_agent in the last phase | Task goal, StepResult, scene Frame | Command |
-| `runtime::bus` + `record` | Event sink | recorder, export | Every Event | Log store, versioned datasets |
+| `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the arm trait (Phase 1) | `driver` on `servo/` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
+| `arm/` (leader) | The leader as a target source | leader on `servo/`, replay | Leader joints | JointTarget |
+| `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
+| `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |
+| `control/` | The loop: grid of slots, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
+| `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunStep, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |
+| `runtime/` | Step runner and sequencer (Phase 3) | hanoi_fsm; opus_agent in the last phase | RunStep, CheckResult, Task goal, scene Frame | StepResult, Command |
+| `log/` | The session log: protobuf in MCAP | recorder, reader, recover, export | Every Event | Log store, versioned datasets |
 | `ml/export` | Offline script | — | Checkpoint, logged observations | act.onnx, export parity report |
 
 Rules that keep it swappable: messages in LeRobot's keys and units; one writer to the arm; safety as a wrapper that code above can't bypass; one clock with timestamps on everything; a conformance test suite per trait that mock, replay, and real implementations all pass.
@@ -150,7 +146,7 @@ Each boundary is a versioned message type, so any layer can be swapped or replay
 | Servo layer ↔ everything | Out | JointState {t, pos[6], vel[6], current[6], temp[6]} | Servo rate | Clamps applied here; nothing above can bypass them |
 | | In | JointTarget {t, pos[6], source} | 30 Hz | source = teleop, script, or policy ID |
 | Cameras → recorder, policy | Out | Frame {t_capture, t_receive, cam_id, jpeg} | 30 fps | Both timestamps, so you can measure staleness |
-| Policy | In → out | Obs {t, wrist_frame, joints, skill, args} → Chunk {t_obs, k, actions[k][6], ckpt_id} | Once per n_action_steps ticks | In-process via ort; the action queue in Rust pops one action per tick; every chunk is logged |
+| Policy | In → out | Obs {t, wrist_frame, joints, skill, args} → Chunk {t_obs, period, k, actions[k][6], checkpoint_id} | Once per n_action_steps ticks | In-process via ort; the action queue in Rust pops one action per tick; every chunk is logged |
 | Step runner | In → out | RunStep {skill, args, timeout, max_tries} → StepResult {outcome, tries, duration, checks_fired} | Per step | outcome: done, retryable, fatal, timeout |
 | Checks | Out | CheckResult {name, value, confidence, source_frame_ids} | 5–10 Hz | Deterministic first; frame IDs let any check be re-run offline |
 | Skill catalog | Sequencer → runtime | list_skills, run_step, check_scene, go_home, request_human | Per boundary | Plain Rust calls for the deterministic sequencer; an MCP server or Opus wraps the same catalog later |
@@ -177,7 +173,7 @@ Why the checkpoint probes matter: saving all checkpoints and running a fixed pro
 
 Each phase leaves a working system and produces one dev-log result. Later phases only start once the earlier one meets its exit criterion. Phases 0–3 need no hardware; stop after phase 3 until the Hanoi set and cameras are set up.
 
-- **Phase 0: contracts and log.** The contracts crate (message types, Clock, and the traits for arm, camera, target source and policy; skill, check and sequencer arrive in Phase 3), the event bus, and a log writer and reader. Design: [phase0.md](phase0.md).
+- **Phase 0: contracts and log.** The contracts (what each part can rely on, [phase0.md](phase0.md)), the messages and their log format, the clock, the event bus, and a log writer and reader. Traits arrive with each thing's second implementation.
   - Exit: a log written and read back gives identical records; the replay clock reproduces a run's timing.
 - **Phase 1: runtime on fakes.** Tick loop at 30 fps with the mock arm (follows targets with a lag), a replay camera reading dataset video, the action queue, mux, and safety wrapper.
   - Also, from the 2026-11-23 hardware measurements ([phase0.md](phase0.md)): the servo grid locked at 120 Hz with the skip-on-overrun rule; the teleop lead owned by the teleop source, with a filtered velocity estimate (it adds 1.2-2.1× jitter today); a per-joint shake measure (follower vs target, 5-30 Hz, from the position stream); servo health checks on the median of the last 5 telemetry readings, with impossible values counted; the byte log kept as an optional bus-trace channel, off by default, since every timing measurement so far came from it.

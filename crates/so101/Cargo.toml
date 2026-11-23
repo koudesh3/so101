@@ -1,0 +1,29 @@
+[package]
+name = "so101"
+description = "The SO-101: the core (arm, camera, policy, time, control) and its adapters (servo, log)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+clap.workspace = true
+ctrlc.workspace = true
+libc.workspace = true
+mcap.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serialport.workspace = true
+sha2.workspace = true
+
+[build-dependencies]
+prost.workspace = true
+prost-build.workspace = true
+protox.workspace = true
+
+[[bin]]
+name = "so101"
+path = "src/bin/so101.rs"

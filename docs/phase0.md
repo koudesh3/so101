@@ -2,11 +2,11 @@
 
 Status: built, 2026-11-22. Implements Phase 0 of [part2-spec.md](part2-spec.md).
 
-Built as designed, in `crates/contracts` and `crates/session-log`, with three differences: the log
-crate's package is named `session-log` (`log` clashes with the widely used crate of that name);
-the reader loads a whole file into memory (streaming reads can come when logs get long); and
+Built as designed, in `crates/so101` (reorganised on 2026-11-23 into one crate, one folder per
+thing: see Implementation), with two differences: the reader loads a whole file into memory; and
 recovery keeps whole messages from a truncated chunk too, so a cut file loses less than its last
-chunk.
+chunk. "Contracts" names what this phase locked (the promises below and the log format), not a
+place in the code.
 
 **Exit criteria (from the spec):** a log written and read back gives identical records, and the
 replay clock reproduces a run's timing. No hardware is needed, and today's teleop is untouched; it
@@ -124,8 +124,8 @@ policy; either can be clipped before it reaches the follower. So:
   sequence gap in the joint stream, and the log says exactly when it happened. The 30 Hz tick runs
   on every third or fourth slot of the same grid; if its slot is skipped, that `Tick` is skipped
   too, and shows up as a gap in the tick stream.
-- Today's `Ticker` (`crates/control`) is already grid-based but starts a slot late when the
-  work overruns into its window; Phase 1 changes it to this rule.
+- Today's `Grid` (`control/grid.rs`) is already grid-based but starts a slot late when the
+  work overruns into its window; Phase 1 changes it to this rule and moves it onto `Clock`.
 
 ### Rates, as measured
 
@@ -279,20 +279,21 @@ Export to a LeRobot dataset is then a straight copy, given one calibration (cont
 
 Only what Phases 0-2 write (the runtime on fakes, then the policy):
 
-- `JointState {t, pos[6], ticks[6]}`, 100 Hz: one sync read of all six positions, in degrees and
-  as the raw servo ticks behind them (contract 6)
-- `ServoTelemetry {t, joint, velocity, load, voltage, temperature}`: one per read. The driver reads
-  one servo's telemetry block per tick, rotating, so each joint comes round at about 16.7 Hz with
-  its own timestamp. A combined six-joint message would invent readings or blur their times. The
-  spec's `JointState {pos, vel, current, temp}` is the logical view: a reader that wants it joins
-  the latest telemetry per joint onto each position read
-- `JointTarget {t, pos[6], source, ticks[6]}`, 30 Hz. `source` is teleop, script, or a policy ID;
+- `JointState {t, pose[6], ticks[6]}`, 120 Hz: one sync read of all six positions, as a pose and
+  as the raw servo ticks behind it (contract 6)
+- `ActuatorStatus {t, joint, velocity, load, voltage, temperature, current, faults[]}`: one per
+  read. The driver reads one actuator per slot, rotating, so each joint comes round with its own
+  timestamp. A combined six-joint message would invent readings or blur their times. `faults` are
+  decoded by the driver (overheat, overload, ...), so nothing above it reads a servo register
+- `JointTarget {t, pose[6], source, ticks[6]}`, 30 Hz. `source` is teleop, script, or a policy ID;
   `ticks` are the raw goals actually written
 - Frame: `foxglove.CompressedImage {timestamp = t_capture, frame_id = camera, data = jpeg, format = "jpeg"}`,
   so Foxglove plays both cameras as video. A frame's identity is `(camera, sequence)`
-- `Tick {t, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`, 30 Hz
-  (contract 2)
-- `Chunk {t_obs, k, actions[k][6], ckpt_id}`: every predicted chunk
+- `Tick {t, slot, state[6], frame IDs (wrist, scene), action[6], source, requested[6], clipped[]}`,
+  30 Hz (contract 2). `slot` is the servo slot whose `JointState` it used and in which its target
+  was written, so a tick can be recomputed from raw ticks under another calibration
+- `Chunk {t_obs, period, k, actions[k][6], checkpoint_id}`: every predicted chunk, with the time
+  between its actions stated rather than assumed
 - `LogDrop {topic, first_sequence, last_sequence, count}`: what the recorder dropped
 
 Arriving later, each with its phase: `RunStep`, `StepResult`, `CheckResult` and `Command` (Phase 3),
@@ -303,11 +304,10 @@ episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase
 - `Clock`: `now() -> Timestamp`, `sleep_until(Timestamp)`. `MonotonicClock` reads
   `clock_gettime(CLOCK_MONOTONIC)` (Rust's `Instant` can't give the raw value; macOS has the call
   too). `ReplayClock` is driven by a log's timestamps, at real speed or as fast as possible.
-- Traits, all taking and returning domain types: `ArmDriver` (JointTarget in, JointState out),
-  `FrameSource`, `TargetSource`, and `Policy` (Obs → Chunk, with contract 4 in its docs and its
-  constructor). `Obs` is a Rust type; what the loop actually used is logged as `Tick`. `Skill`,
-  `Check` and `Sequencer` arrive in Phase 3 with the step runner that calls them. Signatures are
-  refined when their first implementation lands.
+- **A trait arrives with its second implementation, not before.** The arm trait comes in Phase 1
+  with the mock arm beside the real one; the camera trait with the replay camera; the policy trait
+  with Phase 3's stubs beside the ONNX policy, carrying contract 4 in its docs and constructor.
+  Each lives in its thing's folder.
 
 ## Where logs come from
 
@@ -322,7 +322,7 @@ header's host and clock source keep the two from being confused. Names follow
 |---|---|---|
 | Log container | MCAP, one file per session, one channel per topic, no compression | Indexed, self-describing, maintained Rust and Python readers, opens in Foxglove. JPEG doesn't compress, and leaving compression off drops the C dependencies |
 | Encoding | Protobuf on every channel, frames as vendored `foxglove.CompressedImage` | Versioned messages shared by Rust and Python |
-| Rust types | A thin domain layer in `contracts` over the generated types | Fixed `[f32; 6]` arrays and validation; traits never see generated types |
+| Rust types | Domain types in each thing's folder; protobuf only inside `log/wire.rs` | Fixed `[f32; 6]` arrays and validation; nothing outside the log sees a generated type |
 | Concurrency | Plain threads, blocking calls, no async | Matches the existing code; nothing needs async |
 | LeRobot | Our log, plus a converter to LeRobotDataset v3 (`ml/export`, Phase 4) | LeRobot's format can't hold real timestamps, servo-rate state, the original JPEGs or async events, and its writer isn't crash-safe |
 
@@ -333,28 +333,34 @@ What we encode is only the log. Everything else is someone else's format, read w
 | Session logs (`*.mcap`) | MCAP, protobuf messages, JPEG frames | us |
 | Datasets | Parquet, MP4, JSON (LeRobotDataset v3) | LeRobot |
 | Checkpoints (`pretrained_model/`) | safetensors, JSON | LeRobot |
-| Policy (`act.onnx`) | ONNX (itself protobuf, but `ort` reads it; it never touches our contracts) | ONNX |
+| Policy (`act.onnx`) | ONNX (itself protobuf, but `ort` reads it; it never touches our log format) | ONNX |
 
 ```
 proto/                     shared by every language in the repo
-  so101/v1/*.proto             the messages
+  so101/v1/messages.proto      the messages
   foxglove/                    CompressedImage.proto, vendored from Foxglove's schemas (MIT)
   so101.v1.snapshot.binpb      the frozen schema the compatibility test checks against
-crates/contracts/
+crates/so101/              one crate, one folder per thing
+  src/arm/                     Joint, Pose, JointState, JointTarget, ActuatorStatus, calibration,
+                               driver (the SO-101 on its servo bus), servo/ (STS3215 protocol,
+                               registers, bus, transport, simulator); Part 1's teleop until Phase 1
+  src/camera/                  Frame, FrameRef (the V4L2 code joins it in Phase 4)
+  src/policy/                  Obs, Chunk (the ONNX runner joins it in Phase 2)
+  src/control/                 the loop: grid (slots), Tick, events, bus
+  src/log/                     the session log: wire (protobuf conversions, generated from a field
+                               map), recorder, reader, drops, replay, recover
+  src/clock.rs                 Timestamp, Clock, MonotonicClock, ReplayClock
+  src/bin/so101.rs             the command line: puts the pieces together
   build.rs                     protox + prost-build: pure Rust, no protoc; embeds the descriptor set
-  src/pb.rs                    generated types (only `log`, and later the PyO3 crate, use them)
-  src/joint.rs, camera.rs,     one module per concept: its domain types, their protobuf conversions,
-      tick.rs, policy.rs,      and the trait that produces or consumes them. A later phase adds
-      log.rs                   modules (step.rs, check.rs, ...) rather than growing these
-  src/time.rs                  Timestamp, MonotonicClock, ReplayClock
-crates/session-log/
-  bus, event (topics), recorder, raw (MCAP parsing), reader, drops, replay, recover
 ```
+
+`just check` enforces the one layering rule: `control/` uses the arm's types but never its
+hardware or the log.
 
 - **Bus:** in-process fan-out of `Event` (an enum over every message, with its topic). Publishing
   never blocks.
 - **Recorder:** one thread owns the MCAP writer (it isn't `Sync`). Topics: `/follower/state`,
-  `/follower/telemetry`, `/follower/target`, `/leader/target`, `/tick`, `/cam/wrist`, `/cam/scene`, `/policy/chunk`,
+  `/follower/actuators`, `/follower/target`, `/leader/target`, `/tick`, `/cam/wrist`, `/cam/scene`, `/policy/chunk`,
   `/log/drops`. Header as in contract 1, with the full config file as an attachment.
 - **Reader:** a typed iterator of Events in time order, optionally by topic, which also reports
   drops (contract 3).
@@ -389,5 +395,6 @@ The policy's load-time check (contract 4) is tested in Phase 2, when the first p
 
 ## Out of scope for Phase 0
 
-Moving today's teleop and byte log onto the bus (Phase 1), real cameras, the policy, the LeRobot
-converter (Phase 4), and any change to the dashboard (its live feed stays JSON).
+Moving today's teleop and byte log onto the bus (Phase 1), real cameras, the policy, and the
+LeRobot converter (Phase 4). Part 1's web dashboard was removed on 2026-11-23: viewers read the
+session log (Foxglove now; a live stream, if wanted, later).

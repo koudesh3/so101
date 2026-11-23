@@ -6,54 +6,68 @@ written to learn how they work.
 ## Layout
 
 ```
-crates/          the Rust code: one Cargo workspace. Each crate depends only on the ones above it:
-  contracts/       the Rust side of the messages (generated from proto/), the monotonic clock,
-                   and the traits: ArmDriver, FrameSource, TargetSource, Policy
-  session-log/     the event bus and the session log (MCAP): recorder, reader with drop
-                   detection, replay, recovery
-  drivers/         hardware drivers; today the SO-101 arm (arm::so101): servo protocol frames, the
-                   STS3215 control table, the serial transport and byte log, one servo bus (real
-                   or simulated), the six joints, calibration, an arm
-  control/         the fixed-rate ticker, the calibration sweep, the teleop loop
-  web-server/      the backend for web/: serves the apps (embedded in the binary), streams live
-                   teleop events, replays a byte log as events, renders a byte log as an HTML report
-  cli/             the `so101` command line, and the end-to-end tests against the simulated servos
-web/             what a person looks at in the browser; no build step
-  dashboard/       the live dashboard and its replay mode
-  viewer/          one arm, or the servo alone, in 3D
-  assets/          the arm and servo meshes, built by tools/ from the SO-ARM100 model
+crates/so101/    the Rust code, one crate, one folder per thing (src/):
+  arm/             the arm: joints, poses, calibration, `Arm`, and servo/ (the STS3215 bus underneath);
+                   Part 1's teleop loop until Phase 1 moves it into control/
+  camera/          frames (the V4L2 code joins it in Phase 4)
+  policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
+  control/         the loop: the grid of slots, ticks, events, the event bus
+  log/             the session log: protobuf in MCAP, recorder, reader, recovery
+  clock.rs         timestamps, real and replayed time
+  bin/so101.rs     the `so101` command line, which puts the pieces together
+web/             a 3D viewer of the arm, and its meshes (built by tools/ from the SO-ARM100 model)
 ml/              the LeRobot side
   act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
-proto/           the messages every part speaks, in protobuf (so101/v1), shared by every
-                 language; Foxglove's image message; the frozen schema snapshot
+proto/           the log's messages in protobuf (so101/v1), readable from any language; Foxglove's
+                 image message; the frozen schema snapshot
 data/            what isn't code
   calibration/     the leader's and follower's calibration files (in git)
   robot.conf       the Spark's arm ports and camera settings, read by `act`
   logs/            recorded logs from runs (not in git)
 docs/
   part2-spec.md    the plan for Part 2
-  phase0.md        the Phase 0 design: the contracts and the log
+  phase0.md        the contracts: what each part can rely on, and the log format
   devlog/          dated entries: what was tried, how, and what it showed
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
+
+## Glossary
+
+One concept, one name, one home.
+
+| Name | Means | Lives in |
+|---|---|---|
+| `Joint` | one of the six, in LeRobot's order | `arm` |
+| `Pose` | where all six are: degrees, gripper 0-100 | `arm` |
+| `Counts` | raw encoder readings, one per joint | `arm` |
+| `Calibration` | maps `Counts` to a `Pose`, and how to make one | `arm` |
+| `Arm` | the physical arm: read its pose, send a target, read its actuators | `arm` |
+| `ServoBus` | the STS3215 wire protocol underneath `Arm` | `arm/servo` |
+| `JointState` / `JointTarget` | a pose read / a pose commanded, with time and counts | `arm` |
+| `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
+| `Frame` | one camera image with its times | `camera` |
+| `Chunk` | a policy's predicted poses | `policy` |
+| `Grid` / `Slot` | the servo loop's fixed schedule / one step of it | `control` |
+| `Tick` | what the loop saw and sent at one control step | `control` |
+| `Source` | who produced a target: teleop, script, policy | `control` |
+| `Event` | anything published on the `EventBus`, with its times; it carries a `Message` | `control` |
+| `Log` | the session recording | `log` |
+| `Clock` / `Timestamp` | where time comes from | `clock` |
 
 ## Where it's going
 
 Part 2 ([the spec](docs/part2-spec.md)) turns this into a single-arm robot that solves 4-disc Tower of Hanoi: ACT policies for
 grasp and place, scripted transits between pegs, and a sequencer over a catalog of skills. New
-parts arrive with the phase that needs them, not before:
+parts arrive with the phase that needs them, not before, each in its thing's folder:
 
-- Phase 0 is built: `contracts` and `log` ([the design](docs/phase0.md)). Skill, check and
-  sequencer traits, and their messages, arrive in Phase 3
-- `drivers` grows mock and replay arms, the leader as a target source, and USB cameras (Linux only)
-- `control` grows the safety wrapper, the target mux and the action queue
-- `crates/runtime`: skills, checks, the step runner, and the Hanoi sequencer
-- `crates/policy-onnx`: the trained ACT policy run with ONNX Runtime; the only crate that
-  needs a GPU
-- `crates/so101-py`: PyO3 bindings, so LeRobot can record and train through this driver
-- `ml/` grows training, the LeRobot plugin, ONNX export, checkpoint probes and parity tests
-
-The calibration moves to LeRobot's file format and units (degrees, gripper 0-100) at the same time.
+- Phase 0 is built: the contracts and the session log ([phase0.md](docs/phase0.md))
+- Phase 1: the control loop runs on the arm's trait, with a mock arm beside the real one; the
+  safety wrapper, target mux and action queue; teleop moves into it
+- Phase 2: the trained ACT policy runs with ONNX Runtime, in `policy/`
+- Phase 3: skills, checks, the step runner and the Hanoi sequencer
+- Phase 4: USB cameras in `camera/`, and a PyO3 crate so LeRobot records and trains through this
+  driver
+- `ml/` grows training, ONNX export, checkpoint probes and parity tests
 
 ## Use
 
@@ -65,14 +79,14 @@ just check        # formatting, clippy, the tests (simulated servos), and Python
 just sim          # teleop the simulated arms, no hardware
 ```
 
-With hardware (`so101` is the binary `cargo install --path crates/cli` puts on your path),
-calibrate each arm, then teleoperate; `--serve` opens the dashboard at http://127.0.0.1:7878:
+With hardware (`so101` is the binary `cargo install --path crates/so101` puts on your path),
+calibrate each arm, then teleoperate:
 
 ```
 so101 calibrate --port <leader port> --arm-id leader --out leader.json
 so101 calibrate --port <follower port> --arm-id follower --out follower.json
 so101 --log run.jsonl teleop --leader <port> --follower <port> \
-  --leader-calibration leader.json --follower-calibration follower.json --serve
+  --leader-calibration leader.json --follower-calibration follower.json
 ```
 
 `just teleop` runs the last of these with the files in `data/calibration/`, logging to `data/logs/`, taking the ports from
