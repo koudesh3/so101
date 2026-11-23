@@ -1,8 +1,8 @@
-//! `ServoBus`: talking to Feetech STS3215 servos on one half-duplex serial bus: packets,
+//! `Servos`: the Feetech STS3215 servos on one half-duplex UART, addressed by ID: packets,
 //! checksums, transactions, the status flags every reply carries, and the errors.
 
 use crate::arm::registers::{self, Register, LOCK, TORQUE_ENABLE};
-use crate::arm::serial::{Transport, TransportError};
+use crate::arm::uart::{Transport, TransportError};
 use std::fmt;
 use std::io;
 use std::time::Duration;
@@ -264,7 +264,7 @@ pub fn decode_sign_magnitude(raw: u16, sign_bit: u8) -> i32 {
 // Up to ~40 ms has been measured; allow more than double.
 pub const EEPROM_ACK_TIMEOUT: Duration = Duration::from_millis(100);
 
-pub struct ServoBus {
+pub struct Servos {
     transport: Box<dyn Transport>,
     pub reply_timeout: Duration,
     // Advisory status bits seen since the last `take_flags`, per replying id.
@@ -284,7 +284,7 @@ impl ServoIdentity {
     }
 }
 
-impl ServoBus {
+impl Servos {
     pub fn new(transport: Box<dyn Transport>) -> Self {
         Self { transport, reply_timeout: Duration::from_millis(10), flags: Vec::new() }
     }

@@ -4,12 +4,12 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 
-use so101::arm::bus::ServoBus;
-use so101::arm::bus::{Error, Result};
 use so101::arm::calibration::{self, Calibration};
-use so101::arm::serial::{ByteLog, Recorder, SerialTransport, Transport};
-use so101::arm::sim::{demo, SimulatedBus};
+use so101::arm::servos::Servos;
+use so101::arm::servos::{Error, Result};
+use so101::arm::sim::{demo, SimulatedServos};
 use so101::arm::teleop::{self, TeleopOptions};
+use so101::arm::uart::{ByteLog, Recorder, SerialTransport, Transport};
 use so101::arm::{Arm, FollowerGains};
 use so101::arm::{Pose, IDS, JOINT_COUNT};
 use so101::control::grid::Grid;
@@ -18,7 +18,7 @@ use so101::{ArmRole, Joint, Limit, Message, Tick};
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
 struct Cli {
-    /// Record every byte on every bus to this JSON-lines file.
+    /// Record every byte on every serial line to this JSON-lines file.
     #[arg(long, global = true)]
     log: Option<PathBuf>,
     /// Use simulated servos instead of serial ports.
@@ -127,17 +127,17 @@ enum Role {
 impl Role {
     fn label(self) -> &'static str {
         match self {
-            Role::Single => "bus",
+            Role::Single => "servos",
             Role::Leader => "leader",
             Role::Follower => "follower",
         }
     }
 
-    fn simulated(self) -> SimulatedBus {
+    fn simulated(self) -> SimulatedServos {
         match self {
-            Role::Single => SimulatedBus::waving_arm(self.label()),
-            Role::Leader => SimulatedBus::demo_leader(self.label()),
-            Role::Follower => SimulatedBus::demo_follower(self.label()),
+            Role::Single => SimulatedServos::waving_arm(self.label()),
+            Role::Leader => SimulatedServos::demo_leader(self.label()),
+            Role::Follower => SimulatedServos::demo_follower(self.label()),
         }
     }
 }
@@ -148,7 +148,7 @@ fn main() {
         .log
         .as_ref()
         .map(|p| ByteLog::create(p).unwrap_or_else(|e| fail(&format!("cannot create log {}: {e}", p.display()))));
-    let open = |role: Role, port: Option<String>| open_bus(role, port, cli.sim, &log);
+    let open = |role: Role, port: Option<String>| open_servos(role, port, cli.sim, &log);
     let result = match cli.command {
         Command::Ping { port, id } => cmd_ping(open(Role::Single, port), id),
         Command::Scan { port } => cmd_scan(open(Role::Single, port)),
@@ -168,8 +168,8 @@ fn main() {
             wrist_lead_ms,
             actuators,
         } => {
-            let leader_bus = open_bus(Role::Leader, leader, cli.sim, &log);
-            let follower_bus = open_bus(Role::Follower, follower, cli.sim, &log);
+            let leader_servos = open_servos(Role::Leader, leader, cli.sim, &log);
+            let follower_servos = open_servos(Role::Follower, follower, cli.sim, &log);
             let cals = (leader_calibration, follower_calibration);
             let gains = FollowerGains { p: p_gain, d: FollowerGains::LEROBOT.d, grip_torque: grip_torque * 10 };
             let lead = Joint::ALL.map(|j| {
@@ -177,7 +177,7 @@ fn main() {
                 std::time::Duration::from_millis(ms)
             });
             let tuning = (gains, lead);
-            cmd_teleop(leader_bus, follower_bus, cals, hz, max_step, ticks, tuning, cli.sim, actuators)
+            cmd_teleop(leader_servos, follower_servos, cals, hz, max_step, ticks, tuning, cli.sim, actuators)
         }
         Command::Log { command: LogCommand::Recover { input, output } } => cmd_log_recover(&input, &output),
     };
@@ -194,7 +194,7 @@ fn fail(msg: &str) -> ! {
     std::process::exit(1)
 }
 
-fn open_bus(role: Role, port: Option<String>, sim: bool, log: &Option<Arc<ByteLog>>) -> ServoBus {
+fn open_servos(role: Role, port: Option<String>, sim: bool, log: &Option<Arc<ByteLog>>) -> Servos {
     let label = role.label();
     let transport: Box<dyn Transport> = if sim {
         recorded(role.simulated(), label, log)
@@ -203,7 +203,7 @@ fn open_bus(role: Role, port: Option<String>, sim: bool, log: &Option<Arc<ByteLo
         let serial = SerialTransport::open(&path).unwrap_or_else(|e| fail(&format!("open {path}: {e}")));
         recorded(serial, label, log)
     };
-    ServoBus::new(transport)
+    Servos::new(transport)
 }
 
 fn recorded<T: Transport + 'static>(t: T, label: &str, log: &Option<Arc<ByteLog>>) -> Box<dyn Transport> {
@@ -239,25 +239,25 @@ fn format_pose(pose: &Pose) -> String {
         .join("  ")
 }
 
-fn cmd_ping(mut bus: ServoBus, id: u8) -> Result<()> {
-    let servo = bus.identify(id)?;
+fn cmd_ping(mut servos: Servos, id: u8) -> Result<()> {
+    let servo = servos.identify(id)?;
     let model = if servo.is_sts3215() { "STS3215" } else { "unexpected" };
     println!(
         "servo {id} answered on {}: model {} ({model}), present position {} counts",
-        bus.name(),
+        servos.name(),
         servo.model,
         servo.present_position
     );
     Ok(())
 }
 
-fn cmd_scan(mut bus: ServoBus) -> Result<()> {
-    let found = bus.scan();
+fn cmd_scan(mut servos: Servos) -> Result<()> {
+    let found = servos.scan();
     if found.is_empty() {
-        println!("no servos answered on {}", bus.name());
+        println!("no servos answered on {}", servos.name());
         return Ok(());
     }
-    println!("servos answering on {}: {:?}", bus.name(), found);
+    println!("servos answering on {}: {:?}", servos.name(), found);
     let missing: Vec<u8> = IDS.iter().copied().filter(|id| !found.contains(id)).collect();
     if !missing.is_empty() {
         println!("missing from the expected {IDS:?}: {missing:?}");
@@ -265,13 +265,13 @@ fn cmd_scan(mut bus: ServoBus) -> Result<()> {
     Ok(())
 }
 
-fn cmd_monitor(bus: ServoBus, calibration: Option<PathBuf>, hz: f64) -> Result<()> {
+fn cmd_monitor(servos: Servos, calibration: Option<PathBuf>, hz: f64) -> Result<()> {
     let cal = load_calibration(calibration, "monitor", false)?;
-    let mut arm = Arm::new("arm", bus, cal);
+    let mut arm = Arm::new("arm", servos, cal);
     arm.check_present()?;
     let stop = ctrl_c_flag();
     let mut grid = Grid::new(hz);
-    println!("monitoring {} at {hz} Hz; Ctrl-C to stop", arm.bus_name());
+    println!("monitoring {} at {hz} Hz; Ctrl-C to stop", arm.port_name());
     while !stop.load(Ordering::Relaxed) {
         grid.wait();
         let pose = arm.read_pose()?;
@@ -299,8 +299,8 @@ fn cmd_monitor(bus: ServoBus, calibration: Option<PathBuf>, hz: f64) -> Result<(
     Ok(())
 }
 
-fn cmd_calibrate(bus: ServoBus, arm_id: &str, out: &Path) -> Result<()> {
-    let mut arm = Arm::new(arm_id, bus, Calibration::identity(arm_id));
+fn cmd_calibrate(servos: Servos, arm_id: &str, out: &Path) -> Result<()> {
+    let mut arm = Arm::new(arm_id, servos, Calibration::identity(arm_id));
     arm.check_present()?;
     let enter = stdin_lines();
 
@@ -352,8 +352,8 @@ fn stdin_lines() -> mpsc::Receiver<String> {
 
 #[allow(clippy::too_many_arguments)]
 fn cmd_teleop(
-    leader_bus: ServoBus,
-    follower_bus: ServoBus,
+    leader_servos: Servos,
+    follower_servos: Servos,
     (leader_cal, follower_cal): (Option<PathBuf>, Option<PathBuf>),
     hz: f64,
     max_step: i32,
@@ -362,8 +362,8 @@ fn cmd_teleop(
     sim: bool,
     actuators: bool,
 ) -> Result<()> {
-    let mut leader = Arm::new("leader", leader_bus, load_calibration(leader_cal, "leader", sim)?);
-    let mut follower = Arm::new("follower", follower_bus, load_calibration(follower_cal, "follower", sim)?);
+    let mut leader = Arm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
+    let mut follower = Arm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
     leader.check_present()?;
     follower.check_present()?;
     for arm in [&mut leader, &mut follower] {

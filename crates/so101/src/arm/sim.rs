@@ -5,9 +5,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::arm::bus::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
 use crate::arm::registers::{self, Register, CENTER_COUNT, COUNTS_PER_TURN};
-use crate::arm::serial::{Transport, TransportError};
+use crate::arm::servos::{encode_status, parse_packet, Instruction, ParseError, ServoError, BROADCAST_ID};
+use crate::arm::uart::{Transport, TransportError};
 use crate::arm::IDS;
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
@@ -205,7 +205,7 @@ const FACTORY_DEFAULTS: [(Register, i32); 13] = [
     (registers::RETURN_DELAY, 0),
 ];
 
-pub struct SimulatedBus {
+pub struct SimulatedServos {
     pub servos: Vec<SimServo>,
     pub clock: SimClock,
     hand: Option<Hand>,
@@ -217,7 +217,7 @@ pub struct SimulatedBus {
     pub silenced_ids: Vec<u8>,
 }
 
-impl SimulatedBus {
+impl SimulatedServos {
     pub fn new(name: &str, ids: &[u8], clock: SimClock) -> Self {
         let servos = ids.iter().map(|&id| SimServo::new(id, CENTER_COUNT as f64)).collect();
         Self {
@@ -349,7 +349,7 @@ pub fn waving_hand() -> Hand {
     })
 }
 
-impl Transport for SimulatedBus {
+impl Transport for SimulatedServos {
     fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
         self.pending_input.extend_from_slice(bytes);
         loop {

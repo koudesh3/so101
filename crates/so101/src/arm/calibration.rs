@@ -7,8 +7,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::arm::bus::{Error, Result};
 use crate::arm::registers::{CENTER_COUNT, COUNTS_PER_TURN};
+use crate::arm::servos::{Error, Result};
 use crate::arm::{Arm, Counts, Joint, Pose, Unit, JOINT_COUNT};
 use crate::control::grid::Grid;
 
@@ -192,7 +192,7 @@ pub fn sweep(arm: &mut Arm, hz: f64, mut keep_going: impl FnMut(&Sweep) -> bool)
     let mut grid = Grid::new(hz);
     loop {
         grid.wait();
-        // A voltage flag does not fail the read (ServoBus::take_flags), so hand-driven
+        // A voltage flag does not fail the read (Servos::take_flags), so hand-driven
         // sweeps on a marginal 5 V supply keep every sample.
         let counts = arm.read_counts()?;
         for (i, &t) in counts.iter().enumerate() {

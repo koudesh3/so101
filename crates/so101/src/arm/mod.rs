@@ -1,16 +1,16 @@
 //! The SO-101 arm: what its joints and poses are, and `Arm`, which reads and commands it over its
-//! STS3215 servo bus. Positions on `Arm` are in the calibrated coordinate; it's the only code
-//! above `bus` that names registers.
+//! STS3215 servo servos. Positions on `Arm` are in the calibrated coordinate; it's the only code
+//! above `servos` that names registers.
 
-pub mod bus;
 pub mod calibration;
 pub mod registers;
-pub mod serial;
+pub mod servos;
 pub mod sim;
 pub mod teleop;
+pub mod uart;
 
-use self::bus::{Error, Result, ServoBus, ServoError};
 use self::calibration::Calibration;
+use self::servos::{Error, Result, ServoError, Servos};
 use crate::{CheckpointId, MonotonicClock, Timestamp};
 use std::time::Duration;
 
@@ -138,7 +138,7 @@ pub struct ActuatorStatus {
     pub faults: Vec<Fault>,
 }
 
-/// Servo IDs on the bus, in `Joint::ALL` order.
+/// Servo IDs, in `Joint::ALL` order.
 pub const IDS: [u8; JOINT_COUNT] = [1, 2, 3, 4, 5, 6];
 
 impl Joint {
@@ -170,21 +170,21 @@ impl FollowerGains {
 
 pub struct Arm {
     label: String,
-    bus: ServoBus,
+    servos: Servos,
     calibration: Calibration,
 }
 
 impl Arm {
-    pub fn new(label: &str, bus: ServoBus, calibration: Calibration) -> Self {
-        Self { label: label.to_string(), bus, calibration }
+    pub fn new(label: &str, servos: Servos, calibration: Calibration) -> Self {
+        Self { label: label.to_string(), servos, calibration }
     }
 
     pub fn label(&self) -> &str {
         &self.label
     }
 
-    pub fn bus_name(&self) -> &str {
-        self.bus.name()
+    pub fn port_name(&self) -> &str {
+        self.servos.name()
     }
 
     pub fn calibration(&self) -> &Calibration {
@@ -193,7 +193,7 @@ impl Arm {
 
     pub fn check_present(&mut self) -> Result<()> {
         for joint in Joint::ALL {
-            let identity = self.bus.identify(joint.id())?;
+            let identity = self.servos.identify(joint.id())?;
             if !identity.is_sts3215() {
                 return Err(Error::UnexpectedModel { id: joint.id(), model: identity.model });
             }
@@ -206,9 +206,9 @@ impl Arm {
     pub fn configure_readings(&mut self) -> Result<usize> {
         let mut changed = 0;
         for id in IDS {
-            let phase = self.bus.read(id, registers::PHASE)?;
+            let phase = self.servos.read(id, registers::PHASE)?;
             if phase & registers::PHASE_ANGLE_FEEDBACK != 0 {
-                self.bus.write_eeprom(id, registers::PHASE, phase & !registers::PHASE_ANGLE_FEEDBACK)?;
+                self.servos.write_eeprom(id, registers::PHASE, phase & !registers::PHASE_ANGLE_FEEDBACK)?;
                 changed += 1;
             }
         }
@@ -222,34 +222,34 @@ impl Arm {
     // The register set LeRobot writes to a follower at connect time.
     pub fn configure_follower_with(&mut self, gains: FollowerGains) -> Result<()> {
         for id in IDS {
-            self.bus.write(id, registers::TORQUE_ENABLE, 0)?;
-            self.bus.write_eeprom(id, registers::RETURN_DELAY, 0)?;
-            self.bus.write_eeprom(id, registers::OPERATING_MODE, 0)?;
-            self.bus.write_eeprom(id, registers::P_COEFFICIENT, gains.p)?;
-            self.bus.write_eeprom(id, registers::I_COEFFICIENT, 0)?;
-            self.bus.write_eeprom(id, registers::D_COEFFICIENT, gains.d)?;
-            self.bus.write_unlocked(id, registers::MAXIMUM_ACCELERATION, 254)?;
-            self.bus.write(id, registers::ACCELERATION, 254)?;
+            self.servos.write(id, registers::TORQUE_ENABLE, 0)?;
+            self.servos.write_eeprom(id, registers::RETURN_DELAY, 0)?;
+            self.servos.write_eeprom(id, registers::OPERATING_MODE, 0)?;
+            self.servos.write_eeprom(id, registers::P_COEFFICIENT, gains.p)?;
+            self.servos.write_eeprom(id, registers::I_COEFFICIENT, 0)?;
+            self.servos.write_eeprom(id, registers::D_COEFFICIENT, gains.d)?;
+            self.servos.write_unlocked(id, registers::MAXIMUM_ACCELERATION, 254)?;
+            self.servos.write(id, registers::ACCELERATION, 254)?;
         }
         // Gripper burnout guard, LeRobot's values. Closing the leader trigger
         // drives the claw into itself; without these it stalls at full torque.
         let grip = Joint::Gripper.id();
-        self.bus.write_eeprom(grip, registers::MAX_TORQUE, gains.grip_torque)?;
-        self.bus.write_eeprom(grip, registers::PROTECTION_CURRENT, 250)?; // factory default 0 = off
-        self.bus.write_eeprom(grip, registers::OVERLOAD_TORQUE, 25)?; // overload trips at 25%
-        self.bus.write(grip, registers::TORQUE_LIMIT, gains.grip_torque)?; // RAM copy, in case 16 only loads at power-on
+        self.servos.write_eeprom(grip, registers::MAX_TORQUE, gains.grip_torque)?;
+        self.servos.write_eeprom(grip, registers::PROTECTION_CURRENT, 250)?; // factory default 0 = off
+        self.servos.write_eeprom(grip, registers::OVERLOAD_TORQUE, 25)?; // overload trips at 25%
+        self.servos.write(grip, registers::TORQUE_LIMIT, gains.grip_torque)?; // RAM copy, in case 16 only loads at power-on
         Ok(())
     }
 
     pub fn torque_off(&mut self) -> Result<()> {
-        self.bus.sync_write(registers::TORQUE_ENABLE, &IDS.map(|id| (id, 0)))
+        self.servos.sync_write(registers::TORQUE_ENABLE, &IDS.map(|id| (id, 0)))
     }
 
     // Seeds every goal with the present position first so nothing jumps.
     pub fn torque_on_holding(&mut self) -> Result<()> {
         let present = self.read_counts()?;
-        self.bus.sync_write(registers::GOAL_POSITION, &pairs(present))?;
-        self.bus.sync_write(registers::TORQUE_ENABLE, &IDS.map(|id| (id, 1)))
+        self.servos.sync_write(registers::GOAL_POSITION, &pairs(present))?;
+        self.servos.sync_write(registers::TORQUE_ENABLE, &IDS.map(|id| (id, 1)))
     }
 
     // Declare the current pose to be centre. Returns the Homing_Offset each servo chose.
@@ -257,7 +257,7 @@ impl Arm {
         self.torque_off()?;
         let mut offsets = [0; JOINT_COUNT];
         for (i, id) in IDS.iter().enumerate() {
-            self.bus.write(*id, registers::TORQUE_ENABLE, registers::TORQUE_RECENTER)?;
+            self.servos.write(*id, registers::TORQUE_ENABLE, registers::TORQUE_RECENTER)?;
             offsets[i] = self.read_after_eeprom_write(*id, registers::HOMING_OFFSET)?;
         }
         Ok(offsets)
@@ -270,7 +270,7 @@ impl Arm {
         let mut last = Error::NoReply { id };
         for _ in 0..20 {
             std::thread::sleep(Duration::from_millis(10));
-            match self.bus.read(id, reg) {
+            match self.servos.read(id, reg) {
                 Ok(v) => return Ok(v),
                 Err(e @ Error::NoReply { .. }) => last = e,
                 Err(e) => return Err(e),
@@ -280,7 +280,7 @@ impl Arm {
     }
 
     pub fn read_counts(&mut self) -> Result<Counts> {
-        let v = self.bus.sync_read(&IDS, registers::PRESENT_POSITION)?;
+        let v = self.servos.sync_read(&IDS, registers::PRESENT_POSITION)?;
         Ok(std::array::from_fn(|i| v[i]))
     }
 
@@ -306,7 +306,7 @@ impl Arm {
             }
             _ => goals,
         };
-        self.bus.sync_write(registers::GOAL_POSITION, &pairs(sent))?;
+        self.servos.sync_write(registers::GOAL_POSITION, &pairs(sent))?;
         Ok(sent)
     }
 
@@ -316,14 +316,14 @@ impl Arm {
 
     /// One block read covers every field.
     pub fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
-        let block = self.bus.read_block(joint.id(), STATUS_BLOCK_START, STATUS_BLOCK_LEN)?;
+        let block = self.servos.read_block(joint.id(), STATUS_BLOCK_START, STATUS_BLOCK_LEN)?;
         decode_actuator(joint, MonotonicClock::read(), &block)
             .ok_or_else(|| Error::Corrupt(format!("short status block from servo {}", joint.id())))
     }
 
     pub fn take_flags(&mut self) -> [ServoError; JOINT_COUNT] {
         let mut out = [ServoError(0); JOINT_COUNT];
-        for (id, e) in self.bus.take_flags() {
+        for (id, e) in self.servos.take_flags() {
             if let Some(j) = Joint::from_id(id) {
                 out[j.index()].0 |= e.0;
             }
@@ -333,7 +333,7 @@ impl Arm {
 
     // Raw register access for tests and diagnostics.
     pub fn read_register(&mut self, joint: Joint, reg: registers::Register) -> Result<i32> {
-        self.bus.read(joint.id(), reg)
+        self.servos.read(joint.id(), reg)
     }
 }
 

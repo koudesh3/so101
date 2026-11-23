@@ -1,4 +1,4 @@
-//! Moving bytes to and from a bus with no knowledge of what they mean.
+//! The UART to the servos: moving bytes to and from the line with no knowledge of what they mean.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
@@ -106,20 +106,20 @@ impl Transport for SerialTransport {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Direction {
-    HostToBus,
+    HostToServos,
     BusToHost,
 }
 
 impl Direction {
     pub fn as_str(self) -> &'static str {
         match self {
-            Direction::HostToBus => "tx",
+            Direction::HostToServos => "tx",
             Direction::BusToHost => "rx",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "tx" => Some(Direction::HostToBus),
+            "tx" => Some(Direction::HostToServos),
             "rx" => Some(Direction::BusToHost),
             _ => None,
         }
@@ -186,7 +186,7 @@ impl<T: Transport> Recorder<T> {
 
 impl<T: Transport> Transport for Recorder<T> {
     fn send(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
-        self.log.record(&self.label, Direction::HostToBus, bytes);
+        self.log.record(&self.label, Direction::HostToServos, bytes);
         self.inner.send(bytes)
     }
 

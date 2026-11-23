@@ -3,7 +3,7 @@
 //! note: addresses below 40 are EEPROM. They persist across power cycles
 //! and the servo silently ignores writes to them while Lock = 1.
 
-use crate::arm::bus::{decode_sign_magnitude, encode_sign_magnitude};
+use crate::arm::servos::{decode_sign_magnitude, encode_sign_magnitude};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {

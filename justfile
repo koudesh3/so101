@@ -15,7 +15,7 @@ check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
-    if grep -rnE 'crate::(log|arm::(Arm|bus|registers|serial|sim|teleop|calibration))\b' control/; then
+    if grep -rnE 'crate::(log|arm::(Arm|servos|registers|uart|sim|teleop|calibration))\b' control/; then
         echo "error: control/ reaches into hardware or the log (above)"; exit 1
     fi
 

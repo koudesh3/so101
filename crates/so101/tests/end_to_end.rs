@@ -4,13 +4,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use so101::arm::bus::Error;
-use so101::arm::bus::ServoBus;
 use so101::arm::calibration::{self, Calibration};
 use so101::arm::registers;
-use so101::arm::serial::{read_log, ByteLog, Recorder};
-use so101::arm::sim::{SimClock, SimulatedBus};
+use so101::arm::servos::Error;
+use so101::arm::servos::Servos;
+use so101::arm::sim::{SimClock, SimulatedServos};
 use so101::arm::teleop::{self, TeleopOptions};
+use so101::arm::uart::{read_log, ByteLog, Recorder};
 use so101::arm::Arm;
 use so101::arm::{ActuatorStatus, Counts, Joint, IDS, JOINT_COUNT};
 use so101::{ArmRole, Event, Fault, Limit, Message, Tick};
@@ -52,89 +52,89 @@ impl Step {
     }
 }
 
-fn sim_bus(name: &str) -> ServoBus {
-    ServoBus::new(Box::new(SimulatedBus::arm(name)))
+fn sim_bus(name: &str) -> Servos {
+    Servos::new(Box::new(SimulatedServos::arm(name)))
 }
 
-fn sim_arm(sim: SimulatedBus, label: &str) -> Arm {
-    Arm::new(label, ServoBus::new(Box::new(sim)), Calibration::identity(label))
+fn sim_arm(sim: SimulatedServos, label: &str) -> Arm {
+    Arm::new(label, Servos::new(Box::new(sim)), Calibration::identity(label))
 }
 
 #[test]
 fn ping_and_model_number() {
-    let mut bus = sim_bus("bus");
-    bus.ping(1).unwrap();
-    let servo = bus.identify(1).unwrap();
+    let mut servos = sim_bus("servos");
+    servos.ping(1).unwrap();
+    let servo = servos.identify(1).unwrap();
     assert_eq!(servo.model, 777);
     assert!(servo.is_sts3215());
-    assert!(matches!(bus.ping(9), Err(Error::NoReply { id: 9 })));
+    assert!(matches!(servos.ping(9), Err(Error::NoReply { id: 9 })));
 }
 
 #[test]
 fn scan_finds_exactly_six() {
-    let mut bus = sim_bus("bus");
-    assert_eq!(bus.scan(), vec![1, 2, 3, 4, 5, 6]);
+    let mut servos = sim_bus("servos");
+    assert_eq!(servos.scan(), vec![1, 2, 3, 4, 5, 6]);
 }
 
 #[test]
 fn write_then_read_a_ram_register() {
-    let mut bus = sim_bus("bus");
-    bus.write(3, registers::ACCELERATION, 254).unwrap();
-    assert_eq!(bus.read(3, registers::ACCELERATION).unwrap(), 254);
+    let mut servos = sim_bus("servos");
+    servos.write(3, registers::ACCELERATION, 254).unwrap();
+    assert_eq!(servos.read(3, registers::ACCELERATION).unwrap(), 254);
 }
 
 #[test]
 fn eeprom_write_needs_unlock() {
-    let mut bus = sim_bus("bus");
-    bus.write(1, registers::P_COEFFICIENT, 16).unwrap();
-    assert_eq!(bus.read(1, registers::P_COEFFICIENT).unwrap(), 32);
-    bus.write_eeprom(1, registers::P_COEFFICIENT, 16).unwrap();
-    assert_eq!(bus.read(1, registers::P_COEFFICIENT).unwrap(), 16);
-    assert_eq!(bus.read(1, registers::LOCK).unwrap(), 1);
+    let mut servos = sim_bus("servos");
+    servos.write(1, registers::P_COEFFICIENT, 16).unwrap();
+    assert_eq!(servos.read(1, registers::P_COEFFICIENT).unwrap(), 32);
+    servos.write_eeprom(1, registers::P_COEFFICIENT, 16).unwrap();
+    assert_eq!(servos.read(1, registers::P_COEFFICIENT).unwrap(), 16);
+    assert_eq!(servos.read(1, registers::LOCK).unwrap(), 1);
 }
 
 #[test]
 fn read_only_register_is_refused_before_touching_the_wire() {
-    let mut bus = sim_bus("bus");
-    assert!(matches!(bus.write(1, registers::PRESENT_POSITION, 0), Err(Error::Refused(_))));
+    let mut servos = sim_bus("servos");
+    assert!(matches!(servos.write(1, registers::PRESENT_POSITION, 0), Err(Error::Refused(_))));
 }
 
 #[test]
 fn servo_tracks_goal_within_speed_limit() {
     let clock = SimClock::manual();
-    let sim = SimulatedBus::new("bus", &[1], clock.clone());
-    let mut bus = ServoBus::new(Box::new(sim));
-    bus.write(1, registers::TORQUE_ENABLE, 1).unwrap();
-    bus.write(1, registers::GOAL_POSITION, 3048).unwrap();
+    let sim = SimulatedServos::new("servos", &[1], clock.clone());
+    let mut servos = Servos::new(Box::new(sim));
+    servos.write(1, registers::TORQUE_ENABLE, 1).unwrap();
+    servos.write(1, registers::GOAL_POSITION, 3048).unwrap();
 
     clock.advance(Duration::from_millis(100));
-    let after_100ms = bus.read(1, registers::PRESENT_POSITION).unwrap();
+    let after_100ms = servos.read(1, registers::PRESENT_POSITION).unwrap();
     assert!(after_100ms > 2048 && after_100ms <= 2048 + 310, "{after_100ms}");
 
     clock.advance(Duration::from_secs(2));
-    let settled = bus.read(1, registers::PRESENT_POSITION).unwrap();
+    let settled = servos.read(1, registers::PRESENT_POSITION).unwrap();
     assert!((settled - 3048).abs() <= 2, "{settled}");
-    assert_eq!(bus.read(1, registers::MOVING).unwrap(), 0);
+    assert_eq!(servos.read(1, registers::MOVING).unwrap(), 0);
 }
 
 #[test]
 fn sync_read_returns_in_id_order_and_fails_on_a_missing_servo() {
-    let mut sim = SimulatedBus::arm("bus");
+    let mut sim = SimulatedServos::arm("servos");
     sim.servo_mut(4).unwrap().actual_counts = 1000.0;
-    let mut bus = ServoBus::new(Box::new(sim));
-    let v = bus.sync_read(&[1, 4, 6], registers::PRESENT_POSITION).unwrap();
+    let mut servos = Servos::new(Box::new(sim));
+    let v = servos.sync_read(&[1, 4, 6], registers::PRESENT_POSITION).unwrap();
     assert_eq!(v, vec![2048, 1000, 2048]);
 
-    let mut sim = SimulatedBus::arm("bus");
+    let mut sim = SimulatedServos::arm("servos");
     sim.silenced_ids.push(3);
-    let mut bus = ServoBus::new(Box::new(sim));
-    let err = bus.sync_read(&IDS, registers::PRESENT_POSITION).unwrap_err();
+    let mut servos = Servos::new(Box::new(sim));
+    let err = servos.sync_read(&IDS, registers::PRESENT_POSITION).unwrap_err();
     assert!(matches!(err, Error::WrongId { expected: 3, got: 4 }), "{err}");
 }
 
 #[test]
 fn check_present_rejects_a_wrong_model() {
-    let mut sim = SimulatedBus::arm("bus");
+    let mut sim = SimulatedServos::arm("servos");
     sim.servo_mut(2).unwrap().set(registers::MODEL_NUMBER, 1234);
     let mut arm = sim_arm(sim, "a");
     let err = arm.check_present().unwrap_err();
@@ -143,7 +143,7 @@ fn check_present_rejects_a_wrong_model() {
 
 #[test]
 fn recentre_makes_every_joint_read_centre_without_moving() {
-    let mut sim = SimulatedBus::arm("bus");
+    let mut sim = SimulatedServos::arm("servos");
     for (i, s) in sim.servos.iter_mut().enumerate() {
         s.actual_counts = 1500.0 + i as f64 * 100.0;
     }
@@ -155,7 +155,7 @@ fn recentre_makes_every_joint_read_centre_without_moving() {
 
 #[test]
 fn sweep_records_the_range_the_hand_covered() {
-    let mut arm = sim_arm(SimulatedBus::waving_arm("bus"), "a");
+    let mut arm = sim_arm(SimulatedServos::waving_arm("servos"), "a");
     arm.torque_off().unwrap();
     let mut polls = 0;
     let sweep = calibration::sweep(&mut arm, 200.0, |_| {
@@ -180,10 +180,10 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
     let log_path = dir.join("bytes.jsonl");
     let log = ByteLog::create(&log_path).unwrap();
 
-    let leader_sim = Recorder::new(SimulatedBus::waving_arm("leader"), "leader", log.clone());
-    let follower_sim = Recorder::new(SimulatedBus::arm("follower"), "follower", log.clone());
-    let mut leader = Arm::new("leader", ServoBus::new(Box::new(leader_sim)), Calibration::identity("leader"));
-    let mut follower = Arm::new("follower", ServoBus::new(Box::new(follower_sim)), Calibration::identity("follower"));
+    let leader_sim = Recorder::new(SimulatedServos::waving_arm("leader"), "leader", log.clone());
+    let follower_sim = Recorder::new(SimulatedServos::arm("follower"), "follower", log.clone());
+    let mut leader = Arm::new("leader", Servos::new(Box::new(leader_sim)), Calibration::identity("leader"));
+    let mut follower = Arm::new("follower", Servos::new(Box::new(follower_sim)), Calibration::identity("follower"));
 
     leader.check_present().unwrap();
     follower.check_present().unwrap();
@@ -233,9 +233,9 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
 
 #[test]
 fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
-    let mut follower_sim = SimulatedBus::arm("follower");
+    let mut follower_sim = SimulatedServos::arm("follower");
     follower_sim.silenced_ids.push(2);
-    let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
     let mut follower = sim_arm(follower_sim, "follower");
     let options = TeleopOptions {
         hz: 200.0,
@@ -256,7 +256,7 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
 
 #[test]
 fn configure_follower_caps_the_gripper_only() {
-    let mut arm = sim_arm(SimulatedBus::arm("follower"), "follower");
+    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
     arm.configure_follower().unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, registers::MAX_TORQUE).unwrap(), 500);
     assert_eq!(arm.read_register(Joint::Gripper, registers::PROTECTION_CURRENT).unwrap(), 250);
@@ -271,7 +271,7 @@ fn configure_follower_caps_the_gripper_only() {
 
 #[test]
 fn actuator_status_decodes_every_field_in_one_read() {
-    let mut arm = sim_arm(SimulatedBus::arm("follower"), "follower");
+    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
     let a = arm.read_actuator(Joint::ElbowFlex).unwrap();
     assert_eq!(a.joint, Joint::ElbowFlex);
     assert_eq!(a.temperature_c, Some(31.0));
@@ -284,7 +284,7 @@ fn actuator_status_decodes_every_field_in_one_read() {
 fn a_blocked_gripper_shows_load_and_no_speed() {
     use so101::arm::sim::demo;
     let clock = SimClock::manual();
-    let sim = SimulatedBus::new("follower", &IDS, clock.clone()).with_obstacle(demo::object());
+    let sim = SimulatedServos::new("follower", &IDS, clock.clone()).with_obstacle(demo::object());
     let mut arm = sim_arm(sim, "follower");
     arm.configure_follower().unwrap();
     arm.torque_on_holding().unwrap();
@@ -306,8 +306,8 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
 
 #[test]
 fn teleop_reads_one_actuator_per_tick_in_rotation() {
-    let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
-    let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
+    let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(200),
@@ -344,8 +344,8 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
     // its own top speed (3100 counts/s in the sim), not crawl behind a goal
     // pinned 40 counts ahead of it.
     let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 2848.0 } else { 2048.0 }));
-    let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
+    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+    let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -380,8 +380,8 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
         })
     });
     let object: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
-    let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(object), "follower");
+    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_obstacle(object), "follower");
     follower.configure_follower().unwrap();
     let options = TeleopOptions {
         hz: 200.0,
@@ -412,7 +412,7 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
 #[test]
 fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     use so101::arm::FollowerGains;
-    let mut arm = sim_arm(SimulatedBus::arm("follower"), "follower");
+    let mut arm = sim_arm(SimulatedServos::arm("follower"), "follower");
     arm.configure_follower_with(FollowerGains { p: 28, d: 32, grip_torque: 800 }).unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, registers::MAX_TORQUE).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::Gripper, registers::TORQUE_LIMIT).unwrap(), 800);
@@ -434,8 +434,8 @@ fn lead_closes_the_gap_to_a_moving_leader() {
     let gap = |lead_ms: u64| {
         let hand: so101::arm::sim::Hand =
             Arc::new(|id: u8, t: f64| Some(if id == 1 { 1200.0 + 1200.0 * t.min(1.5) } else { 2048.0 }));
-        let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-        let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
+        let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+        let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
         let options = TeleopOptions {
             hz: 100.0,
             max_step_counts: Some(80),
@@ -463,7 +463,7 @@ fn lead_closes_the_gap_to_a_moving_leader() {
 // arrive 0.3 ms after the request. A reply that misses its window stays in
 // flight and lands in whatever exchange is open then, as on a real port.
 struct SlowEepromAcks {
-    inner: SimulatedBus,
+    inner: SimulatedServos,
     busy_until: std::collections::HashMap<u8, std::time::Instant>,
     in_flight: Vec<(std::time::Instant, Vec<u8>)>,
     arrived: std::collections::VecDeque<u8>,
@@ -475,7 +475,7 @@ impl SlowEepromAcks {
 
     fn new() -> Self {
         Self {
-            inner: SimulatedBus::arm("bus"),
+            inner: SimulatedServos::arm("servos"),
             busy_until: Default::default(),
             in_flight: Vec::new(),
             arrived: Default::default(),
@@ -492,8 +492,8 @@ impl SlowEepromAcks {
     }
 }
 
-impl so101::arm::serial::Transport for SlowEepromAcks {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
+impl so101::arm::uart::Transport for SlowEepromAcks {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
         let now = std::time::Instant::now();
         self.inner.send(bytes)?;
         let (id, instr, addr) = (bytes[2], bytes[4], bytes[5]);
@@ -503,7 +503,7 @@ impl so101::arm::serial::Transport for SlowEepromAcks {
             out.push(b[0]);
         }
         let mut rest = &out[..];
-        while let Ok((frame, used)) = so101::arm::bus::parse_packet(rest) {
+        while let Ok((frame, used)) = so101::arm::servos::parse_packet(rest) {
             let busy = self.busy_until.get(&frame.id).copied().filter(|t| *t > now);
             self.in_flight.push((busy.unwrap_or(now + Self::TURNAROUND), rest[..used].to_vec()));
             rest = &rest[used..];
@@ -520,7 +520,7 @@ impl so101::arm::serial::Transport for SlowEepromAcks {
         Ok(())
     }
 
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
         let deadline = std::time::Instant::now() + timeout;
         let mut got = 0;
         while got < buf.len() {
@@ -531,7 +531,7 @@ impl so101::arm::serial::Transport for SlowEepromAcks {
                     got += 1;
                 }
                 None if std::time::Instant::now() >= deadline => {
-                    return Err(so101::arm::serial::TransportError::Timeout { wanted: buf.len(), got })
+                    return Err(so101::arm::uart::TransportError::Timeout { wanted: buf.len(), got })
                 }
                 None => std::thread::sleep(Duration::from_micros(100)),
             }
@@ -540,7 +540,7 @@ impl so101::arm::serial::Transport for SlowEepromAcks {
     }
 
     // Like a real port: only bytes that have already arrived are thrown away.
-    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
         self.land_due();
         self.arrived.clear();
         Ok(())
@@ -555,13 +555,13 @@ impl so101::arm::serial::Transport for SlowEepromAcks {
 fn a_late_eeprom_ack_does_not_leak_into_the_next_transaction() {
     // The sequence that failed on hardware: clear the wrap bit on servo 3, then
     // on servo 4. Servo 3's late ack landed in servo 4's exchange.
-    let mut bus = ServoBus::new(Box::new(SlowEepromAcks::new()));
-    bus.write_unlocked(3, registers::PHASE, 12).unwrap();
-    bus.write_unlocked(4, registers::PHASE, 12).unwrap();
-    assert_eq!(bus.read(5, registers::MODEL_NUMBER).unwrap(), 777);
+    let mut servos = Servos::new(Box::new(SlowEepromAcks::new()));
+    servos.write_unlocked(3, registers::PHASE, 12).unwrap();
+    servos.write_unlocked(4, registers::PHASE, 12).unwrap();
+    assert_eq!(servos.read(5, registers::MODEL_NUMBER).unwrap(), 777);
     for id in [3, 4] {
-        assert_eq!(bus.read(id, registers::PHASE).unwrap(), 12);
-        assert_eq!(bus.read(id, registers::LOCK).unwrap(), 1, "servo {id} relocked");
+        assert_eq!(servos.read(id, registers::PHASE).unwrap(), 12);
+        assert_eq!(servos.read(id, registers::LOCK).unwrap(), 1, "servo {id} relocked");
     }
 }
 
@@ -576,8 +576,8 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
         let hand: so101::arm::sim::Hand = Arc::new(|id: u8, t: f64| {
             Some(if id == 1 { 2048.0 + 4.0 * (t * 8.0 * std::f64::consts::TAU).sin() } else { 2048.0 })
         });
-        let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-        let mut follower = sim_arm(SimulatedBus::arm("follower"), "follower");
+        let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+        let mut follower = sim_arm(SimulatedServos::arm("follower"), "follower");
         let options = TeleopOptions {
             hz: 100.0,
             max_step_counts: Some(40),
@@ -604,8 +604,8 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     // notice the stall by itself and hold at the contact point.
     let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 1 { 1900.0 } else { 2048.0 }));
     let wall: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 1).then_some(2000.0));
-    let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-    let mut follower = sim_arm(SimulatedBus::arm("follower").with_obstacle(wall), "follower");
+    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_obstacle(wall), "follower");
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -626,27 +626,27 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     assert!((last.sent[0] - 2000).abs() <= 2, "held goal {} should sit at the contact point", last.sent[0]);
 }
 
-// A transport that goes silent after a number of sends: a follower bus dying mid-run.
+// A transport that goes silent after a number of sends: a follower line dying mid-run.
 struct DiesAfter {
-    inner: SimulatedBus,
+    inner: SimulatedServos,
     sends_left: usize,
 }
 
-impl so101::arm::serial::Transport for DiesAfter {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
+impl so101::arm::uart::Transport for DiesAfter {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
         if self.sends_left == 0 {
             return Ok(());
         }
         self.sends_left -= 1;
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
         if self.sends_left == 0 {
-            return Err(so101::arm::serial::TransportError::Timeout { wanted: buf.len(), got: 0 });
+            return Err(so101::arm::uart::TransportError::Timeout { wanted: buf.len(), got: 0 });
         }
         self.inner.receive_exact(buf, timeout)
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -656,9 +656,9 @@ impl so101::arm::serial::Transport for DiesAfter {
 
 #[test]
 fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
-    let mut leader = sim_arm(SimulatedBus::waving_arm("leader"), "leader");
-    let dying = DiesAfter { inner: SimulatedBus::arm("follower"), sends_left: 60 };
-    let mut follower = Arm::new("follower", ServoBus::new(Box::new(dying)), Calibration::identity("follower"));
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader"), "leader");
+    let dying = DiesAfter { inner: SimulatedServos::arm("follower"), sends_left: 60 };
+    let mut follower = Arm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -680,15 +680,15 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
 // Flags the gripper's first few replies with OVERCURRENT, as a real servo does
 // for a moment after torque comes back on following an earlier trip.
 struct StaleGripperFlags {
-    inner: SimulatedBus,
+    inner: SimulatedServos,
     flagged_left: usize,
 }
 
-impl so101::arm::serial::Transport for StaleGripperFlags {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
+impl so101::arm::uart::Transport for StaleGripperFlags {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if self.flagged_left > 0 && buf.len() >= 6 && buf[2] == 6 {
             self.flagged_left -= 1;
@@ -698,7 +698,7 @@ impl so101::arm::serial::Transport for StaleGripperFlags {
         }
         Ok(())
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -712,9 +712,9 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
     // in the first 0.09 s, the first tick latched a hold, and the gripper stayed
     // shut for the whole run. A free gripper must follow the leader open.
     let hand: so101::arm::sim::Hand = Arc::new(|id: u8, _t: f64| Some(if id == 6 { 2600.0 } else { 2048.0 }));
-    let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
-    let stale = StaleGripperFlags { inner: SimulatedBus::arm("follower"), flagged_left: 8 };
-    let mut follower = Arm::new("follower", ServoBus::new(Box::new(stale)), Calibration::identity("follower"));
+    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
+    let stale = StaleGripperFlags { inner: SimulatedServos::arm("follower"), flagged_left: 8 };
+    let mut follower = Arm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
@@ -734,17 +734,17 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
 // Flags the gripper's replies with OVERLOAD between two reply counts: the
 // servo's protection staying on across the moment the leader opens.
 struct GripperFlagWindow {
-    inner: SimulatedBus,
+    inner: SimulatedServos,
     seen: usize,
     from: usize,
     to: usize,
 }
 
-impl so101::arm::serial::Transport for GripperFlagWindow {
-    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::serial::TransportError> {
+impl so101::arm::uart::Transport for GripperFlagWindow {
+    fn send(&mut self, bytes: &[u8]) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.send(bytes)
     }
-    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::serial::TransportError> {
+    fn receive_exact(&mut self, buf: &mut [u8], timeout: Duration) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.receive_exact(buf, timeout)?;
         if buf.len() >= 6 && buf[2] == 6 {
             self.seen += 1;
@@ -756,7 +756,7 @@ impl so101::arm::serial::Transport for GripperFlagWindow {
         }
         Ok(())
     }
-    fn discard_input(&mut self) -> Result<(), so101::arm::serial::TransportError> {
+    fn discard_input(&mut self) -> Result<(), so101::arm::uart::TransportError> {
         self.inner.discard_input()
     }
     fn name(&self) -> &str {
@@ -782,11 +782,11 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
         })
     });
     let object: so101::arm::sim::Obstacle = Arc::new(|id: u8, _t: f64| (id == 6).then_some(1900.0));
-    let mut leader = sim_arm(SimulatedBus::arm("leader").with_hand(hand), "leader");
+    let mut leader = sim_arm(SimulatedServos::arm("leader").with_hand(hand), "leader");
     // Flag on from the grip until ~0.15 s after the leader opens.
     let window =
-        GripperFlagWindow { inner: SimulatedBus::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
-    let mut follower = Arm::new("follower", ServoBus::new(Box::new(window)), Calibration::identity("follower"));
+        GripperFlagWindow { inner: SimulatedServos::arm("follower").with_obstacle(object), seen: 0, from: 60, to: 150 };
+    let mut follower = Arm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"));
     let options = TeleopOptions {
         hz: 200.0,
         max_step_counts: Some(40),
