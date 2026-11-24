@@ -71,11 +71,12 @@ runs on `ServoArm` and the mock arm alike.
   `JointState`, whatever the pilot observed, the `JointTarget` and the `Tick` on the `EventBus`.
   `Teleop` is the first pilot: the leader arm and the lead predictor. The CLI and the tests
   subscribe to the bus; the session recorder will too.
+- **The grid's overrun rule** (contract 5): work that runs past the next grid point skips it, so a
+  skipped cycle is a gap in `JointState`'s sequence. `RunStats` counts skipped cycles and cycles that
+  started more than 1 ms late, with the worst lateness: the 10-minute Hanoi run had one cycle 4.5 ms
+  late (an OS wake-up), and 99% within 0.27 ms of the grid.
 
 Phase 1 builds on that:
-
-**The grid's overrun rule** (contract 5): today an overrunning cycle still runs late; it should skip
-to the next grid point, so a skipped cycle is a gap in `JointState`'s sequence.
 
 **Ticks every 4th cycle, with stepping** (30 Hz): on a tick, take the latest `JointState` and each
 camera's latest `Frame`, and ask the pilot for a target. On the cycles between, command a goal

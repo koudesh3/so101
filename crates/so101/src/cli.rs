@@ -9,7 +9,7 @@ use so101::arm::{
     check_centred, demo, sweep, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose, Result, SerialPort,
     ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::control::{run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick};
+use so101::control::{run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER};
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -388,10 +388,13 @@ fn cmd_teleop(
     drop(bus);
     let _ = printer.join();
     println!(
-        "stopped after {} ticks: {} overruns, {} errors, worst tick work {:.2} ms",
+        "stopped after {} ticks: {} errors, {} skipped, {} started over {} ms late (worst {:.2} ms), worst tick work {:.2} ms",
         stats.ticks,
-        stats.overruns,
         stats.errors,
+        stats.skipped,
+        stats.late,
+        LATE_AFTER.as_millis(),
+        stats.worst_lateness.as_secs_f64() * 1e3,
         stats.worst_work_time.as_secs_f64() * 1e3
     );
     Ok(())

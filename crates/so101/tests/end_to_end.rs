@@ -10,7 +10,9 @@ use so101::arm::{
     SimulatedServos, Traced, IDS, JOINT_COUNT,
 };
 use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
-use so101::control::{run, ArmRole, Event, EventBus, Message, RunOptions, RunStats, Teleop, Tick};
+use so101::control::{
+    run, ArmRole, Event, EventBus, Message, Pilot, RunOptions, RunStats, Source, Teleop, Tick, LATE_AFTER,
+};
 
 /// One teleop step's events, by what they are.
 struct Step {
@@ -433,7 +435,7 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
 
     assert_eq!(stats.ticks, 120);
     assert_eq!(stats.errors, 0);
-    assert!(stats.overruns <= 2, "overruns {}", stats.overruns);
+    assert_eq!((stats.skipped, stats.late), (0, 0), "on a stepped clock every cycle starts on the grid");
 
     let last = reports.last().unwrap();
     for joint in Joint::ALL {
@@ -535,6 +537,56 @@ fn teleop_reads_one_actuator_per_tick_in_rotation() {
     run.result.unwrap();
     let seen: Vec<u8> = run.steps.iter().map(|s| s.actuator.as_ref().map(|a| a.joint.id()).unwrap_or(0)).collect();
     assert_eq!(seen, vec![1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
+}
+
+/// A pilot that takes extra time on chosen calls, as an OS hiccup would.
+struct Slow<P: Pilot> {
+    inner: P,
+    clock: Arc<ReplayClock>,
+    delays: Vec<(u64, Duration)>,
+    calls: u64,
+}
+
+impl<P: Pilot> Pilot for Slow<P> {
+    fn source(&self) -> Source {
+        self.inner.source()
+    }
+    fn target(
+        &mut self,
+        now: Timestamp,
+        follower: &so101::arm::JointState,
+    ) -> so101::arm::Result<(so101::arm::Pose, Vec<Message>)> {
+        if let Some(&(_, delay)) = self.delays.iter().find(|(call, _)| *call == self.calls) {
+            advance(&self.clock, delay);
+        }
+        self.calls += 1;
+        self.inner.target(now, follower)
+    }
+}
+
+#[test]
+fn a_late_cycle_and_a_skipped_one_are_each_counted() {
+    let clock = stepped();
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+    follower.set_step_limit(Some(200));
+    let options = RunOptions { hz: 100.0, max_ticks: Some(10), read_actuators: false };
+    // 10 ms cycles. Cycle 3's pilot takes 13 ms more, so cycle 4 starts a few ms late; cycle 6's
+    // takes 25 ms more, so the grid skips one point and the next cycle is late too.
+    let teleop = Teleop::new(&mut leader, [Duration::ZERO; JOINT_COUNT]).unwrap();
+    let delays = vec![(3, Duration::from_millis(13)), (6, Duration::from_millis(25))];
+    let mut pilot = Slow { inner: teleop, clock: clock.clone(), delays, calls: 0 };
+    let stats =
+        run(&mut follower, &mut pilot, options, clock.clone(), &AtomicBool::new(false), &EventBus::new(), |_| {})
+            .unwrap();
+    assert_eq!((stats.ticks, stats.errors), (10, 0));
+    assert_eq!(stats.skipped, 1);
+    assert_eq!(stats.late, 2);
+    assert!(
+        stats.worst_lateness > LATE_AFTER && stats.worst_lateness < Duration::from_millis(10),
+        "{:?}",
+        stats.worst_lateness
+    );
 }
 
 #[test]

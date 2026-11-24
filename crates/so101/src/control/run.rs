@@ -11,6 +11,9 @@ use crate::control::{ArmRole, Clip, Event, EventBus, Grid, JointTarget, Message,
 
 // How long a follower may fail every cycle before the loop stops.
 const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
+// A cycle that starts later than this after its grid time counts as late. On the Spark, 99.9% of
+// cycles start within 0.45 ms (the Hanoi run, 2026-11-23).
+pub const LATE_AFTER: Duration = Duration::from_millis(1);
 
 #[derive(Clone, Copy, Debug)]
 pub struct RunOptions {
@@ -25,7 +28,11 @@ pub struct RunOptions {
 #[derive(Debug, Default, Clone)]
 pub struct RunStats {
     pub ticks: u64,
-    pub overruns: u64,
+    /// Grid points that passed while earlier work ran long: cycles that never happened.
+    pub skipped: u64,
+    /// Cycles that started more than `LATE_AFTER` after their grid time.
+    pub late: u64,
+    pub worst_lateness: Duration,
     pub errors: u64,
     /// Real compute time, whatever the clock: what the loop costs the host.
     pub worst_work_time: Duration,
@@ -72,6 +79,9 @@ fn run_cycles(
             break;
         }
         let cycle = grid.wait();
+        stats.skipped += cycle.skipped;
+        stats.late += u64::from(cycle.lateness > LATE_AFTER);
+        stats.worst_lateness = stats.worst_lateness.max(cycle.lateness);
         let work_started = Instant::now();
         let outcome = one_cycle(follower, pilot, options, clock.as_ref(), cycle.index, stats.ticks);
         stats.worst_work_time = stats.worst_work_time.max(work_started.elapsed());
@@ -97,7 +107,6 @@ fn run_cycles(
             }
         }
     }
-    stats.overruns = grid.overruns;
     Ok(stats)
 }
 
