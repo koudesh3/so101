@@ -4,6 +4,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+const SPIN_FOR: Duration = Duration::from_millis(1);
+
 /// Nanoseconds of the host's `CLOCK_MONOTONIC`: never jumps, compares only within one log. Every
 /// `t` field is when its event happened (contract 3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -81,13 +83,20 @@ impl Clock for MonotonicClock {
         Self::read()
     }
 
+    // The OS wakes a sleeping thread a median 0.5 ms late, sometimes over 1 ms (Spark, 2026-11-23),
+    // so sleep until `SPIN_FOR` before `t` and spin the rest.
     fn sleep_until(&self, t: Timestamp) {
         loop {
             let now = Self::read();
             if now >= t {
                 return;
             }
-            std::thread::sleep(t.since(now));
+            let left = t.since(now);
+            if left > SPIN_FOR {
+                std::thread::sleep(left - SPIN_FOR);
+            } else {
+                std::hint::spin_loop();
+            }
         }
     }
 }
