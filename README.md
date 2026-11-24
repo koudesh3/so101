@@ -9,20 +9,23 @@ written to learn how they work.
 crates/so101/    the Rust code, one crate, one folder per thing (src/):
   arm/             the arm: joints, poses, its errors and the `Arm` trait (mod.rs); `ServoArm`, the
                    SO-101 on its STS3215 servos (servo_arm.rs); the servos and their registers
-                   (servos.rs); their UART; simulated servos; calibration
+                   (servos.rs); their UART; simulated servos; calibration; the camera clearance map
   camera/          frames (the V4L2 code joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop (run.rs) on its grid of cycles, ticks, events, the event bus, and the
                    pilots that drive it (pilots/: teleop so far)
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
-  cli.rs     the `so101` command line, which puts the pieces together
+  cli.rs           the `so101` command line, which puts the pieces together
+tools/           offline scripts (uv run): camera_clearance.py builds data/camera_clearance.json from
+                 The Robot Studio's SO-101 model
 ml/              the LeRobot side
   act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
 proto/           the log's messages in protobuf (so101/v1), readable from any language; Foxglove's
                  image message; the frozen schema snapshot
 data/            what isn't code
   calibration/     the leader's and follower's calibration files (in git)
+  camera_clearance.json  how close the wrist camera comes to the arm, by elbow, wrist flex and roll
   robot.conf       the Spark's arm ports and camera settings, read by `act`
   logs/            recorded logs from runs (not in git)
 docs/
@@ -63,7 +66,8 @@ One concept, one name, one home.
 | `Counts` | raw encoder readings, one per joint | `arm` |
 | `Calibration` | the measured mapping from an arm's `Counts` to its `Pose` (homing offsets and ranges), and the procedure that measures it | `arm` |
 | `Arm` | what the loop can do with an arm: read its state, command a pose, read its actuators (a trait) | `arm` |
-| `Sent` / `Limit` | what an arm actually wrote for a commanded pose / why a joint differs (step, range, stall) | `arm` |
+| `Sent` / `Limit` | what an arm actually wrote for a commanded pose / why a joint differs (step, range, stall, collision) | `arm` |
+| `ClearanceMap` | how close the wrist camera comes to the arm, over a grid of elbow, wrist flex and wrist roll; precomputed from the 3D model | `arm` |
 | `ServoArm` | the SO-101 on its STS3215 servos: the real `Arm` | `arm` |
 | `Servos` | the STS3215 servos on their UART, addressed by ID, and their registers | `arm/servos.rs` |
 | `Transport` | the UART to the servos: a `SerialPort`, or `SimulatedServos`; either can be `Traced` | `arm/uart.rs` |

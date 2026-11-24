@@ -105,6 +105,7 @@ Takeover from the leader (Phase 4) is a mux switch.
 | Step limit | `ServoArm`, every write (exists) | limit each goal's step from the last (`Limit::Step`) |
 | Stall or overload | `ServoArm`, every write (exists) | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
 | Drive ceiling | servo firmware, set at connect (exists) | Max_Torque per joint at about 1.2x the most Hanoi moves used (pan 90%, lift 80%, elbow 70%, wrist flex 80%, roll 70%, gripper 50%); in EEPROM so a brownout reboot keeps it |
+| Wrist camera vs arm | `ServoArm`, every write (exists) | a goal that brings the camera within 10 mm of the arm, and closer than the last goal, keeps elbow, wrist flex and wrist roll where they were (`Limit::Collision`). Clearance comes from `data/camera_clearance.json`, precomputed from the SO-101 model by `tools/camera_clearance.py`; it blocks both measured bumps and 0.2% of the Hanoi run (three moments the follower was being held back). Shoulder and base contact isn't covered |
 | Supply current | `ServoArm`, every write (exists) | summed follower current over 1.5 A for 50 ms cuts the step limit to 10 counts until 250 ms under (`Limit::Step`); the 12 V 2 A supply browned out once at full speed |
 | Actuator health | cycle | act on the median of each joint's last 5 temperature and voltage readings (single readings are sometimes junk); count impossible values (contract 8) |
 | E-stop | cycle | torque off on the next cycle; the session records why |

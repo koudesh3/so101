@@ -2,6 +2,7 @@
 //! `ServoArm` is the real one, on STS3215 servos.
 
 mod calibration;
+mod clearance;
 mod servo_arm;
 pub mod servos;
 mod simulated_servos;
@@ -11,6 +12,7 @@ use self::servos::ServoError;
 use crate::clock::Timestamp;
 
 pub use calibration::{check_centred, sweep, Calibration, Sweep};
+pub use clearance::{Axis, ClearanceMap};
 pub use servo_arm::{FollowerGains, ServoArm, IDS};
 pub use servos::Servos;
 pub use simulated_servos::{demo, Hand, Obstacle, SimulatedServos};
@@ -118,6 +120,8 @@ pub enum Limit {
     Range,
     /// Held at a contact point after a stall or an overload trip.
     Stall,
+    /// Kept where it was: going on would bring the wrist camera too close to the arm.
+    Collision,
 }
 
 /// What an arm actually wrote for a commanded pose.

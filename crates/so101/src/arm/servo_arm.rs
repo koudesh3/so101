@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::calibration::Calibration;
+use super::clearance::ClearanceMap;
 use super::servos::{self, ServoError, Servos};
 use super::{ActuatorStatus, Arm, Counts, Error, Fault, Joint, JointState, Limit, Pose, Result, Sent, JOINT_COUNT};
 use crate::clock::{Clock, MonotonicClock, Timestamp};
@@ -38,6 +39,7 @@ pub struct ServoArm {
     protection: Protection,
     step_limit: Option<i32>,
     power: PowerGuard,
+    camera_guard: Option<(ClearanceMap, f32)>,
 }
 
 impl Joint {
@@ -68,6 +70,7 @@ impl ServoArm {
             protection: Protection::default(),
             step_limit: None,
             power: PowerGuard::default(),
+            camera_guard: None,
         }
     }
 
@@ -81,6 +84,12 @@ impl ServoArm {
     /// disables it.
     pub fn set_step_limit(&mut self, max_counts: Option<i32>) {
         self.step_limit = max_counts;
+    }
+
+    /// Keep each goal's wrist camera at least `margin_mm` from the arm, by `map`. A goal that would
+    /// come closer, and closer than the last goal was, keeps the map's joints where they were.
+    pub fn set_camera_guard(&mut self, map: ClearanceMap, margin_mm: f32) {
+        self.camera_guard = Some((map, margin_mm));
     }
 
     /// Whether the follower's total current has been over budget, so goals move at most
@@ -266,11 +275,27 @@ impl Arm for ServoArm {
         } else {
             self.step_limit
         };
-        let (sent, held, stepped) = self.protection.apply(present, &faults, in_range, now, step_limit);
+        let previous = self.protection.last_goal;
+        let (mut sent, held, stepped) = self.protection.apply(present, &faults, in_range, now, step_limit);
+        let mut kept = [false; JOINT_COUNT];
+        if let (Some((map, margin_mm)), Some(previous)) = (&self.camera_guard, previous) {
+            let clearance = |counts: &Counts| map.clearance_mm(&self.calibration.to_pose(counts));
+            let next = clearance(&sent);
+            if next < *margin_mm && next < clearance(&previous) {
+                for joint in map.joints() {
+                    let i = joint.index();
+                    kept[i] = sent[i] != previous[i];
+                    sent[i] = previous[i];
+                }
+                self.protection.last_goal = Some(sent);
+            }
+        }
         self.write_goal(&sent)?;
         let limits = std::array::from_fn(|i| {
             if held[i] {
                 Some(Limit::Stall)
+            } else if kept[i] {
+                Some(Limit::Collision)
             } else if stepped[i] {
                 Some(Limit::Step)
             } else if (range_pose.0[i] - target.0[i]).abs() > ONE_COUNT_DEG {

@@ -102,6 +102,7 @@ enum Limit {
   STEP = 1;   // LeRobot's max_relative_target
   RANGE = 2;
   STALL = 3;  // held at a contact point after a stall or an overload trip
+  COLLISION = 4;  // kept where it was: the wrist camera would come too close to the arm
 }
 
 message Clip {

@@ -577,6 +577,57 @@ fn the_current_guard_slows_a_follower_drawing_too_much() {
     assert!(fastest(&guarded[60..]) <= 10, "once the guard is on, at most 10 counts a write");
 }
 
+#[test]
+fn the_camera_guard_stops_the_wrist_short_of_the_arm_and_lets_it_back_out() {
+    use so101::arm::{Axis, ClearanceMap};
+    let clock = stepped();
+    // The leader rolls its wrist from 0° to 90° and back over 2 s. In this map the camera's
+    // clearance is 60 mm minus the roll in degrees, so 10 mm is reached at a roll of 50°.
+    let hand: so101::arm::Hand = Arc::new(|id: u8, t: f64| {
+        let roll_deg = 90.0 * (1.0 - (t - 1.0).abs()).max(0.0);
+        Some(if id == 5 { 2048.0 + roll_deg * 4096.0 / 360.0 } else { 2048.0 })
+    });
+    let mut leader =
+        sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+    let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+    let axes = [
+        Axis { min: -90.0, step: 90.0, count: 3 },
+        Axis { min: -90.0, step: 90.0, count: 3 },
+        Axis { min: -180.0, step: 30.0, count: 13 },
+    ];
+    let mm = (0..3 * 3 * 13).map(|n| 60.0 - (-180.0 + 30.0 * (n % 13) as f32)).collect();
+    let map = ClearanceMap::new([Joint::ElbowFlex, Joint::WristFlex, Joint::WristRoll], axes, mm).unwrap();
+    follower.set_camera_guard(map, 10.0);
+    follower.set_step_limit(Some(40));
+    let options = RunOptions { hz: 100.0, max_ticks: Some(220), read_actuators: false };
+    let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+    run.result.unwrap();
+
+    let roll = |counts: i32| (counts - 2048) as f32 * 360.0 / 4096.0;
+    let r = Joint::WristRoll.index();
+    let highest = run.steps.iter().map(|s| roll(s.sent[r])).fold(f32::MIN, f32::max);
+    assert!(highest <= 50.5 && highest > 45.0, "stops at the 10 mm line (50°), got {highest:.1}°");
+    let kept = run.steps.iter().filter(|s| s.tick.clipped.iter().any(|c| c.limit == Limit::Collision)).count();
+    assert!(kept > 20, "the guard held while the leader was past the line ({kept} ticks)");
+    let last = run.steps.last().unwrap();
+    assert!(roll(last.sent[r]).abs() < 3.0, "followed the leader back out to 0°");
+}
+
+#[test]
+fn the_committed_clearance_map_agrees_with_the_arm() {
+    use so101::arm::{ClearanceMap, Pose};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/camera_clearance.json");
+    let map = ClearanceMap::load(&path).unwrap();
+    // Follower poses read on 2026-11-23 (pan, lift, elbow, wrist flex, wrist roll, gripper).
+    let at = |p: [f32; 6]| map.clearance_mm(&Pose(p));
+    let bump1 = at([-21.4, -92.4, 74.2, 68.1, 45.9, 0.5]);
+    let bump2 = at([-11.5, -92.5, 60.8, 93.1, 80.0, 0.5]);
+    let rest = at([-21.4, -104.5, 96.1, -102.0, 17.5, 31.9]);
+    let straight = at([0.0; 6]);
+    assert!(bump1 < 10.0 && bump2 < 10.0, "the camera touched the arm at both: {bump1:.1}, {bump2:.1} mm");
+    assert!(rest > 10.0 && straight > 10.0, "and cleared it here: {rest:.1}, {straight:.1} mm");
+}
+
 /// A pilot that takes extra time on chosen calls, as an OS hiccup would.
 struct Slow<P: Pilot> {
     inner: P,

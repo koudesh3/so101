@@ -6,8 +6,8 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 use so101::arm::{
-    check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose,
-    Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
+    check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
+    Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
 use so101::control::{
     request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
@@ -105,6 +105,13 @@ enum Command {
         /// (about 0.8 ms more bus time). The live printout shows the follower's power draw.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         actuators: bool,
+        /// The wrist camera's clearance map (tools/camera_clearance.py): the follower stops short
+        /// of the camera hitting its own arm. `none` turns the guard off.
+        #[arg(long, default_value = "data/camera_clearance.json")]
+        camera_clearance: String,
+        /// How close the wrist camera may come to the arm, in mm, by the map.
+        #[arg(long, default_value_t = 10.0)]
+        camera_margin_mm: f32,
     },
     /// Recorded sessions (MCAP files).
     Session {
@@ -170,6 +177,8 @@ fn main() {
             lead_ms,
             wrist_lead_ms,
             actuators,
+            camera_clearance,
+            camera_margin_mm,
         } => {
             let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
             let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
@@ -182,7 +191,8 @@ fn main() {
                 std::time::Duration::from_millis(ms)
             });
             let tuning = (gains, lead);
-            cmd_teleop(leader_servos, follower_servos, cals, hz, max_step, ticks, tuning, cli.sim, actuators)
+            let camera = (camera_clearance != "none").then(|| (PathBuf::from(camera_clearance), camera_margin_mm));
+            cmd_teleop(leader_servos, follower_servos, cals, hz, max_step, ticks, tuning, cli.sim, actuators, camera)
         }
         Command::Session { command: SessionCommand::Recover { input, output } } => cmd_session_recover(&input, &output),
     };
@@ -366,6 +376,7 @@ fn cmd_teleop(
     (gains, lead): (FollowerGains, [std::time::Duration; JOINT_COUNT]),
     sim: bool,
     actuators: bool,
+    camera_guard: Option<(PathBuf, f32)>,
 ) -> Result<()> {
     let mut leader = ServoArm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
     let mut follower = ServoArm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
@@ -378,6 +389,14 @@ fn cmd_teleop(
         }
     }
     follower.configure_follower_with(gains)?;
+    match camera_guard {
+        Some((path, margin_mm)) => {
+            let map = ClearanceMap::load(&path)?;
+            follower.set_camera_guard(map, margin_mm);
+            println!("camera guard on: {} keeps the wrist camera {margin_mm} mm from the arm", path.display());
+        }
+        None => println!("camera guard off"),
+    }
 
     let options = RunOptions { hz, max_ticks: (ticks > 0).then_some(ticks), read_actuators: actuators };
     let stop = ctrl_c_flag();
@@ -428,14 +447,21 @@ fn cmd_session_recover(input: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
-fn report_holds(tick: &Tick, held: &mut [bool; JOINT_COUNT]) {
+fn report_holds(tick: &Tick, held: &mut [Option<Limit>; JOINT_COUNT]) {
     for joint in Joint::ALL {
-        let now = tick.clipped.iter().any(|c| c.joint == joint && c.limit == Limit::Stall);
+        let now = tick
+            .clipped
+            .iter()
+            .find(|c| c.joint == joint && matches!(c.limit, Limit::Stall | Limit::Collision))
+            .map(|c| c.limit);
         match (held[joint.index()], now) {
-            (false, true) => {
+            (None, Some(Limit::Stall)) => {
                 println!("{} blocked: holding at contact; back the leader off to resume", joint.name())
             }
-            (true, false) => println!("{} released: following again", joint.name()),
+            (None, Some(_)) => {
+                println!("{} stopped: the wrist camera would hit the arm; back the leader off", joint.name())
+            }
+            (Some(_), None) => println!("{} released: following again", joint.name()),
             _ => {}
         }
         held[joint.index()] = now;
@@ -446,7 +472,7 @@ fn report_holds(tick: &Tick, held: &mut [bool; JOINT_COUNT]) {
 /// second. Ends when the bus is dropped.
 fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut held = [false; JOINT_COUNT];
+        let mut held = [None; JOINT_COUNT];
         let mut poses = [Pose::default(); 2];
         let mut power = Power::default();
         let every = (hz as u64).max(1);

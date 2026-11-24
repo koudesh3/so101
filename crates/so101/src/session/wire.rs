@@ -284,7 +284,7 @@ macro_rules! wire_struct {
 wire_same!(u32, String, Option<f32>);
 wire_enum!(Joint => Joint { ShoulderPan, ShoulderLift, ElbowFlex, WristFlex, WristRoll, Gripper });
 wire_enum!(Camera => Camera { Wrist, Scene });
-wire_enum!(Limit => Limit { Step, Range, Stall });
+wire_enum!(Limit => Limit { Step, Range, Stall, Collision });
 wire_enum!(Fault => Fault { Voltage, Sensor, Overheat, Overcurrent, AngleLimit, Overload });
 wire_struct!(JointState => JointState { t: t_ns, pose: pose, counts: counts });
 wire_struct!(JointTarget => JointTarget { t: t_ns, pose: pose, source: source, counts: counts });
