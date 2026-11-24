@@ -17,7 +17,7 @@ use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
 pub use pilots::{Pilot, Teleop};
-pub use run::{run, RunOptions, RunStats, LATE_AFTER};
+pub use run::{request_realtime, run, RunOptions, RunStats, LATE_AFTER};
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).
 #[derive(Clone, Debug, PartialEq)]

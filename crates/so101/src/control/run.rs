@@ -110,6 +110,28 @@ fn run_cycles(
     Ok(stats)
 }
 
+/// Gives the calling thread real-time (SCHED_FIFO) priority, so the OS can't preempt the loop for
+/// ordinary work: at normal priority a cycle started 2-4.5 ms late every few minutes on the Spark.
+/// Linux only, and the user needs an rtprio limit (`/etc/security/limits.d`); call it on the
+/// thread that will call `run`. Returns why not, if it can't.
+pub fn request_realtime(priority: i32) -> std::result::Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let param = libc::sched_param { sched_priority: priority };
+        // SAFETY: plain syscall on the calling thread with a valid sched_param.
+        if unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) } == 0 {
+            Ok(())
+        } else {
+            Err(format!("SCHED_FIFO {priority} refused: {}", std::io::Error::last_os_error()))
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = priority;
+        Err("real-time priority is Linux only".into())
+    }
+}
+
 /// One cycle's events, published together only if the whole cycle succeeds.
 fn one_cycle(
     follower: &mut impl Arm,

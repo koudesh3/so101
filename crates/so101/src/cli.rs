@@ -9,7 +9,12 @@ use so101::arm::{
     check_centred, demo, sweep, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose, Result, SerialPort,
     ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::control::{run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER};
+use so101::control::{
+    request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
+};
+
+// Under the kernel's threaded interrupt handlers (priority 50), so serial and USB I/O still run.
+const REALTIME_PRIORITY: i32 = 40;
 
 #[derive(Parser)]
 #[command(name = "so101", about = "Calibrate, monitor and teleoperate an SO-101 arm pair from scratch")]
@@ -384,6 +389,10 @@ fn cmd_teleop(
     let bus = EventBus::new();
     let printer = print_teleop(bus.subscribe(), hz);
     let mut pilot = Teleop::new(leader, lead)?;
+    match request_realtime(REALTIME_PRIORITY) {
+        Ok(()) => println!("loop at real-time priority (SCHED_FIFO {REALTIME_PRIORITY})"),
+        Err(why) => println!("loop at normal priority: {why}"),
+    }
     let stats = run(&mut follower, &mut pilot, options, clock, &stop, &bus, |e| println!("ERROR {e}"))?;
     drop(bus);
     let _ = printer.join();
