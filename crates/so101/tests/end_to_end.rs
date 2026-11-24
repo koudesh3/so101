@@ -543,6 +543,40 @@ fn teleop_reads_every_actuator_every_cycle() {
     }
 }
 
+#[test]
+fn the_current_guard_slows_a_follower_drawing_too_much() {
+    // The same fast moves, with and without current readings (the guard needs them).
+    let follow = |read_actuators: bool| {
+        let clock = stepped();
+        // Shoulder pan jumps 800 counts every quarter second: fast moves that draw hard.
+        let hand: so101::arm::Hand =
+            Arc::new(|id: u8, t: f64| Some(if id == 1 && (t * 4.0) as u64 % 2 == 1 { 2448.0 } else { 1648.0 }));
+        let mut leader =
+            sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
+        let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+        follower.set_step_limit(Some(200));
+        let options = RunOptions { hz: 200.0, max_ticks: Some(400), read_actuators };
+        let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+        run.result.unwrap();
+        let moves: Vec<i32> = run
+            .steps
+            .windows(2)
+            .map(|w| (0..JOINT_COUNT).map(|i| (w[1].sent[i] - w[0].sent[i]).abs()).max().unwrap())
+            .collect();
+        (run.steps, moves)
+    };
+    let (steps, guarded) = follow(true);
+    let (_, free) = follow(false);
+    // The simulated pan servo draws several amps on each jump, well over budget.
+    let total = |s: &Step| s.actuators.iter().filter_map(|a| a.current_a).sum::<f32>();
+    assert!(steps.iter().any(|s| total(s) > 1.5), "the simulation should exceed the budget");
+    let fastest = |m: &[i32]| m.iter().copied().max().unwrap();
+    assert!(fastest(&free) > 100, "unguarded, a jump moves the goal up to the step limit");
+    // It takes 50 ms over budget (10 writes at 200 Hz) to engage, so the first jump starts fast.
+    assert!(fastest(&guarded[..60]) > 10, "the first jump starts before the guard engages");
+    assert!(fastest(&guarded[60..]) <= 10, "once the guard is on, at most 10 counts a write");
+}
+
 /// A pilot that takes extra time on chosen calls, as an OS hiccup would.
 struct Slow<P: Pilot> {
     inner: P,
@@ -677,9 +711,11 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     let clock = stepped();
     use so101::arm::FollowerGains;
     let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-    arm.configure_follower_with(FollowerGains { p: 28, d: 32, grip_torque: 800 }).unwrap();
+    arm.configure_follower_with(FollowerGains { p: 28, d: 32, max_torque: [900, 800, 700, 800, 700, 800] }).unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::Gripper, servos::TORQUE_LIMIT).unwrap(), 800);
+    assert_eq!(arm.read_register(Joint::ElbowFlex, servos::MAX_TORQUE).unwrap(), 700);
+    assert_eq!(arm.read_register(Joint::ShoulderPan, servos::TORQUE_LIMIT).unwrap(), 900);
     assert_eq!(
         arm.read_register(Joint::Gripper, servos::PROTECTION_CURRENT).unwrap(),
         250,

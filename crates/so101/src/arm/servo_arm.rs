@@ -24,11 +24,10 @@ pub const STATUS_BLOCK_LEN: u8 = 15;
 pub struct FollowerGains {
     pub p: i32,
     pub d: i32,
-    // Gripper drive ceiling, 0..1000 = 0..100%. It caps grip force and, on
-    // these servos, top speed with it: 500 measured ~1600 counts/s against
-    // ~3100 at full drive. Stall protection does not depend on it (current
-    // limit, overload trip, and teleop's release all stay on).
-    pub grip_torque: i32,
+    // Drive ceiling per joint, 0..1000 = 0..100%, written to Max_Torque (EEPROM, so it survives a
+    // brownout reboot) and Torque_Limit. It caps force and, with it, top speed: the gripper at 500
+    // measured ~1600 counts/s against ~3100 at full drive. Stall protection does not depend on it.
+    pub max_torque: [i32; JOINT_COUNT],
 }
 
 pub struct ServoArm {
@@ -38,6 +37,7 @@ pub struct ServoArm {
     clock: Arc<dyn Clock>,
     protection: Protection,
     step_limit: Option<i32>,
+    power: PowerGuard,
 }
 
 impl Joint {
@@ -51,7 +51,11 @@ impl Joint {
 }
 
 impl FollowerGains {
-    pub const LEROBOT: FollowerGains = FollowerGains { p: 16, d: 32, grip_torque: 500 };
+    pub const LEROBOT: FollowerGains = FollowerGains { p: 16, d: 32, max_torque: [1000, 1000, 1000, 1000, 1000, 500] };
+    /// About 1.2x the most each joint used in Hanoi moves at step limit 20 (2026-11-23: pan 74%,
+    /// lift 66%, elbow 54%, wrist flex 66%, roll 59%; holding never above 9%). Normal moves are
+    /// unchanged; a jam or collision can't draw full current.
+    pub const MEASURED_MAX_TORQUE: [i32; JOINT_COUNT] = [900, 800, 700, 800, 700, 500];
 }
 
 impl ServoArm {
@@ -63,6 +67,7 @@ impl ServoArm {
             clock: Arc::new(MonotonicClock),
             protection: Protection::default(),
             step_limit: None,
+            power: PowerGuard::default(),
         }
     }
 
@@ -76,6 +81,12 @@ impl ServoArm {
     /// disables it.
     pub fn set_step_limit(&mut self, max_counts: Option<i32>) {
         self.step_limit = max_counts;
+    }
+
+    /// Whether the follower's total current has been over budget, so goals move at most
+    /// `GUARD_STEP_COUNTS` per write. Needs actuator reads (`read_state_and_actuators`).
+    pub fn current_guard_active(&self) -> bool {
+        self.power.active
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {
@@ -134,13 +145,16 @@ impl ServoArm {
             self.servos.write_unlocked(id, servos::MAXIMUM_ACCELERATION, 254)?;
             self.servos.write(id, servos::ACCELERATION, 254)?;
         }
+        for (id, max_torque) in IDS.into_iter().zip(gains.max_torque) {
+            self.servos.write_eeprom(id, servos::MAX_TORQUE, max_torque)?;
+            // The RAM copy, in case Max_Torque only loads at power-on.
+            self.servos.write(id, servos::TORQUE_LIMIT, max_torque)?;
+        }
         // Gripper burnout guard, LeRobot's values. Closing the leader trigger
         // drives the claw into itself; without these it stalls at full torque.
         let grip = Joint::Gripper.id();
-        self.servos.write_eeprom(grip, servos::MAX_TORQUE, gains.grip_torque)?;
         self.servos.write_eeprom(grip, servos::PROTECTION_CURRENT, 250)?; // factory default 0 = off
         self.servos.write_eeprom(grip, servos::OVERLOAD_TORQUE, 25)?; // overload trips at 25%
-        self.servos.write(grip, servos::TORQUE_LIMIT, gains.grip_torque)?; // RAM copy, in case 16 only loads at power-on
         Ok(())
     }
 
@@ -247,7 +261,12 @@ impl Arm for ServoArm {
         let in_range = self.calibration.to_counts(target);
         let range_pose = self.calibration.to_pose(&in_range);
         let now = self.clock.now();
-        let (sent, held, stepped) = self.protection.apply(present, &faults, in_range, now, self.step_limit);
+        let step_limit = if self.power.active {
+            Some(self.step_limit.map_or(GUARD_STEP_COUNTS, |s| s.min(GUARD_STEP_COUNTS)))
+        } else {
+            self.step_limit
+        };
+        let (sent, held, stepped) = self.protection.apply(present, &faults, in_range, now, step_limit);
         self.write_goal(&sent)?;
         let limits = std::array::from_fn(|i| {
             if held[i] {
@@ -277,6 +296,7 @@ impl Arm for ServoArm {
             actuators.push(status);
         }
         self.protection.present = Some(counts);
+        self.power.update(actuators.iter().filter_map(|a| a.current_a).sum(), t);
         Ok((JointState { t, pose: self.to_pose(&counts), counts: Some(counts) }, actuators))
     }
 
@@ -290,6 +310,7 @@ impl Arm for ServoArm {
         // this run did. Drop them so they cannot latch a hold.
         let _ = self.take_flags();
         self.protection = Protection::default();
+        self.power = PowerGuard::default();
         Ok(())
     }
 }
@@ -346,6 +367,14 @@ const GRIP_SQUEEZE_COUNTS: i32 = 30;
 // One count, in the pose's units: a commanded value further than this from where the range clamp
 // put it was clipped by the range.
 const ONE_COUNT_DEG: f32 = 360.0 / 4096.0;
+// The follower's 12 V 2 A supply browned out once (2026-11-23). Measured Hanoi moves at step limit
+// 20 drew 0.58 A at the 99.9th percentile and 1.25 A at most, so this leaves room for normal work.
+const CURRENT_BUDGET_A: f32 = 1.5;
+// Over budget this long engages the guard; back under it this long releases it.
+const GUARD_AFTER: Duration = Duration::from_millis(50);
+const GUARD_RELEASE_AFTER: Duration = Duration::from_millis(250);
+// The step limit while the guard is on: a quarter of the default.
+const GUARD_STEP_COUNTS: i32 = 10;
 
 /// The follower's per-write protections, in the counts they were tuned in on hardware: the stall
 /// hold, then the step limit. The range clamp happens before, in the calibration.
@@ -356,6 +385,14 @@ struct Protection {
     last_write: Option<Timestamp>,
     holds: [Option<Hold>; JOINT_COUNT],
     stalls: StallWatch,
+}
+
+/// Tightens the step limit while the follower's summed current stays over `CURRENT_BUDGET_A`.
+#[derive(Default)]
+struct PowerGuard {
+    active: bool,
+    // When the total last crossed to the other side of the budget from `active`.
+    crossed_at: Option<Timestamp>,
 }
 
 #[derive(Default)]
@@ -382,6 +419,22 @@ enum Direction {
     Up,
     Down,
     Neither,
+}
+
+impl PowerGuard {
+    fn update(&mut self, total_a: f32, now: Timestamp) {
+        let wants = total_a > CURRENT_BUDGET_A;
+        if wants == self.active {
+            self.crossed_at = None;
+            return;
+        }
+        let since = *self.crossed_at.get_or_insert(now);
+        let wait = if self.active { GUARD_RELEASE_AFTER } else { GUARD_AFTER };
+        if now.since(since) >= wait {
+            self.active = wants;
+            self.crossed_at = None;
+        }
+    }
 }
 
 impl Protection {
@@ -469,6 +522,26 @@ impl Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_current_guard_engages_after_50_ms_over_budget_and_releases_after_250_ms_under() {
+        let mut guard = PowerGuard::default();
+        let at = |ms: u64| Timestamp(ms * 1_000_000);
+        guard.update(1.9, at(0));
+        guard.update(1.9, at(40));
+        assert!(!guard.active, "a 40 ms spike is ignored");
+        guard.update(0.4, at(45));
+        guard.update(1.9, at(50));
+        guard.update(1.9, at(99));
+        assert!(!guard.active, "the dip restarted the wait");
+        guard.update(1.9, at(100));
+        assert!(guard.active);
+        guard.update(0.4, at(110));
+        guard.update(0.4, at(300));
+        assert!(guard.active, "still within the release wait");
+        guard.update(0.4, at(360));
+        assert!(!guard.active);
+    }
 
     #[test]
     fn direction_follows_the_sign_of_the_gap() {

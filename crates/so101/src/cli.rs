@@ -76,9 +76,10 @@ enum Command {
         // 0.5-1.5 s to ~30 ms with no shake at rest.
         #[arg(long, default_value_t = 100.0)]
         hz: f64,
-        /// Largest goal change per tick, in counts (0 disables). At 100 Hz, 40
-        /// allows 4000 counts/s: above the servo's top speed, below a lunge.
-        #[arg(long, default_value_t = 40)]
+        /// Largest goal change per tick, in counts (0 disables). 20 at 120 Hz allows 2400
+        /// counts/s (about 210°/s): measured to keep the follower under 0.6 A on its 12 V 2 A
+        /// supply. 40 is full speed; use it on a 5 A supply.
+        #[arg(long, default_value_t = 20)]
         max_step: i32,
         /// Stop after this many ticks (0 runs until Ctrl-C).
         #[arg(long, default_value_t = 0)]
@@ -90,7 +91,7 @@ enum Command {
         /// Follower gripper drive ceiling in percent. 50 is LeRobot's (gentle,
         /// but halves gripper speed); 100 is full speed. Stall protection
         /// stays on either way.
-        #[arg(long, default_value_t = 80, value_parser = clap::value_parser!(i32).range(20..=100))]
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i32).range(20..=100))]
         grip_torque: i32,
         /// Command this many ms ahead of the leader on pan, lift, elbow and
         /// gripper, from the leader's velocity (0 = off).
@@ -173,7 +174,9 @@ fn main() {
             let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
             let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
             let cals = (leader_calibration, follower_calibration);
-            let gains = FollowerGains { p: p_gain, d: FollowerGains::LEROBOT.d, grip_torque: grip_torque * 10 };
+            let mut max_torque = FollowerGains::MEASURED_MAX_TORQUE;
+            max_torque[Joint::Gripper.index()] = grip_torque * 10;
+            let gains = FollowerGains { p: p_gain, d: FollowerGains::LEROBOT.d, max_torque };
             let lead = Joint::ALL.map(|j| {
                 let ms = if matches!(j, Joint::WristFlex | Joint::WristRoll) { wrist_lead_ms } else { lead_ms };
                 std::time::Duration::from_millis(ms)
@@ -381,7 +384,7 @@ fn cmd_teleop(
     println!(
         "teleop at {hz} Hz, max step {max_step} counts, P {}, grip torque {}%, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
         gains.p,
-        gains.grip_torque / 10,
+        gains.max_torque[Joint::Gripper.index()] / 10,
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
