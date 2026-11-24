@@ -334,15 +334,20 @@ impl Servos {
 
     // Replies arrive in `ids` order; one missing reply fails the whole read.
     pub fn sync_read(&mut self, ids: &[u8], reg: Register) -> Result<Vec<i32>> {
-        let mut params = vec![reg.address, reg.width];
+        let blocks = self.sync_read_block(ids, reg.address, reg.width)?;
+        Ok(blocks.iter().map(|b| reg.decode(b)).collect())
+    }
+
+    /// `len` bytes from `address` on every servo in `ids`, in one exchange.
+    pub fn sync_read_block(&mut self, ids: &[u8], address: u8, len: u8) -> Result<Vec<Vec<u8>>> {
+        let mut params = vec![address, len];
         params.extend_from_slice(ids);
         self.send(BROADCAST_ID, Instruction::SyncRead, &params)?;
-        let mut values = Vec::with_capacity(ids.len());
+        let mut blocks = Vec::with_capacity(ids.len());
         for &id in ids {
-            let frame = self.receive_status(id, reg.width as usize)?;
-            values.push(reg.decode(&frame.params));
+            blocks.push(self.receive_status(id, len as usize)?.params);
         }
-        Ok(values)
+        Ok(blocks)
     }
 
     pub fn sync_write(&mut self, reg: Register, values: &[(u8, i32)]) -> Result<()> {

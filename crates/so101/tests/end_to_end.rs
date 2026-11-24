@@ -20,7 +20,7 @@ struct Step {
     follower: Counts,
     sent: Counts,
     tick: Tick,
-    actuator: Option<ActuatorStatus>,
+    actuators: Vec<ActuatorStatus>,
 }
 
 // A transport with the timing measured on hardware: a write that commits to
@@ -59,14 +59,14 @@ struct GripperFlagWindow {
 
 impl Step {
     fn of(events: &[Event]) -> Step {
-        let (mut leader, mut follower, mut sent, mut tick, mut actuator) = (None, None, None, None, None);
+        let (mut leader, mut follower, mut sent, mut tick, mut actuators) = (None, None, None, None, Vec::new());
         for event in events {
             match &event.message {
                 Message::JointState(ArmRole::Leader, s) => leader = s.counts,
                 Message::JointState(ArmRole::Follower, s) => follower = s.counts,
                 Message::JointTarget(ArmRole::Follower, t) => sent = t.counts,
                 Message::Tick(t) => tick = Some(t.clone()),
-                Message::Actuator(_, a) => actuator = Some(a.clone()),
+                Message::Actuator(_, a) => actuators.push(a.clone()),
                 _ => {}
             }
         }
@@ -75,7 +75,7 @@ impl Step {
             follower: follower.unwrap(),
             sent: sent.unwrap(),
             tick: tick.unwrap(),
-            actuator,
+            actuators,
         }
     }
 
@@ -526,7 +526,7 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
 }
 
 #[test]
-fn teleop_reads_one_actuator_per_tick_in_rotation() {
+fn teleop_reads_every_actuator_every_cycle() {
     let clock = stepped();
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
@@ -535,8 +535,12 @@ fn teleop_reads_one_actuator_per_tick_in_rotation() {
     follower.set_step_limit(Some(200));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
     run.result.unwrap();
-    let seen: Vec<u8> = run.steps.iter().map(|s| s.actuator.as_ref().map(|a| a.joint.id()).unwrap_or(0)).collect();
-    assert_eq!(seen, vec![1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6]);
+    assert_eq!(run.steps.len(), 12);
+    for step in &run.steps {
+        let ids: Vec<u8> = step.actuators.iter().map(|a| a.joint.id()).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5, 6], "all six, every cycle");
+        assert!(step.actuators.iter().all(|a| a.voltage_v.is_some_and(|v| v > 0.0) && a.current_a.is_some()));
+    }
 }
 
 /// A pilot that takes extra time on chosen calls, as an OS hiccup would.
@@ -767,7 +771,7 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
     run.result.unwrap();
     let reports = run.steps;
-    let pan_faults = reports.iter().filter_map(|r| r.actuator.as_ref()).filter(|a| a.joint == Joint::ShoulderPan);
+    let pan_faults = reports.iter().flat_map(|r| r.actuators.iter()).filter(|a| a.joint == Joint::ShoulderPan);
     assert!(
         pan_faults.flat_map(|a| a.faults.iter()).all(|f| !matches!(f, Fault::Overload | Fault::Overcurrent)),
         "the servo should never have flagged"

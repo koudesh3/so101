@@ -205,7 +205,7 @@ impl ServoArm {
     }
 
     pub fn read_actuators(&mut self) -> Result<Vec<ActuatorStatus>> {
-        Joint::ALL.iter().map(|&joint| self.read_actuator(joint)).collect()
+        Ok(self.read_state_and_actuators()?.1)
     }
 
     /// One block read covers every field.
@@ -263,8 +263,21 @@ impl Arm for ServoArm {
         Ok(Sent { pose: self.to_pose(&sent), counts: Some(sent), limits })
     }
 
-    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
-        ServoArm::read_actuator(self, joint)
+    /// One sync read of the status block, which starts at the position: about 0.8 ms more bus
+    /// time per call than `read_state` at 1 Mbaud.
+    fn read_state_and_actuators(&mut self) -> Result<(JointState, Vec<ActuatorStatus>)> {
+        let blocks = self.servos.sync_read_block(&IDS, STATUS_BLOCK_START, STATUS_BLOCK_LEN)?;
+        let t = self.clock.now();
+        let mut counts = [0; JOINT_COUNT];
+        let mut actuators = Vec::with_capacity(JOINT_COUNT);
+        for (joint, block) in Joint::ALL.into_iter().zip(&blocks) {
+            let status = decode_actuator(joint, t, block)
+                .ok_or_else(|| Error::Corrupt(format!("short status block from servo {}", joint.id())))?;
+            counts[joint.index()] = servos::PRESENT_POSITION.decode(block);
+            actuators.push(status);
+        }
+        self.protection.present = Some(counts);
+        Ok((JointState { t, pose: self.to_pose(&counts), counts: Some(counts) }, actuators))
     }
 
     fn torque_off(&mut self) -> Result<()> {

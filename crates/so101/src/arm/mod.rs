@@ -136,7 +136,8 @@ pub trait Arm: Send {
     /// Move toward `target`. The arm applies its own protections (range, stall hold, step limit)
     /// and reports what it actually wrote, and why each changed joint differs.
     fn command(&mut self, target: &Pose) -> Result<Sent>;
-    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus>;
+    /// The state and every actuator's status (load, voltage, current, ...), read together.
+    fn read_state_and_actuators(&mut self) -> Result<(JointState, Vec<ActuatorStatus>)>;
     fn torque_off(&mut self) -> Result<()>;
     /// Torque on, holding where it is now, so nothing jumps; protections start fresh.
     fn hold(&mut self) -> Result<()>;
@@ -239,8 +240,8 @@ impl<A: Arm + ?Sized> Arm for &mut A {
         (**self).command(target)
     }
 
-    fn read_actuator(&mut self, joint: Joint) -> Result<ActuatorStatus> {
-        (**self).read_actuator(joint)
+    fn read_state_and_actuators(&mut self) -> Result<(JointState, Vec<ActuatorStatus>)> {
+        (**self).read_state_and_actuators()
     }
 
     fn torque_off(&mut self) -> Result<()> {

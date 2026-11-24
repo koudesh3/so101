@@ -6,8 +6,8 @@ use std::sync::{mpsc, Arc};
 
 use clap::{Parser, Subcommand};
 use so101::arm::{
-    check_centred, demo, sweep, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose, Result, SerialPort,
-    ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
+    check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, Error, FollowerGains, Joint, Limit, Pose,
+    Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
 use so101::control::{
     request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
@@ -100,8 +100,9 @@ enum Command {
         /// into overshoot, so it is off by default.
         #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=150))]
         wrist_lead_ms: u64,
-        /// Also read one follower actuator's status per tick, rotating through the six.
-        #[arg(long)]
+        /// Read every follower servo's load, voltage and current each tick, with its position
+        /// (about 0.8 ms more bus time). The live printout shows the follower's power draw.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         actuators: bool,
     },
     /// Recorded sessions (MCAP files).
@@ -444,11 +445,13 @@ fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHand
     std::thread::spawn(move || {
         let mut held = [false; JOINT_COUNT];
         let mut poses = [Pose::default(); 2];
+        let mut power = Power::default();
         let every = (hz as u64).max(1);
         for event in events {
             match &event.message {
                 Message::JointState(ArmRole::Leader, s) => poses[0] = s.pose,
                 Message::JointState(ArmRole::Follower, s) => poses[1] = s.pose,
+                Message::Actuator(ArmRole::Follower, a) => power.add(a),
                 Message::Tick(tick) => {
                     report_holds(tick, &mut held);
                     if (event.sequence as u64 + 1).is_multiple_of(every) {
@@ -458,10 +461,45 @@ fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHand
                             format_pose(&poses[0]),
                             format_pose(&poses[1])
                         );
+                        if let Some(line) = power.take_line() {
+                            println!("   power    {line}");
+                        }
                     }
                 }
                 _ => {}
             }
         }
     })
+}
+
+/// The follower's draw on its supply, summed over the servos, for the live printout.
+#[derive(Default)]
+struct Power {
+    current_a: [f32; JOINT_COUNT],
+    peak_a: f32,
+    lowest_v: Option<f32>,
+}
+
+impl Power {
+    fn add(&mut self, a: &ActuatorStatus) {
+        if let Some(amps) = a.current_a {
+            self.current_a[a.joint.index()] = amps;
+            self.peak_a = self.peak_a.max(self.current_a.iter().sum());
+        }
+        if let Some(v) = a.voltage_v {
+            self.lowest_v = Some(self.lowest_v.map_or(v, |low| low.min(v)));
+        }
+    }
+
+    /// Since the last line: lowest voltage, total current now, peak total.
+    fn take_line(&mut self) -> Option<String> {
+        let lowest_v = self.lowest_v.take()?;
+        let line = format!(
+            "lowest {lowest_v:.1} V, total {:.2} A now, {:.2} A peak",
+            self.current_a.iter().sum::<f32>(),
+            self.peak_a
+        );
+        self.peak_a = 0.0;
+        Some(line)
+    }
 }

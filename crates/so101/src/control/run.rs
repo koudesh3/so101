@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::arm::{Arm, Error, Joint, Result, JOINT_COUNT};
+use crate::arm::{Arm, Error, Joint, Result};
 use crate::clock::Clock;
 use crate::control::{ArmRole, Clip, Event, EventBus, Grid, JointTarget, Message, Pilot, Tick};
 
@@ -20,8 +20,8 @@ pub struct RunOptions {
     pub hz: f64,
     /// Stop after this many ticks. None runs until `stop` is set.
     pub max_ticks: Option<u64>,
-    /// Also read one follower actuator's status per tick, rotating through the six. Costs one
-    /// extra round trip per tick.
+    /// Read every follower actuator's status (load, voltage, current, ...) each cycle, in the same
+    /// read as its position. About 0.8 ms more bus time per cycle.
     pub read_actuators: bool,
 }
 
@@ -141,7 +141,11 @@ fn one_cycle(
     cycle: u64,
     tick: u64,
 ) -> Result<Vec<Event>> {
-    let follower_state = follower.read_state()?;
+    let (follower_state, actuators) = if options.read_actuators {
+        follower.read_state_and_actuators()?
+    } else {
+        (follower.read_state()?, Vec::new())
+    };
     let (requested, observed) = pilot.target(clock.now(), &follower_state)?;
     let sent = follower.command(&requested)?;
     let t_sent = clock.now();
@@ -182,14 +186,9 @@ fn one_cycle(
         tick as u32,
         t_sent,
     ));
-
-    // A side channel: a failed status read must not cost the step.
-    if options.read_actuators {
-        let joint = Joint::ALL[(tick % JOINT_COUNT as u64) as usize];
-        if let Ok(status) = follower.read_actuator(joint) {
-            let t = status.t;
-            events.push(Event::new(Message::Actuator(ArmRole::Follower, status), cycle, t));
-        }
-    }
+    events.extend(actuators.into_iter().map(|a| {
+        let t = a.t;
+        Event::new(Message::Actuator(ArmRole::Follower, a), cycle, t)
+    }));
     Ok(events)
 }
