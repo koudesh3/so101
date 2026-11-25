@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::arm::{Arm, JointState, Pose, Result, JOINT_COUNT};
+use crate::arm::{Arm, Joint, JointState, Pose, Result, JOINT_COUNT};
 use crate::clock::Timestamp;
 use crate::control::{ArmRole, Message, Pilot, Source};
 
@@ -57,9 +57,10 @@ impl Default for FineControl {
     }
 }
 
-// Leader pose -> target. In fine mode the target moves `scale` times the leader's motion from
-// where both were when it began. Leaving fine mode keeps the target where it is; the leftover
-// offset then shrinks as the leader moves, so nothing moves on its own.
+// Leader pose -> target. In fine mode the arm's joints move `scale` times the leader's motion from
+// where both were when it began; the gripper stays 1:1, or a scaled grip can't close from where
+// it started. Leaving fine mode keeps the target where it is; the leftover offset then shrinks as
+// the leader moves, so nothing moves on its own.
 #[derive(Default)]
 struct Scaling {
     // (scale, leader, target) when fine mode began or its scale last changed.
@@ -72,27 +73,36 @@ impl Scaling {
     // Leader motion that goes to closing the offset, per unit moved: the follower moves at 0.5x
     // or 1.5x the leader until the arms line up again.
     const CATCH_UP: f32 = 0.5;
+    const UNSCALED: Joint = Joint::Gripper;
 
     fn target(&mut self, leader: Pose, fine: Option<f32>) -> Pose {
         let last_target = self.last.map_or(leader, |(_, t)| t);
+        if let Some((prev, _)) = self.last {
+            for i in 0..JOINT_COUNT {
+                let closes = (leader.0[i] - prev.0[i]).abs() * Self::CATCH_UP;
+                self.offset[i] -= self.offset[i].clamp(-closes, closes);
+            }
+        }
+        let followed = |offset: &[f32; JOINT_COUNT], i: usize| leader.0[i] + offset[i];
         let target = match fine {
             Some(scale) => {
                 if !matches!(self.anchor, Some((s, _, _)) if s == scale) {
                     self.anchor = Some((scale, leader, last_target));
                 }
                 let (_, l0, t0) = self.anchor.expect("set above");
-                Pose(std::array::from_fn(|i| t0.0[i] + scale * (leader.0[i] - l0.0[i])))
+                Pose(std::array::from_fn(|i| {
+                    if i == Self::UNSCALED.index() {
+                        followed(&self.offset, i)
+                    } else {
+                        t0.0[i] + scale * (leader.0[i] - l0.0[i])
+                    }
+                }))
             }
             None => {
                 if self.anchor.take().is_some() {
                     self.offset = std::array::from_fn(|i| last_target.0[i] - leader.0[i]);
-                } else if let Some((prev, _)) = self.last {
-                    for i in 0..JOINT_COUNT {
-                        let closes = (leader.0[i] - prev.0[i]).abs() * Self::CATCH_UP;
-                        self.offset[i] -= self.offset[i].clamp(-closes, closes);
-                    }
                 }
-                Pose(std::array::from_fn(|i| leader.0[i] + self.offset[i]))
+                Pose(std::array::from_fn(|i| followed(&self.offset, i)))
             }
         };
         self.last = Some((leader, target));
@@ -239,6 +249,18 @@ mod tests {
             s.target(pan(0.0), None);
         }
         assert_eq!(s.target(pan(5.0), None), pan(5.0), "lined up again");
+    }
+
+    #[test]
+    fn the_gripper_stays_one_to_one_in_fine_mode() {
+        let grip = |deg: f32| {
+            let mut pose = pan(10.0);
+            pose.0[Joint::Gripper.index()] = deg;
+            pose
+        };
+        let mut s = Scaling::default();
+        s.target(grip(60.0), Some(0.25));
+        assert_eq!(s.target(grip(0.0), Some(0.25)), grip(0.0), "closes all the way");
     }
 
     #[test]
