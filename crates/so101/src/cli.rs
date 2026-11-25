@@ -1,8 +1,10 @@
 //! The `so101` command line: picks the arms, transports and session, and puts them together.
 
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use clap::{Parser, Subcommand};
 use so101::arm::{
@@ -10,7 +12,7 @@ use so101::arm::{
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
 use so101::control::{
-    request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
+    request_realtime, run, ArmRole, Event, EventBus, FineControl, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
 
 // Under the kernel's threaded interrupt handlers (priority 50), so serial and USB I/O still run.
@@ -112,6 +114,11 @@ enum Command {
         /// How close the wrist camera may come to the arm, in mm, by the map.
         #[arg(long, default_value_t = 10.0)]
         camera_margin_mm: f32,
+        /// Serve fine mode and live status on this port, on 127.0.0.1 only, one text command per
+        /// line (`fine on|off|toggle`, `scale 0.33`, `status`), each answered with a JSON status
+        /// line. 0 turns it off. The console (crates/console) reaches it over SSH.
+        #[arg(long, default_value_t = 8091)]
+        control_port: u16,
     },
     /// Recorded sessions (MCAP files).
     Session {
@@ -179,6 +186,7 @@ fn main() {
             actuators,
             camera_clearance,
             camera_margin_mm,
+            control_port,
         } => {
             let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
             let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
@@ -192,7 +200,20 @@ fn main() {
             });
             let tuning = (gains, lead);
             let camera = (camera_clearance != "none").then(|| (PathBuf::from(camera_clearance), camera_margin_mm));
-            cmd_teleop(leader_servos, follower_servos, cals, hz, max_step, ticks, tuning, cli.sim, actuators, camera)
+            let control = (control_port > 0).then_some(control_port);
+            cmd_teleop(
+                leader_servos,
+                follower_servos,
+                cals,
+                hz,
+                max_step,
+                ticks,
+                tuning,
+                cli.sim,
+                actuators,
+                camera,
+                control,
+            )
         }
         Command::Session { command: SessionCommand::Recover { input, output } } => cmd_session_recover(&input, &output),
     };
@@ -377,6 +398,7 @@ fn cmd_teleop(
     sim: bool,
     actuators: bool,
     camera_guard: Option<(PathBuf, f32)>,
+    control_port: Option<u16>,
 ) -> Result<()> {
     let mut leader = ServoArm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
     let mut follower = ServoArm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
@@ -410,8 +432,15 @@ fn cmd_teleop(
     follower.set_step_limit((max_step > 0).then_some(max_step));
     let clock = follower.clock();
     let bus = EventBus::new();
-    let printer = print_teleop(bus.subscribe(), hz);
+    let live = Arc::new(Mutex::new(Live::default()));
+    let printer = print_teleop(bus.subscribe(), hz, live.clone());
     let mut pilot = Teleop::new(leader, lead)?;
+    if let Some(port) = control_port {
+        match serve_control(port, pilot.fine_control(), live) {
+            Ok(()) => println!("control on 127.0.0.1:{port}: fine mode off, scale {:.2}", pilot.fine_control().scale()),
+            Err(e) => println!("control off: cannot listen on 127.0.0.1:{port}: {e}"),
+        }
+    }
     match request_realtime(REALTIME_PRIORITY) {
         Ok(()) => println!("loop at real-time priority (SCHED_FIFO {REALTIME_PRIORITY})"),
         Err(why) => println!("loop at normal priority: {why}"),
@@ -470,7 +499,7 @@ fn report_holds(tick: &Tick, held: &mut [Option<Limit>; JOINT_COUNT]) {
 
 /// Prints what the teleop loop publishes: holds as they start and end, and both arms' poses once a
 /// second. Ends when the bus is dropped.
-fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHandle<()> {
+fn print_teleop(events: mpsc::Receiver<Event>, hz: f64, live: Arc<Mutex<Live>>) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut held = [None; JOINT_COUNT];
         let mut poses = [Pose::default(); 2];
@@ -480,9 +509,13 @@ fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHand
             match &event.message {
                 Message::JointState(ArmRole::Leader, s) => poses[0] = s.pose,
                 Message::JointState(ArmRole::Follower, s) => poses[1] = s.pose,
-                Message::Actuator(ArmRole::Follower, a) => power.add(a),
+                Message::Actuator(ArmRole::Follower, a) => {
+                    power.add(a);
+                    live.lock().expect("live status").add(a);
+                }
                 Message::Tick(tick) => {
                     report_holds(tick, &mut held);
+                    live.lock().expect("live status").held = held;
                     if (event.sequence as u64 + 1).is_multiple_of(every) {
                         println!(
                             "tick {:>6}\n   leader   {}\n   follower {}",
@@ -499,6 +532,81 @@ fn print_teleop(events: mpsc::Receiver<Event>, hz: f64) -> std::thread::JoinHand
             }
         }
     })
+}
+
+/// What the control port reports: the follower's latest load and current per joint, its supply
+/// voltage, and which joints a guard is holding.
+#[derive(Default)]
+struct Live {
+    load_percent: [f32; JOINT_COUNT],
+    current_a: [f32; JOINT_COUNT],
+    voltage_v: Option<f32>,
+    held: [Option<Limit>; JOINT_COUNT],
+}
+
+impl Live {
+    fn add(&mut self, a: &ActuatorStatus) {
+        let i = a.joint.index();
+        self.load_percent[i] = a.load_percent.unwrap_or(self.load_percent[i]);
+        self.current_a[i] = a.current_a.unwrap_or(self.current_a[i]);
+        self.voltage_v = a.voltage_v.or(self.voltage_v);
+    }
+
+    fn json(&self, fine: &FineControl) -> String {
+        let round = |v: f32, by: f64| (f64::from(v) * by).round() / by;
+        serde_json::json!({
+            "fine": fine.is_on(),
+            "scale": round(fine.scale(), 1000.0),
+            "joints": Joint::ALL.map(|j| j.name()),
+            "load_percent": self.load_percent.map(|v| round(v, 10.0)),
+            "current_a": self.current_a.map(|v| round(v, 1000.0)),
+            "voltage_v": self.voltage_v.map(|v| round(v, 10.0)),
+            "held": self.held.map(|h| h.map(|l| format!("{l:?}").to_lowercase())),
+        })
+        .to_string()
+    }
+}
+
+/// Listens on 127.0.0.1 only; each connection is a line-per-command session (see `--control-port`).
+fn serve_control(port: u16, fine: Arc<FineControl>, live: Arc<Mutex<Live>>) -> std::io::Result<()> {
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let (fine, live) = (fine.clone(), live.clone());
+            std::thread::spawn(move || control_session(conn, &fine, &live));
+        }
+    });
+    Ok(())
+}
+
+fn control_session(conn: TcpStream, fine: &FineControl, live: &Mutex<Live>) -> std::io::Result<()> {
+    let mut reply = conn.try_clone()?;
+    for line in BufReader::new(conn).lines() {
+        let line = line?;
+        let was = (fine.is_on(), fine.scale());
+        match line.split_whitespace().collect::<Vec<_>>().as_slice() {
+            ["fine", "on"] => fine.set_on(true),
+            ["fine", "off"] => fine.set_on(false),
+            ["fine", "toggle"] => fine.set_on(!fine.is_on()),
+            ["scale", x] => match x.parse() {
+                Ok(x) => fine.set_scale(x),
+                Err(_) => {
+                    writeln!(reply, "{}", serde_json::json!({ "error": format!("not a scale: {x}") }))?;
+                    continue;
+                }
+            },
+            ["status"] | [] => {}
+            _ => {
+                writeln!(reply, "{}", serde_json::json!({ "error": format!("unknown command: {line}") }))?;
+                continue;
+            }
+        }
+        if (fine.is_on(), fine.scale()) != was {
+            println!("fine mode {} (scale {:.2})", if fine.is_on() { "on" } else { "off" }, fine.scale());
+        }
+        writeln!(reply, "{}", live.lock().expect("live status").json(fine))?;
+    }
+    Ok(())
 }
 
 /// The follower's draw on its supply, summed over the servos, for the live printout.

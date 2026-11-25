@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SO-101 console</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #181b21; --line: #2a2f38; --ink: #e6e8ec; --muted: #8b93a1;
+    --fine: #3b82f6; --ok: #3fb27f; --warn: #e0a526; --hot: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.4 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; }
+  main { display: grid; grid-template-columns: 1.4fr 1fr; grid-template-rows: auto 1fr; gap: 12px;
+    padding: 12px; height: 100vh; }
+  .cam { position: relative; background: #000; border-radius: 8px; overflow: hidden;
+    border: 3px solid transparent; min-height: 0; }
+  .cam img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .cam .tag { position: absolute; top: 8px; left: 10px; font-size: 12px; color: var(--muted);
+    background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 4px; }
+  #wristBox { grid-row: 1 / span 2; }
+  body.fine #wristBox { border-color: var(--fine); }
+  #fineBadge { display: none; position: absolute; top: 8px; right: 10px; background: var(--fine); color: #fff;
+    font-weight: 700; padding: 4px 10px; border-radius: 4px; font-size: 16px; }
+  body.fine #fineBadge { display: block; }
+  aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  #fine { width: 100%; padding: 14px; font-size: 18px; font-weight: 700; border-radius: 6px; cursor: pointer;
+    border: 2px solid var(--line); background: #222731; color: var(--ink); }
+  body.fine #fine { background: var(--fine); border-color: var(--fine); color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .row .label { color: var(--muted); margin-right: 4px; }
+  .seg button { padding: 6px 12px; border-radius: 5px; border: 1px solid var(--line); background: #222731;
+    color: var(--ink); cursor: pointer; font-size: 14px; }
+  .seg button.on { border-color: var(--fine); color: #fff; background: #1d3a6b; }
+  .keys { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font: 12px ui-monospace, monospace; }
+  .load { display: grid; grid-template-columns: 92px 1fr 52px; gap: 6px 8px; align-items: center; }
+  .load .name { color: var(--muted); font-size: 13px; }
+  .bar { height: 12px; background: #222731; border-radius: 3px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--ok); border-radius: 3px; transition: width .08s; }
+  .load .val { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+  .held { color: var(--hot); font-size: 11px; font-weight: 700; }
+  #status { color: var(--muted); font-size: 12px; }
+  #status.bad { color: var(--hot); }
+  h2 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  input[type=range] { flex: 1; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } #wristBox { grid-row: auto; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="cam" id="wristBox">
+    <img src="/cam/wrist" alt="wrist camera">
+    <span class="tag">wrist</span>
+    <span id="fineBadge">FINE</span>
+  </div>
+  <div class="cam" id="sceneBox">
+    <img src="/cam/scene" alt="scene camera">
+    <span class="tag">scene</span>
+  </div>
+  <aside>
+    <div class="panel">
+      <button id="fine">Fine mode: off</button>
+      <div class="row seg" id="scales"><span class="label">Scale</span></div>
+      <div class="keys"><kbd>space</kbd> fine on/off &nbsp; <kbd>1</kbd>–<kbd>4</kbd> scale</div>
+    </div>
+    <div class="panel">
+      <h2>Follower load (% of max torque)</h2>
+      <div class="load" id="load"></div>
+      <div class="row">
+        <label><input type="checkbox" id="tone"> Contact tone</label>
+        <span class="label">above</span>
+        <input type="range" id="threshold" min="10" max="80" value="30">
+        <span id="thresholdVal">30%</span>
+      </div>
+    </div>
+    <div id="status">connecting…</div>
+  </aside>
+</main>
+<script>
+const SCALES = [[1/2, '½'], [1/3, '⅓'], [1/4, '¼'], [1/6, '⅙']];
+const NAMES = { shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'wrist flex', wrist_roll: 'wrist roll', gripper: 'gripper' };
+const $ = id => document.getElementById(id);
+let state = null, busy = false;
+
+SCALES.forEach(([v, label], i) => {
+  const b = document.createElement('button');
+  b.textContent = label; b.dataset.scale = v; b.title = `key ${i + 1}`;
+  b.onclick = () => send(`scale/${v}`);
+  $('scales').appendChild(b);
+});
+$('fine').onclick = () => send('fine/toggle');
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); send('fine/toggle'); }
+  const n = parseInt(e.key, 10);
+  if (n >= 1 && n <= SCALES.length) send(`scale/${SCALES[n - 1][0]}`);
+});
+$('threshold').oninput = () => $('thresholdVal').textContent = $('threshold').value + '%';
+
+async function send(cmd) {
+  try { show(await (await fetch('/api/' + cmd)).json()); } catch { show(null); }
+}
+
+function show(s) {
+  const status = $('status');
+  if (!s || s.error) {
+    state = null; status.textContent = s ? s.error : 'console not reachable'; status.className = 'bad';
+    document.body.classList.remove('fine'); tone(0); return;
+  }
+  state = s;
+  const frac = SCALES.find(([v]) => Math.abs(v - s.scale) < 0.01);
+  const scaleText = frac ? frac[1] : s.scale.toFixed(2);
+  document.body.classList.toggle('fine', s.fine);
+  $('fine').textContent = s.fine ? `Fine mode: on (${scaleText})` : 'Fine mode: off';
+  $('fineBadge').textContent = `FINE ${scaleText}`;
+  document.querySelectorAll('#scales button').forEach(b => b.classList.toggle('on', Math.abs(b.dataset.scale - s.scale) < 0.01));
+  const load = $('load');
+  if (!load.children.length) {
+    s.joints.forEach(j => load.insertAdjacentHTML('beforeend',
+      `<span class="name">${NAMES[j] || j} <span class="held" id="held-${j}"></span></span><div class="bar"><i id="bar-${j}"></i></div><span class="val" id="val-${j}"></span>`));
+  }
+  const threshold = +$('threshold').value;
+  let worst = 0;
+  s.joints.forEach((j, i) => {
+    const v = Math.abs(s.load_percent[i]);
+    const bar = $('bar-' + j);
+    bar.style.width = Math.min(100, v) + '%';
+    bar.style.background = v >= threshold ? 'var(--hot)' : v >= threshold * 0.6 ? 'var(--warn)' : 'var(--ok)';
+    $('val-' + j).textContent = v.toFixed(0) + '%';
+    $('held-' + j).textContent = s.held[i] ? s.held[i] : '';
+    worst = Math.max(worst, v - threshold);
+  });
+  tone(worst);
+  const amps = s.current_a.reduce((a, b) => a + b, 0);
+  status.className = '';
+  status.textContent = `teleop connected · ${s.voltage_v ?? '–'} V · ${amps.toFixed(2)} A`;
+}
+
+// A tone that rises in pitch and volume the further the hardest-pushing joint is past the threshold.
+let audio = null, osc = null, gain = null;
+$('tone').onchange = () => {
+  if ($('tone').checked && !audio) {
+    audio = new AudioContext(); osc = audio.createOscillator(); gain = audio.createGain();
+    osc.type = 'triangle'; gain.gain.value = 0; osc.connect(gain).connect(audio.destination); osc.start();
+  }
+  if (!$('tone').checked) tone(0);
+};
+function tone(excess) {
+  if (!audio) return;
+  const on = $('tone').checked && excess > 0;
+  const t = audio.currentTime;
+  gain.gain.setTargetAtTime(on ? Math.min(0.25, 0.05 + excess / 200) : 0, t, 0.02);
+  if (on) osc.frequency.setTargetAtTime(330 + excess * 15, t, 0.02);
+}
+
+async function poll() {
+  if (!busy) { busy = true; await send('status'); busy = false; }
+  setTimeout(poll, 100);
+}
+poll();
+</script>
+</body>
+</html>
