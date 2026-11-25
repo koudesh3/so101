@@ -83,7 +83,7 @@ One concept, one name, one home.
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
 | `Pilot` | what decides the follower's target each tick: teleop now, a script or the action queue next (a trait) | `control/pilots` |
-| `FineControl` | teleop's fine mode: while on, the follower's arm joints move a fraction (the scale) of the leader's motion, the gripper 1:1; switched over the control port | `control/pilots` |
+| `FineControl` | teleop's fine mode (double-tap the leader's gripper, or the console): while on, the follower's arm joints move a fraction (the scale) of the leader's motion, the gripper 1:1; switched over the control port | `control/pilots` |
 | `Source` | which pilot produced a target, as recorded: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
 | `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |

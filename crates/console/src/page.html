@@ -64,7 +64,9 @@
     <div class="panel">
       <button id="fine">Fine mode: off</button>
       <div class="row seg" id="scales"><span class="label">Scale</span></div>
-      <div class="keys"><kbd>space</kbd> fine on/off &nbsp; <kbd>1</kbd>–<kbd>4</kbd> scale</div>
+      <div class="keys">double-tap the leader's gripper, or <kbd>space</kbd>: fine on/off &nbsp; <kbd>1</kbd>–<kbd>4</kbd> scale</div>
+      <div class="row"><label><input type="checkbox" id="chirp" checked> Chirp when fine mode changes</label>
+        <span class="label" id="soundHint">(click the page once to allow sound)</span></div>
     </div>
     <div class="panel">
       <h2>Follower load (% of max torque)</h2>
@@ -110,6 +112,7 @@ function show(s) {
     state = null; status.textContent = s ? s.error : 'console not reachable'; status.className = 'bad';
     document.body.classList.remove('fine'); tone(0); return;
   }
+  if (state && state.fine !== s.fine) chirp(s.fine);
   state = s;
   const frac = SCALES.find(([v]) => Math.abs(v - s.scale) < 0.01);
   const scaleText = frac ? frac[1] : s.scale.toFixed(2);
@@ -139,15 +142,31 @@ function show(s) {
   status.textContent = `teleop connected · ${s.voltage_v ?? '–'} V · ${amps.toFixed(2)} A`;
 }
 
-// A tone that rises in pitch and volume the further the hardest-pushing joint is past the threshold.
+// Browsers allow sound only after a click or key on the page.
 let audio = null, osc = null, gain = null;
-$('tone').onchange = () => {
-  if ($('tone').checked && !audio) {
-    audio = new AudioContext(); osc = audio.createOscillator(); gain = audio.createGain();
-    osc.type = 'triangle'; gain.gain.value = 0; osc.connect(gain).connect(audio.destination); osc.start();
-  }
-  if (!$('tone').checked) tone(0);
-};
+function startAudio() {
+  if (audio) return;
+  audio = new AudioContext(); osc = audio.createOscillator(); gain = audio.createGain();
+  osc.type = 'triangle'; gain.gain.value = 0; osc.connect(gain).connect(audio.destination); osc.start();
+  $('soundHint').textContent = '';
+}
+addEventListener('pointerdown', startAudio);
+addEventListener('keydown', startAudio);
+
+// Fine on: two rising notes; off: two falling.
+function chirp(on) {
+  if (!audio || !$('chirp').checked) return;
+  const notes = on ? [660, 990] : [990, 660];
+  notes.forEach((f, i) => {
+    const t = audio.currentTime + i * 0.09, o = audio.createOscillator(), g = audio.createGain();
+    o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.3, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.09);
+  });
+}
+
+// A tone that rises in pitch and volume the further the hardest-pushing joint is past the threshold.
+$('tone').onchange = () => { startAudio(); if (!$('tone').checked) tone(0); };
 function tone(excess) {
   if (!audio) return;
   const on = $('tone').checked && excess > 0;
