@@ -9,14 +9,14 @@ use crate::clock::Timestamp;
 pub use ffmpeg::{read_controls, FfmpegCamera};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Camera {
+pub enum CameraRole {
     Wrist,
     Scene,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FrameRef {
-    pub camera: Camera,
+    pub camera: CameraRole,
     pub sequence: u32,
 }
 
@@ -24,7 +24,7 @@ pub struct FrameRef {
 /// record's `publish_time`, `log_time` and `sequence` (contract 3).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Frame {
-    pub camera: Camera,
+    pub camera: CameraRole,
     /// The kernel's frame number for a V4L2 camera.
     pub sequence: u32,
     /// The kernel's buffer timestamp for a V4L2 camera; exposure starts about 10 ms earlier.
@@ -33,18 +33,18 @@ pub struct Frame {
     pub jpeg: Bytes,
 }
 
-impl Camera {
+impl CameraRole {
     pub fn name(self) -> &'static str {
         match self {
-            Camera::Wrist => "wrist",
-            Camera::Scene => "scene",
+            CameraRole::Wrist => "wrist",
+            CameraRole::Scene => "scene",
         }
     }
 
-    pub fn from_name(name: &str) -> Option<Camera> {
+    pub fn from_name(name: &str) -> Option<CameraRole> {
         match name {
-            "wrist" => Some(Camera::Wrist),
-            "scene" => Some(Camera::Scene),
+            "wrist" => Some(CameraRole::Wrist),
+            "scene" => Some(CameraRole::Scene),
             _ => None,
         }
     }

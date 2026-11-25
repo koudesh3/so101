@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use sample::joints;
 use so101::arm::JointState;
-use so101::camera::Camera;
+use so101::camera::CameraRole;
 use so101::clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
 use so101::control::EventBus;
 use so101::control::{ArmRole, Event, Message};
@@ -144,12 +144,12 @@ fn drops_are_reported_by_kind() {
     let mut events = Vec::new();
     for seq in (0..12).filter(|s| *s != 5 && *s != 6) {
         let t = Timestamp(seq as u64 * 33 * MS);
-        events.push(Event::frame(sample::frame(Camera::Wrist, seq, t, 500)));
+        events.push(Event::frame(sample::frame(CameraRole::Wrist, seq, t, 500)));
     }
     let mut t = 0;
     for seq in 0..12u32 {
         t += if seq == 7 { 70 } else { 33 } * MS; // the camera itself skipped: no gap in its counter
-        events.push(Event::frame(sample::frame(Camera::Scene, seq, Timestamp(t), 500)));
+        events.push(Event::frame(sample::frame(CameraRole::Scene, seq, Timestamp(t), 500)));
     }
     for cycle in (0..10).filter(|s| *s != 4) {
         events.push(state(cycle, cycle as u64 * 10 * MS)); // cycle 4 overran: skipped (contract 5)
@@ -190,7 +190,7 @@ fn a_stalled_disk_drops_frames_not_the_session() {
     for i in 0..300u32 {
         let t = Timestamp(i as u64 * 33 * MS);
         let started = Instant::now();
-        bus.publish(Event::frame(sample::frame(Camera::Wrist, i, t, 40_000)));
+        bus.publish(Event::frame(sample::frame(CameraRole::Wrist, i, t, 40_000)));
         bus.publish(state(i, t.0));
         slowest = slowest.max(started.elapsed());
     }
@@ -284,7 +284,7 @@ fn a_truncated_log_recovers_its_complete_chunks() {
     let mut events = Vec::new();
     for i in 0..120u32 {
         let t = Timestamp(i as u64 * 33 * MS);
-        events.push(Event::frame(sample::frame(Camera::Wrist, i, t, 40_000)));
+        events.push(Event::frame(sample::frame(CameraRole::Wrist, i, t, 40_000)));
         events.push(state(i, t.0));
     }
     // A frame queue as long as the run, so a busy machine can't make the recorder drop frames:
@@ -346,7 +346,7 @@ mod sample {
     use bytes::Bytes;
     use so101::arm::Limit;
     use so101::arm::{ActuatorStatus, Fault, Joint, JointState, Pose};
-    use so101::camera::{Camera, Frame, FrameRef};
+    use so101::camera::{CameraRole, Frame, FrameRef};
     use so101::clock::Timestamp;
     use so101::control::{Clip, Tick};
     use so101::control::{JointTarget, Source};
@@ -361,13 +361,13 @@ mod sample {
     }
 
     /// A fake JPEG: the SOI marker, then bytes that identify the camera and frame.
-    pub fn jpeg(camera: Camera, sequence: u32, len: usize) -> Bytes {
+    pub fn jpeg(camera: CameraRole, sequence: u32, len: usize) -> Bytes {
         let mut v = vec![0xFF, 0xD8];
         v.extend((0..len.saturating_sub(2)).map(|i| (i as u32 ^ sequence ^ camera as u32) as u8));
         Bytes::from(v)
     }
 
-    pub fn frame(camera: Camera, sequence: u32, t_capture: Timestamp, len: usize) -> Frame {
+    pub fn frame(camera: CameraRole, sequence: u32, t_capture: Timestamp, len: usize) -> Frame {
         Frame {
             camera,
             sequence,
@@ -415,8 +415,8 @@ mod sample {
             ));
             if cycle % 3 == 0 {
                 let tick = cycle / 3;
-                let wrist = frame(Camera::Wrist, tick, t(ms), 2000);
-                let scene = frame(Camera::Scene, tick + 100, t(ms + 1), 3000);
+                let wrist = frame(CameraRole::Wrist, tick, t(ms), 2000);
+                let scene = frame(CameraRole::Scene, tick + 100, t(ms + 1), 3000);
                 let wrist_id = wrist.id();
                 let scene_id = scene.id();
                 out.push(Event::frame(wrist));
@@ -440,7 +440,7 @@ mod sample {
                         cycle,
                         state: pos,
                         wrist: Some(wrist_id),
-                        scene: Some(FrameRef { camera: Camera::Scene, sequence: scene_id.sequence }),
+                        scene: Some(FrameRef { camera: CameraRole::Scene, sequence: scene_id.sequence }),
                         action: joints(1.0),
                         source: Source::Policy(CheckpointId("ckpt-0005000".into())),
                         requested: joints(1.4),

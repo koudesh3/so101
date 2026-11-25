@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 
 use bytes::Bytes;
 
-use crate::camera::{Camera, Frame};
+use crate::camera::{CameraRole, Frame};
 use crate::clock::Clock;
 
 /// One camera streaming on its own thread. Dropping it stops ffmpeg.
@@ -23,7 +23,7 @@ impl FfmpegCamera {
     /// and receive times are both when it came off the pipe: ffmpeg's pipe drops the kernel's
     /// timestamps, so capture time is a few ms late (exposure starts about 10 ms before that).
     pub fn start(
-        camera: Camera,
+        camera: CameraRole,
         device: &str,
         size: &str,
         controls: &[String],

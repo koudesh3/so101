@@ -45,8 +45,8 @@ impl Message {
             Message::JointTarget(Follower, _) => "/follower/target",
             Message::Tick(_) => "/tick",
             Message::Frame(f) => match f.camera {
-                Camera::Wrist => "/cam/wrist",
-                Camera::Scene => "/cam/scene",
+                CameraRole::Wrist => "/cam/wrist",
+                CameraRole::Scene => "/cam/scene",
             },
             Message::Chunk(_) => "/policy/chunk",
             Message::RecorderDrop(_) => TOPIC_RECORDER_DROPS,
@@ -283,7 +283,7 @@ macro_rules! wire_struct {
 
 wire_same!(u32, String, Option<f32>);
 wire_enum!(Joint => Joint { ShoulderPan, ShoulderLift, ElbowFlex, WristFlex, WristRoll, Gripper });
-wire_enum!(Camera => Camera { Wrist, Scene });
+wire_enum!(CameraRole => Camera { Wrist, Scene });
 wire_enum!(Limit => Limit { Step, Range, Stall, Collision });
 wire_enum!(Fault => Fault { Voltage, Sensor, Overheat, Overcurrent, AngleLimit, Overload });
 wire_struct!(JointState => JointState { t: t_ns, pose: pose, counts: counts });
@@ -347,7 +347,7 @@ pub(crate) fn frame_from_pb(img: fpb::CompressedImage, sequence: u32, t_receive:
     if ts.seconds < 0 || !(0..1_000_000_000).contains(&ts.nanos) {
         return Err(invalid("CompressedImage: timestamp out of range"));
     }
-    let camera = Camera::from_name(&img.frame_id)
+    let camera = CameraRole::from_name(&img.frame_id)
         .ok_or_else(|| invalid(format!("CompressedImage: unknown camera {:?}", img.frame_id)))?;
     Ok(Frame {
         camera,

@@ -12,7 +12,7 @@ use so101::arm::{
     check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::camera::{read_controls, Camera, FfmpegCamera};
+use so101::camera::{read_controls, CameraRole, FfmpegCamera};
 use so101::control::{
     request_realtime, run, ArmRole, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
@@ -497,7 +497,7 @@ fn cmd_teleop(
     if let Some((device, size)) = &io.wrist {
         let (feed, bus) = (console.wrist.clone(), bus.clone());
         let started =
-            FfmpegCamera::start(Camera::Wrist, device, size, &io.controls_for(device), clock.clone(), move |f| {
+            FfmpegCamera::start(CameraRole::Wrist, device, size, &io.controls_for(device), clock.clone(), move |f| {
                 feed.put(f.jpeg.clone());
                 bus.publish(Event::frame(f));
             });
@@ -506,7 +506,7 @@ fn cmd_teleop(
     if let Some((device, size)) = &io.scene {
         let (feed, recording) = (console.scene.clone(), recording.clone());
         let started =
-            FfmpegCamera::start(Camera::Scene, device, size, &io.controls_for(device), clock.clone(), move |f| {
+            FfmpegCamera::start(CameraRole::Scene, device, size, &io.controls_for(device), clock.clone(), move |f| {
                 feed.put(f.jpeg.clone());
                 recording.scene_frame(&f);
             });
