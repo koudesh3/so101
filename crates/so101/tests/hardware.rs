@@ -245,6 +245,23 @@ struct GravitySweep {
     via_reach: bool,
 }
 
+/// Load map: around REACH, one joint at a time, 3° inside where the system-ID run already took the
+/// arm, so the elbow and shoulder hold loads from light to their heaviest (the forearm straight out
+/// at REACH). Where each joint settles from either side, against the load it holds there.
+const LOAD_MAP: [(f32, f32, f32); 11] = [
+    (-33.0, 9.0, 39.0),
+    (-42.0, 9.0, 39.0),
+    (-50.0, 9.0, 39.0),
+    (-24.0, 9.0, 39.0),
+    (-16.0, 9.0, 39.0),
+    (-33.0, 0.0, 39.0),
+    (-33.0, -8.0, 39.0),
+    (-33.0, 18.0, 39.0),
+    (-33.0, 26.0, 39.0),
+    (-33.0, 9.0, 22.0),
+    (-33.0, 9.0, 56.0),
+];
+
 /// The folded side, on the path out of rest every session takes (lift -80 to -104°): where the arm
 /// rests and the fine-motion test ran, and where the elbow's offset flips sign. 5° inside lift's
 /// range at the lowest, including the dip 4° below.
@@ -268,24 +285,28 @@ const SWEEP: [(f32, f32, f32); 12] = [
 
 impl GravitySweep {
     fn new() -> Self {
-        Self::over("gravity-sweep", &SWEEP, true)
+        Self::over("gravity-sweep", &SWEEP, true, AWAY_DEG)
     }
 
     fn folded() -> Self {
-        Self::over("gravity-sweep-folded", &FOLDED_SWEEP, false)
+        Self::over("gravity-sweep-folded", &FOLDED_SWEEP, false, AWAY_DEG)
     }
 
-    fn over(name: &'static str, poses: &[(f32, f32, f32)], via_reach: bool) -> Self {
+    fn load_map() -> Self {
+        Self::over("load-map", &LOAD_MAP, true, 3.0)
+    }
+
+    fn over(name: &'static str, poses: &[(f32, f32, f32)], via_reach: bool, away: f32) -> Self {
         let pose = |(lift, elbow, wrist): (f32, f32, f32), d: f32| [0.0, lift + d, elbow + d, wrist + d, 0.0, 40.0];
         let first = poses[0];
-        let mut keys = vec![(0.0, if via_reach { REACH } else { pose(first, AWAY_DEG) }, true)];
+        let mut keys = vec![(0.0, if via_reach { REACH } else { pose(first, away) }, true)];
         let mut t = EASE_S + 1.0;
         for &p in poses {
-            keys.push((t, pose(p, AWAY_DEG), true));
+            keys.push((t, pose(p, away), true));
             t += 2.0 + 0.5;
             keys.push((t, pose(p, 0.0), false));
             t += SETTLE_S;
-            keys.push((t, pose(p, -AWAY_DEG), false));
+            keys.push((t, pose(p, -away), false));
             t += 0.5;
             keys.push((t, pose(p, 0.0), false));
             t += SETTLE_S;
@@ -433,6 +454,12 @@ fn the_folded_gravity_sweep_is_safe_and_completes_on_the_simulator() {
 }
 
 #[test]
+fn the_load_map_is_safe_and_completes_on_the_simulator() {
+    let closest = dry_run(GravitySweep::load_map());
+    println!("load map: {:.0} s, camera never closer than {closest:.1} mm", GravitySweep::load_map().end_s());
+}
+
+#[test]
 fn the_gravity_sweep_is_safe_and_completes_on_the_simulator() {
     let closest = dry_run(GravitySweep::new());
     println!("gravity sweep: {:.0} s, camera never closer than {closest:.1} mm", GravitySweep::new().end_s());
@@ -496,6 +523,13 @@ fn system_identification() {
 #[ignore]
 fn gravity_sweep() {
     run_on_follower(GravitySweep::new());
+}
+
+/// On the real follower, as above with `load_map`. About 1.4 minutes, around REACH.
+#[test]
+#[ignore]
+fn load_map() {
+    run_on_follower(GravitySweep::load_map());
 }
 
 /// On the real follower, as above with `gravity_sweep_folded`. About 30 s, near rest.
