@@ -98,12 +98,12 @@ impl Camera for V4l2Camera {
             if meta.flags & Flags::TIMESTAMP_MASK != Flags::TIMESTAMP_MONOTONIC {
                 return Err(Error::Device(format!("{}: kernel timestamps aren't CLOCK_MONOTONIC", self.path)));
             }
-            let jpeg = &buffer[..(meta.bytesused as usize).min(buffer.len())];
-            // A buffer the driver marks corrupt, or one that isn't a JPEG, is skipped; its
+            let filled = &buffer[..(meta.bytesused as usize).min(buffer.len())];
+            // A buffer the driver marks corrupt, or one that isn't a whole JPEG, is skipped; its
             // sequence number still counts, so it shows as a gap.
-            if meta.flags.contains(Flags::ERROR) || !jpeg.starts_with(&[0xFF, 0xD8]) {
+            let Some(jpeg) = whole_jpeg(filled).filter(|_| !meta.flags.contains(Flags::ERROR)) else {
                 continue;
-            }
+            };
             let t_capture = Timestamp(meta.timestamp.sec as u64 * 1_000_000_000 + meta.timestamp.usec as u64 * 1_000);
             return Ok(Frame {
                 camera: self.role,
@@ -162,6 +162,17 @@ fn apply_controls(device: &Device, path: &str, controls: &[String]) -> Result<St
     Ok(read.join(" "))
 }
 
+// The JPEG in a filled buffer: from its SOI to its last EOI. The icSpring pads a byte after EOI
+// (2026-11-24). None if either marker is missing (a truncated frame).
+fn whole_jpeg(filled: &[u8]) -> Option<&[u8]> {
+    if !filled.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let tail = filled.len().saturating_sub(64);
+    let eoi = filled[tail..].windows(2).rposition(|w| w == [0xFF, 0xD9])? + tail;
+    Some(&filled[..eoi + 2])
+}
+
 fn is_auto_switch(name: &str) -> bool {
     name.starts_with("auto_") || name.ends_with("_automatic") || name.ends_with("_auto")
 }
@@ -192,6 +203,13 @@ mod tests {
         assert_eq!(control_name("Auto Exposure"), "auto_exposure");
         assert_eq!(control_name("Gain"), "gain");
         assert_eq!(control_name("Power Line Frequency"), "power_line_frequency");
+    }
+
+    #[test]
+    fn a_jpeg_is_trimmed_to_its_end_marker_and_a_truncated_one_refused() {
+        assert_eq!(whole_jpeg(&[0xFF, 0xD8, 1, 2, 0xFF, 0xD9, 0x00]), Some(&[0xFF, 0xD8, 1, 2, 0xFF, 0xD9][..]));
+        assert_eq!(whole_jpeg(&[0xFF, 0xD8, 1, 2, 3]), None, "no EOI");
+        assert_eq!(whole_jpeg(&[0, 0xFF, 0xD8, 0xFF, 0xD9]), None, "no SOI at the start");
     }
 
     #[test]

@@ -30,7 +30,13 @@ pub fn conforms(camera: &mut dyn Camera, n: usize) -> Continuity {
         assert_eq!(frame.camera, role);
         assert!(frame.t_receive >= frame.t_capture, "received before captured: {frame:?}");
         assert_eq!(&frame.jpeg[..2], &[0xFF, 0xD8], "a JPEG starts with SOI");
-        assert_eq!(&frame.jpeg[frame.jpeg.len() - 2..], &[0xFF, 0xD9], "and ends with EOI");
+        let tail = &frame.jpeg[frame.jpeg.len().saturating_sub(24)..];
+        assert_eq!(
+            &frame.jpeg[frame.jpeg.len() - 2..],
+            &[0xFF, 0xD9],
+            "and ends with EOI: {} bytes, tail {tail:02x?}",
+            frame.jpeg.len()
+        );
         if let Some(prev) = &last {
             assert!(frame.t_capture > prev.t_capture, "capture times only go forward");
             assert!(frame.sequence > prev.sequence, "sequence numbers only go forward");
