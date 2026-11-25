@@ -7,11 +7,11 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use so101::arm::{
-    Calibration, ClearanceMap, FollowerGains, Joint, JointState, Limit, Pose, Result, SerialPort, ServoArm, Servos,
+    Calibration, ClearanceMap, FollowerGains, Joint, Limit, Pose, Result, SerialPort, ServoArm, Servos,
     SimulatedServos, JOINT_COUNT,
 };
 use so101::clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
-use so101::control::{run, EventBus, Message, Pilot, RunOptions, Source};
+use so101::control::{run, Cameras, EventBus, Message, Observation, Pilot, RunOptions, Source};
 use so101::session::{Attachment, Header, Recorder, RecorderOptions};
 
 /// Commands the follower's pose as it was when torque came on: nothing moves.
@@ -22,8 +22,8 @@ impl Pilot for Hold {
         Source::Script("hold".into())
     }
 
-    fn target(&mut self, _: Timestamp, follower: &JointState) -> Result<(Pose, Vec<Message>)> {
-        Ok((*self.0.get_or_insert(follower.pose), Vec::new()))
+    fn target(&mut self, seen: &Observation) -> Result<(Pose, Vec<Message>)> {
+        Ok((*self.0.get_or_insert(seen.follower.pose), Vec::new()))
     }
 }
 
@@ -50,18 +50,19 @@ fn twenty_starts_without_a_first_cycle_error() {
             println!("gripper as read back: {}", registers[5]);
         }
         let mut errors = Vec::new();
-        let options = RunOptions { hz: 120.0, max_ticks: Some(120), read_actuators: true };
+        let options = RunOptions { hz: 120.0, max_cycles: Some(120), read_actuators: true };
         let stats = run(
             &mut follower,
             &mut Hold(None),
             options,
+            &Cameras::default(),
             Arc::new(MonotonicClock),
             &AtomicBool::new(false),
             &EventBus::new(),
             |e| errors.push(e.to_string()),
         )
         .unwrap();
-        println!("start {start:2}: {} cycles, {} errors {errors:?}", stats.ticks, stats.errors);
+        println!("start {start:2}: {} cycles, {} errors {errors:?}", stats.cycles, stats.errors);
         if stats.errors > 0 {
             failures.push(start);
         }
@@ -227,9 +228,9 @@ impl<S: Script> Pilot for Scripted<S> {
         Source::Script(self.script.name().into())
     }
 
-    fn target(&mut self, now: Timestamp, follower: &JointState) -> Result<(Pose, Vec<Message>)> {
-        let (t0, home) = *self.started.get_or_insert((now, follower.pose));
-        Ok((self.script.at(now.since(t0).as_secs_f64(), home), Vec::new()))
+    fn target(&mut self, seen: &Observation) -> Result<(Pose, Vec<Message>)> {
+        let (t0, home) = *self.started.get_or_insert((seen.t, seen.follower.pose));
+        Ok((self.script.at(seen.t.since(t0).as_secs_f64(), home), Vec::new()))
     }
 }
 
@@ -513,8 +514,10 @@ fn dry_run<S: Script>(script: S) -> f32 {
     let ticks = (script.end_s() * 120.0) as u64;
     let name = script.name();
     let mut pilot = Scripted { script, started: None };
-    let options = RunOptions { hz: 120.0, max_ticks: Some(ticks), read_actuators: true };
-    let stats = run(&mut follower, &mut pilot, options, clock, &AtomicBool::new(false), &bus, |_| {}).unwrap();
+    let options = RunOptions { hz: 120.0, max_cycles: Some(ticks), read_actuators: true };
+    let stats =
+        run(&mut follower, &mut pilot, options, &Cameras::default(), clock, &AtomicBool::new(false), &bus, |_| {})
+            .unwrap();
     drop(bus);
     assert_eq!((stats.errors, stats.skipped), (0, 0), "{name}: {stats:?}");
     let clipped: Vec<Limit> = events
@@ -591,9 +594,11 @@ fn run_on_follower<S: Script + Clone>(script: S) {
     let ticks = (script.end_s() * 120.0) as u64;
     println!("{}: {:.0} s of motion; Ctrl-C stops it with torque off", script.name(), script.end_s());
     let mut pilot = Scripted { script, started: None };
-    let options = RunOptions { hz: 120.0, max_ticks: Some(ticks), read_actuators: true };
+    let options = RunOptions { hz: 120.0, max_cycles: Some(ticks), read_actuators: true };
     let stats =
-        run(&mut follower, &mut pilot, options, clock, &AtomicBool::new(false), &bus, |e| println!("ERROR {e}"));
+        run(&mut follower, &mut pilot, options, &Cameras::default(), clock, &AtomicBool::new(false), &bus, |e| {
+            println!("ERROR {e}")
+        });
     drop(bus);
     let (_, summary) = recorder.finish().unwrap();
     println!("{stats:?}\nrecorded {out}: {summary:?}");

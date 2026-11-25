@@ -3,9 +3,9 @@
 
 use std::time::Duration;
 
-use crate::arm::{Arm, JointState, Pose, Result, JOINT_COUNT};
+use crate::arm::{Arm, Pose, Result, JOINT_COUNT};
 use crate::clock::Timestamp;
-use crate::control::{ArmRole, Message, Pilot, Source};
+use crate::control::{ArmRole, Message, Observation, Pilot, Source};
 
 pub struct Teleop<L: Arm> {
     leader: L,
@@ -62,9 +62,9 @@ impl<L: Arm> Pilot for Teleop<L> {
         Source::Teleop
     }
 
-    fn target(&mut self, now: Timestamp, _follower: &JointState) -> Result<(Pose, Vec<Message>)> {
+    fn target(&mut self, seen: &Observation) -> Result<(Pose, Vec<Message>)> {
         let leader = self.leader.read_state()?;
-        let target = self.predictor.ahead(now, leader.pose, self.lead);
+        let target = self.predictor.ahead(seen.t, leader.pose, self.lead);
         Ok((target, vec![Message::JointState(ArmRole::Leader, leader)]))
     }
 }

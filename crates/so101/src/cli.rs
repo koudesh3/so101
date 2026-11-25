@@ -13,9 +13,10 @@ use so101::arm::{
     check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::camera::{stream, Camera, CameraRole, Description, SimulatedCamera, Streaming};
+use so101::camera::{stream, Camera, CameraRole, Description, LatestFrame, SimulatedCamera, Streaming};
 use so101::control::{
-    request_realtime, run, ArmRole, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick, LATE_AFTER,
+    request_realtime, run, ArmRole, Cameras, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick,
+    CYCLES_PER_TICK, LATE_AFTER,
 };
 use so101::session::{Attachment, CameraInfo, Header};
 
@@ -471,10 +472,10 @@ fn cmd_teleop(
         None => println!("camera guard off"),
     }
 
-    let options = RunOptions { hz, max_ticks: (ticks > 0).then_some(ticks), read_actuators: actuators };
+    let options = RunOptions { hz, max_cycles: (ticks > 0).then_some(ticks), read_actuators: actuators };
     let stop = ctrl_c_flag();
     println!(
-        "teleop at {hz} Hz, max step {max_step} counts, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
+        "teleop: {hz} Hz cycles, a tick every 4th, max step {max_step} counts, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
@@ -507,21 +508,28 @@ fn cmd_teleop(
     });
     let printer = print_teleop(bus.subscribe(), hz, console.live.clone());
     let mut streams: Vec<(CameraRole, Streaming)> = Vec::new();
+    // Each tick records, and decides on, the newest frame of each camera.
+    let cameras = Cameras {
+        wrist: wrist.is_some().then(|| Arc::new(LatestFrame::new(CameraRole::Wrist))),
+        scene: scene.is_some().then(|| Arc::new(LatestFrame::new(CameraRole::Scene))),
+    };
     if let Some(camera) = wrist {
-        let (feed, bus) = (console.wrist.clone(), bus.clone());
+        let (feed, bus, latest) = (console.wrist.clone(), bus.clone(), cameras.wrist.clone());
         streams.push((
             CameraRole::Wrist,
             stream(camera, move |f| {
+                latest.iter().for_each(|l| l.put(&f));
                 feed.put(f.jpeg.clone());
                 bus.publish(Event::frame(f));
             }),
         ));
     }
     if let Some(camera) = scene {
-        let (feed, recording) = (console.scene.clone(), recording.clone());
+        let (feed, recording, latest) = (console.scene.clone(), recording.clone(), cameras.scene.clone());
         streams.push((
             CameraRole::Scene,
             stream(camera, move |f| {
+                latest.iter().for_each(|l| l.put(&f));
                 feed.put(f.jpeg.clone());
                 recording.scene_frame(&f);
             }),
@@ -538,7 +546,7 @@ fn cmd_teleop(
         Ok(()) => println!("loop at real-time priority (SCHED_FIFO {REALTIME_PRIORITY})"),
         Err(why) => println!("loop at normal priority: {why}"),
     }
-    let stats = run(&mut follower, &mut pilot, options, clock, &stop, &bus, |e| println!("ERROR {e}"));
+    let stats = run(&mut follower, &mut pilot, options, &cameras, clock, &stop, &bus, |e| println!("ERROR {e}"));
     if recording.is_recording() {
         if let Err(e) = recording.stop() {
             println!("ERROR closing the recording: {e}");
@@ -560,7 +568,8 @@ fn cmd_teleop(
     let _ = printer.join();
     let stats = stats?;
     println!(
-        "stopped after {} ticks: {} errors, {} skipped, {} started over {} ms late (worst {:.2} ms), worst tick work {:.2} ms",
+        "stopped after {} cycles ({} ticks): {} errors, {} skipped, {} started over {} ms late (worst {:.2} ms), worst cycle work {:.2} ms",
+        stats.cycles,
         stats.ticks,
         stats.errors,
         stats.skipped,
@@ -772,7 +781,8 @@ fn print_teleop(
         let mut held = [None; JOINT_COUNT];
         let mut poses = [Pose::default(); 2];
         let mut power = Power::default();
-        let every = (hz as u64).max(1);
+        // About once a second.
+        let every = ((hz / CYCLES_PER_TICK as f64) as u64).max(1);
         for event in events {
             match &event.message {
                 Message::JointState(ArmRole::Leader, s) => poses[0] = s.pose,

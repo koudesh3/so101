@@ -18,8 +18,8 @@ use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
 pub use health::{Health, Junk, Trip, OVERHEAT_C, SAG_RATIO};
-pub use pilots::{Pilot, Teleop};
-pub use run::{request_realtime, run, RunOptions, RunStats, LATE_AFTER};
+pub use pilots::{Observation, Pilot, Teleop};
+pub use run::{request_realtime, run, Cameras, RunOptions, RunStats, CYCLES_PER_TICK, LATE_AFTER};
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).
 #[derive(Clone, Debug, PartialEq)]

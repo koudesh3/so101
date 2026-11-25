@@ -105,9 +105,17 @@ Phase 1 builds on that:
 **Ticks every 4th cycle, with stepping** (30 Hz): on a tick, take the latest `JointState` and each
 camera's latest `Frame`, record their identities in `Tick.wrist` and `Tick.scene`, and ask the
 pilot for a target. On the cycles between, command a goal stepped linearly from the previous
-target toward it. `Tick.clipped` collects its cycles' limits, most severe first. Today every cycle
-writes a `Tick` with no frames referenced, so an exporter would have to pair frames by time
-(contract 2 forbids it).
+target toward it. `Tick.clipped` collects its cycles' limits, most severe first.
+- **Done 2026-11-24** (`control/run.rs`). Ticks sit on every 4th grid point and are numbered by
+  it, so a skipped tick is a gap in their sequence. The pilot gets an `Observation` (time, the
+  follower's state, each camera's newest frame from its `LatestFrame`); the `Tick` records exactly
+  those. A tick is published when its window ends, so `action` is the goal actually sent; a window
+  cut short by skipped cycles reaches its target on the next cycle it gets, and its tick is
+  published then (or when the run stops). Guards still run on every 120 Hz write.
+- **Teleop is 25 ms slower** on the fitted simulator, replaying a recorded hand (episode 202319):
+  the follower trails it by 100-167 ms per joint, against 75-142 ms deciding every cycle. A
+  longer lead buys back only 8-17 ms (the predictor smooths) and costs steadiness on the gripper,
+  so the lead stays 40 ms until it's been felt on the rig.
 
 **Pilots**, one interface (`Pilot`): given the follower's state, a target `Pose` and what was
 observed to decide it.
@@ -298,7 +306,7 @@ From the spec: unit tests on the action queue and the safety checks (joint limit
 e-stop), and a tick-jitter histogram from a 10-minute run. Plus: teleop runs on the new loop on the
 real arms and cameras and writes a session (MCAP with the wrist camera, scene video beside it) that
 passes the contract 1 Python check (a 10 s recording with the real cameras and simulated arms
-passes since 2026-11-24; ticks don't reference frames yet); 20 starts in a row with no
+passes since 2026-11-24; ticks reference frames since the 30 Hz loop, not yet run on the rig); 20 starts in a row with no
 first-cycle error (done 2026-11-24 on the real follower, `tests/hardware.rs`, with the gains read
 back matching `data/gains.json` on every servo).
 

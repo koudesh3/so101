@@ -11,10 +11,12 @@ use so101::arm::{
 };
 use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
 use so101::control::{
-    run, ArmRole, Event, EventBus, Message, Pilot, RunOptions, RunStats, Source, Teleop, Tick, LATE_AFTER,
+    run, ArmRole, Cameras, Event, EventBus, Message, Observation, Pilot, RunOptions, RunStats, Source, Teleop, Tick,
+    LATE_AFTER,
 };
 
-/// One teleop step's events, by what they are.
+/// One cycle's events, by what they are, with the leader as last read and the tick whose window
+/// the cycle is in (ticks decide every 4th cycle).
 struct Step {
     leader: Counts,
     follower: Counts,
@@ -58,25 +60,41 @@ struct GripperFlagWindow {
 }
 
 impl Step {
-    fn of(events: &[Event]) -> Step {
-        let (mut leader, mut follower, mut sent, mut tick, mut actuators) = (None, None, None, None, Vec::new());
-        for event in events {
-            match &event.message {
-                Message::JointState(ArmRole::Leader, s) => leader = s.counts,
-                Message::JointState(ArmRole::Follower, s) => follower = s.counts,
-                Message::JointTarget(ArmRole::Follower, t) => sent = t.counts,
-                Message::Tick(t) => tick = Some(t.clone()),
-                Message::Actuator(_, a) => actuators.push(a.clone()),
-                _ => {}
+    /// Splits a run's events into cycles (each starts with the follower's state).
+    fn all(events: &[Event]) -> Vec<Step> {
+        let ticks: std::collections::BTreeMap<u32, Tick> = events
+            .iter()
+            .filter_map(|e| match &e.message {
+                Message::Tick(t) => Some((t.cycle, t.clone())),
+                _ => None,
+            })
+            .collect();
+        let mut steps = Vec::new();
+        let mut leader = None;
+        let mut i = 0;
+        while i < events.len() {
+            let Message::JointState(ArmRole::Follower, state) = &events[i].message else {
+                i += 1;
+                continue;
+            };
+            let (cycle, follower) = (events[i].sequence, state.counts.unwrap());
+            let (mut sent, mut actuators) = (None, Vec::new());
+            i += 1;
+            while i < events.len() && !matches!(events[i].message, Message::JointState(ArmRole::Follower, _)) {
+                match &events[i].message {
+                    Message::JointState(ArmRole::Leader, s) => leader = s.counts,
+                    Message::JointTarget(ArmRole::Follower, t) => sent = t.counts,
+                    Message::Actuator(_, a) => actuators.push(a.clone()),
+                    _ => {}
+                }
+                i += 1;
             }
+            let (Some(sent), Some(leader), Some((_, tick))) = (sent, leader, ticks.range(..=cycle).next_back()) else {
+                continue;
+            };
+            steps.push(Step { leader, follower, sent, tick: tick.clone(), actuators });
         }
-        Step {
-            leader: leader.unwrap(),
-            follower: follower.unwrap(),
-            sent: sent.unwrap(),
-            tick: tick.unwrap(),
-            actuators,
-        }
+        steps
     }
 
     fn held(&self, joint: Joint) -> bool {
@@ -256,19 +274,13 @@ fn run_teleop(
     let events = bus.subscribe();
     let mut errors = 0;
     let result = Teleop::new(leader, lead).and_then(|mut pilot| {
-        run(follower, &mut pilot, options, clock.clone(), &AtomicBool::new(false), &bus, |_| errors += 1)
+        run(follower, &mut pilot, options, &Cameras::default(), clock.clone(), &AtomicBool::new(false), &bus, |_| {
+            errors += 1
+        })
     });
     drop(bus);
     let events: Vec<Event> = events.into_iter().collect();
-    // Each cycle starts with the follower's state.
-    let mut steps = Vec::new();
-    let mut start = 0;
-    for i in 1..=events.len() {
-        if i == events.len() || matches!(events[i].message, Message::JointState(ArmRole::Follower, _)) {
-            steps.push(Step::of(&events[start..i]));
-            start = i;
-        }
-    }
+    let steps = Step::all(&events);
     Teleopped { result, steps, errors }
 }
 
@@ -432,7 +444,7 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
     follower.configure_follower().unwrap();
     assert_eq!(follower.read_register(Joint::ShoulderPan, servos::P_COEFFICIENT).unwrap(), 16);
 
-    let options = RunOptions { hz: 100.0, max_ticks: Some(120), read_actuators: false };
+    let options = RunOptions { hz: 100.0, max_cycles: Some(120), read_actuators: false };
 
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(200));
@@ -441,7 +453,7 @@ fn teleop_follows_the_leader_and_logs_every_byte() {
     let reports = run.steps;
     log.flush();
 
-    assert_eq!(stats.ticks, 120);
+    assert_eq!((stats.cycles, stats.ticks), (120, 30));
     assert_eq!(stats.errors, 0);
     assert_eq!((stats.skipped, stats.late), (0, 0), "on a stepped clock every cycle starts on the grid");
 
@@ -475,7 +487,7 @@ fn a_silent_follower_servo_fails_teleop_before_the_loop_starts() {
     follower_sim.silenced_ids.push(2);
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(follower_sim, "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(10), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(10), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(200));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -543,7 +555,7 @@ fn a_servo_that_misses_the_read_after_torque_on_doesnt_fail_the_first_cycle() {
     follower_sim.deaf_after_torque_on.push(1);
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(follower_sim, "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(10), read_actuators: true };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(10), read_actuators: true };
     follower.set_step_limit(Some(200));
     let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
     run.result.unwrap();
@@ -558,7 +570,7 @@ fn a_hot_servo_stops_teleop_with_torque_off() {
     follower_sim.servo_mut(3).unwrap().temperature_c = 80.0;
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(follower_sim, "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(50), read_actuators: true };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(50), read_actuators: true };
     follower.set_step_limit(Some(200));
     let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
     let err = run.result.unwrap_err().to_string();
@@ -574,7 +586,7 @@ fn teleop_reads_every_actuator_every_cycle() {
     let clock = stepped();
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(12), read_actuators: true };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(12), read_actuators: true };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(200));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -599,7 +611,7 @@ fn the_current_guard_slows_a_follower_drawing_too_much() {
             sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
         let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
         follower.set_step_limit(Some(200));
-        let options = RunOptions { hz: 200.0, max_ticks: Some(400), read_actuators };
+        let options = RunOptions { hz: 200.0, max_cycles: Some(400), read_actuators };
         let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
         run.result.unwrap();
         let moves: Vec<i32> = run
@@ -643,7 +655,7 @@ fn the_camera_guard_stops_the_wrist_short_of_the_arm_and_lets_it_back_out() {
     let map = ClearanceMap::new([Joint::ElbowFlex, Joint::WristFlex, Joint::WristRoll], axes, mm).unwrap();
     follower.set_camera_guard(map, 10.0);
     follower.set_step_limit(Some(40));
-    let options = RunOptions { hz: 100.0, max_ticks: Some(220), read_actuators: false };
+    let options = RunOptions { hz: 100.0, max_cycles: Some(220), read_actuators: false };
     let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
     run.result.unwrap();
 
@@ -684,16 +696,12 @@ impl<P: Pilot> Pilot for Slow<P> {
     fn source(&self) -> Source {
         self.inner.source()
     }
-    fn target(
-        &mut self,
-        now: Timestamp,
-        follower: &so101::arm::JointState,
-    ) -> so101::arm::Result<(so101::arm::Pose, Vec<Message>)> {
+    fn target(&mut self, seen: &Observation) -> so101::arm::Result<(so101::arm::Pose, Vec<Message>)> {
         if let Some(&(_, delay)) = self.delays.iter().find(|(call, _)| *call == self.calls) {
             advance(&self.clock, delay);
         }
         self.calls += 1;
-        self.inner.target(now, follower)
+        self.inner.target(seen)
     }
 }
 
@@ -703,16 +711,25 @@ fn a_late_cycle_and_a_skipped_one_are_each_counted() {
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
     let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
     follower.set_step_limit(Some(200));
-    let options = RunOptions { hz: 100.0, max_ticks: Some(10), read_actuators: false };
-    // 10 ms cycles. Cycle 3's pilot takes 13 ms more, so cycle 4 starts a few ms late; cycle 6's
-    // takes 25 ms more, so the grid skips one point and the next cycle is late too.
+    let options = RunOptions { hz: 100.0, max_cycles: Some(16), read_actuators: false };
+    // 10 ms cycles, the pilot asked on every 4th. Its second call (cycle 4) takes 13 ms more, so
+    // cycle 5 starts a few ms late; its third (cycle 8) takes 25 ms more, so the grid skips cycle
+    // 9 and cycle 10 is late too.
     let teleop = Teleop::new(&mut leader, [Duration::ZERO; JOINT_COUNT]).unwrap();
-    let delays = vec![(3, Duration::from_millis(13)), (6, Duration::from_millis(25))];
+    let delays = vec![(1, Duration::from_millis(13)), (2, Duration::from_millis(25))];
     let mut pilot = Slow { inner: teleop, clock: clock.clone(), delays, calls: 0 };
-    let stats =
-        run(&mut follower, &mut pilot, options, clock.clone(), &AtomicBool::new(false), &EventBus::new(), |_| {})
-            .unwrap();
-    assert_eq!((stats.ticks, stats.errors), (10, 0));
+    let stats = run(
+        &mut follower,
+        &mut pilot,
+        options,
+        &Cameras::default(),
+        clock.clone(),
+        &AtomicBool::new(false),
+        &EventBus::new(),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!((stats.cycles, stats.ticks, stats.errors), (16, 5, 0));
     assert_eq!(stats.skipped, 1);
     assert_eq!(stats.late, 2);
     assert!(
@@ -747,7 +764,7 @@ fn the_step_limit_does_not_throttle_the_follower_below_the_cap() {
     let mut leader =
         sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
     let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(60), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(60), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -781,7 +798,7 @@ fn an_overloaded_gripper_is_released_and_teleop_keeps_running() {
     let mut follower =
         sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()).with_obstacle(object), "follower", &clock);
     follower.configure_follower().unwrap();
-    let options = RunOptions { hz: 200.0, max_ticks: Some(260), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(260), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -872,7 +889,7 @@ fn lead_closes_the_gap_to_a_moving_leader() {
         let mut leader =
             sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
         let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-        let options = RunOptions { hz: 100.0, max_ticks: Some(80), read_actuators: false };
+        let options = RunOptions { hz: 100.0, max_cycles: Some(80), read_actuators: false };
         let lead = [Duration::from_millis(lead_ms); JOINT_COUNT];
         follower.set_step_limit(Some(80));
         let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -910,7 +927,7 @@ fn lead_ignores_tremor_so_a_still_hand_gives_a_still_follower() {
         let mut leader =
             sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
         let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-        let options = RunOptions { hz: 100.0, max_ticks: Some(100), read_actuators: false };
+        let options = RunOptions { hz: 100.0, max_cycles: Some(100), read_actuators: false };
         let lead = [Duration::from_millis(lead_ms); JOINT_COUNT];
         follower.set_step_limit(Some(40));
         let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -935,7 +952,7 @@ fn a_blocked_joint_is_held_before_any_servo_protection_trips() {
         sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()).with_hand(hand), "leader", &clock);
     let mut follower =
         sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()).with_obstacle(wall), "follower", &clock);
-    let options = RunOptions { hz: 200.0, max_ticks: Some(120), read_actuators: true };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(120), read_actuators: true };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -958,7 +975,7 @@ fn a_follower_that_keeps_failing_stops_teleop_instead_of_freezing() {
     let dying = DiesAfter { inner: SimulatedServos::arm("follower").with_clock(clock.clone()), sends_left: 60 };
     let mut follower = ServoArm::new("follower", Servos::new(Box::new(dying)), Calibration::identity("follower"))
         .with_clock(clock.clone());
-    let options = RunOptions { hz: 200.0, max_ticks: Some(2000), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(2000), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -982,7 +999,7 @@ fn stale_flags_at_startup_do_not_lock_the_gripper() {
         StaleGripperFlags { inner: SimulatedServos::arm("follower").with_clock(clock.clone()), flagged_left: 8 };
     let mut follower = ServoArm::new("follower", Servos::new(Box::new(stale)), Calibration::identity("follower"))
         .with_clock(clock.clone());
-    let options = RunOptions { hz: 200.0, max_ticks: Some(200), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(200), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -1024,7 +1041,7 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
     };
     let mut follower = ServoArm::new("follower", Servos::new(Box::new(window)), Calibration::identity("follower"))
         .with_clock(clock.clone());
-    let options = RunOptions { hz: 200.0, max_ticks: Some(260), read_actuators: false };
+    let options = RunOptions { hz: 200.0, max_cycles: Some(260), read_actuators: false };
     let lead = [Duration::ZERO; JOINT_COUNT];
     follower.set_step_limit(Some(40));
     let run = run_teleop(&mut leader, &mut follower, options, lead, &clock);
@@ -1178,7 +1195,7 @@ mod measured_behaviour {
         follower_sim.slow_replies.push((2, 50, Duration::from_millis(14)));
         let mut leader = sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()), "leader", &clock);
         let mut follower = sim_arm(follower_sim, "follower", &clock);
-        let options = RunOptions { hz: 120.0, max_ticks: Some(240), read_actuators: true };
+        let options = RunOptions { hz: 120.0, max_cycles: Some(240), read_actuators: true };
         let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
         let stats = run.result.unwrap();
         assert!(stats.skipped > 0 || stats.late > 0, "{stats:?}");
@@ -1190,10 +1207,199 @@ mod measured_behaviour {
         let clock = stepped();
         let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
         let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-        let options = RunOptions { hz: 120.0, max_ticks: Some(1200), read_actuators: true };
+        let options = RunOptions { hz: 120.0, max_cycles: Some(1200), read_actuators: true };
         follower.set_step_limit(Some(20));
         let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
         let stats = run.result.unwrap();
         assert_eq!((stats.skipped, stats.errors), (0, 0), "{stats:?}");
+    }
+}
+
+/// The loop's two rates: a goal written every cycle, a decision every 4th (a tick).
+mod ticks {
+    use super::*;
+    use so101::arm::{Arm, JointState, Pose, Sent};
+    use so101::camera::{Camera, CameraProfile, CameraRole, Frame, LatestFrame, SimulatedCamera};
+    use so101::control::CYCLES_PER_TICK;
+
+    /// Moves every joint 3° further on each tick (the gripper 2%), from where the follower started.
+    struct Climb {
+        start: Option<Pose>,
+        ticks: u32,
+    }
+
+    impl Pilot for Climb {
+        fn source(&self) -> Source {
+            Source::Script("climb".into())
+        }
+        fn target(&mut self, seen: &Observation) -> so101::arm::Result<(Pose, Vec<Message>)> {
+            let start = *self.start.get_or_insert(seen.follower.pose);
+            self.ticks += 1;
+            let k = self.ticks as f32;
+            Ok((Pose(std::array::from_fn(|i| start.0[i] + k * if i == 5 { 2.0 } else { 3.0 })), Vec::new()))
+        }
+    }
+
+    fn climb() -> Climb {
+        Climb { start: None, ticks: 0 }
+    }
+
+    fn follower(clock: &Arc<ReplayClock>) -> ServoArm {
+        let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", clock);
+        arm.set_step_limit(Some(4096));
+        arm
+    }
+
+    fn events_of(
+        arm: &mut impl Arm,
+        pilot: &mut impl Pilot,
+        cycles: u64,
+        cameras: &Cameras,
+        clock: &Arc<ReplayClock>,
+    ) -> (RunStats, Vec<Event>) {
+        let bus = EventBus::new();
+        let events = bus.subscribe();
+        let options = RunOptions { hz: 100.0, max_cycles: Some(cycles), read_actuators: false };
+        let stats = run(arm, pilot, options, cameras, clock.clone(), &AtomicBool::new(false), &bus, |_| {}).unwrap();
+        drop(bus);
+        (stats, events.into_iter().collect())
+    }
+
+    fn ticks_in(events: &[Event]) -> Vec<(u32, Tick)> {
+        events
+            .iter()
+            .filter_map(|e| match &e.message {
+                Message::Tick(t) => Some((e.sequence, t.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Every goal written, by the cycle it was written in.
+    fn goals_in(events: &[Event]) -> Vec<(u32, Pose)> {
+        events
+            .iter()
+            .filter_map(|e| match &e.message {
+                Message::JointTarget(ArmRole::Follower, t) => Some((e.sequence, t.pose)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn near(a: &Pose, b: &Pose) -> bool {
+        // One count is 0.088°.
+        a.0.iter().zip(&b.0).all(|(x, y)| (x - y).abs() < 0.1)
+    }
+
+    #[test]
+    fn goals_step_a_quarter_per_cycle_toward_each_tick_s_target() {
+        let clock = stepped();
+        let (stats, events) = events_of(&mut follower(&clock), &mut climb(), 32, &Cameras::default(), &clock);
+        assert_eq!((stats.cycles, stats.ticks), (32, 8));
+        let ticks = ticks_in(&events);
+        let goals = goals_in(&events);
+        assert_eq!(ticks.iter().map(|(n, _)| *n).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
+        let mut from = ticks[0].1.state;
+        for (_, tick) in &ticks {
+            assert_eq!(u64::from(tick.cycle) % CYCLES_PER_TICK, 0, "a tick decides on every 4th cycle");
+            for q in 0..4u32 {
+                let want =
+                    Pose(std::array::from_fn(|i| from.0[i] + (tick.requested.0[i] - from.0[i]) * (q + 1) as f32 / 4.0));
+                let (_, got) = goals.iter().find(|(c, _)| *c == tick.cycle + q).unwrap();
+                assert!(near(got, &want), "tick at cycle {}, quarter {}: {got:?} not {want:?}", tick.cycle, q + 1);
+            }
+            let (_, last) = goals.iter().find(|(c, _)| *c == tick.cycle + 3).unwrap();
+            assert_eq!(tick.action, *last, "a tick's action is the goal its window ended on");
+            from = tick.action;
+        }
+    }
+
+    #[test]
+    fn a_skipped_tick_leaves_a_gap_and_the_next_is_back_on_the_grid() {
+        let clock = stepped();
+        // 10 ms cycles; the second decision (cycle 4) takes 50 ms, so cycles 5-8 never happen,
+        // the tick of cycle 8 among them.
+        let mut pilot =
+            Slow { inner: climb(), clock: clock.clone(), delays: vec![(1, Duration::from_millis(50))], calls: 0 };
+        let (stats, events) = events_of(&mut follower(&clock), &mut pilot, 12, &Cameras::default(), &clock);
+        assert_eq!(stats.skipped, 4);
+        let ticks = ticks_in(&events);
+        assert_eq!(ticks.iter().map(|(n, t)| (*n, t.cycle)).collect::<Vec<_>>(), [(0, 0), (1, 4), (3, 12)]);
+        // The cut-short window catches up to its target on the cycle after the gap.
+        assert!(near(&ticks[1].1.action, &ticks[1].1.requested), "{:?}", ticks[1].1);
+    }
+
+    /// The follower, feeding a camera's frames into its slot as their receive times pass: on a
+    /// stepped clock the camera can't run on its own thread.
+    struct WithCamera {
+        arm: ServoArm,
+        frames: std::collections::VecDeque<Frame>,
+        latest: Arc<LatestFrame>,
+        clock: Arc<ReplayClock>,
+    }
+
+    impl WithCamera {
+        fn deliver(&mut self) {
+            while self.frames.front().is_some_and(|f| f.t_receive <= self.clock.now()) {
+                self.latest.put(&self.frames.pop_front().unwrap());
+            }
+        }
+    }
+
+    impl Arm for WithCamera {
+        fn read_state(&mut self) -> so101::arm::Result<JointState> {
+            let s = self.arm.read_state();
+            self.deliver();
+            s
+        }
+        fn command(&mut self, target: &Pose) -> so101::arm::Result<Sent> {
+            let s = self.arm.command(target);
+            self.deliver();
+            s
+        }
+        fn read_state_and_actuators(&mut self) -> so101::arm::Result<(JointState, Vec<ActuatorStatus>)> {
+            let s = self.arm.read_state_and_actuators();
+            self.deliver();
+            s
+        }
+        fn torque_off(&mut self) -> so101::arm::Result<()> {
+            self.arm.torque_off()
+        }
+        fn hold(&mut self) -> so101::arm::Result<()> {
+            self.arm.hold()
+        }
+    }
+
+    #[test]
+    fn every_tick_records_the_newest_wrist_frame_when_it_decided() {
+        let clock = stepped();
+        // The wrist camera's measured timing, on a clock of its own, one frame lost on the way.
+        let mut camera =
+            SimulatedCamera::new(CameraRole::Wrist, stepped()).with_profile(CameraProfile::WRIST).losing(&[40]);
+        let frames: Vec<Frame> = (0..200).map(|_| camera.next_frame().unwrap()).collect();
+        let latest = Arc::new(LatestFrame::new(CameraRole::Wrist));
+        let cameras = Cameras { wrist: Some(latest.clone()), scene: None };
+        let mut arm = WithCamera { arm: follower(&clock), frames: frames.clone().into(), latest, clock: clock.clone() };
+        // 120 Hz for 5 s.
+        let bus = EventBus::new();
+        let events = bus.subscribe();
+        let options = RunOptions { hz: 120.0, max_cycles: Some(600), read_actuators: false };
+        run(&mut arm, &mut climb(), options, &cameras, clock.clone(), &AtomicBool::new(false), &bus, |_| {}).unwrap();
+        drop(bus);
+        let events: Vec<Event> = events.into_iter().collect();
+        let ticks = ticks_in(&events);
+        assert_eq!(ticks.len(), 150);
+        let mut repeats = 0;
+        for pair in ticks.windows(2) {
+            repeats += usize::from(pair[0].1.wrist == pair[1].1.wrist);
+        }
+        for (_, tick) in &ticks {
+            let newest = frames.iter().filter(|f| f.t_receive <= tick.t).next_back();
+            assert_eq!(tick.wrist.map(|r| r.sequence), newest.map(|f| f.sequence), "tick at {:?}", tick.t);
+        }
+        // 30 ticks a second, 29.8 frames: now and then two ticks see the same frame. And frame 40 is
+        // never seen.
+        assert!(ticks.iter().all(|(_, t)| t.wrist.is_none_or(|r| r.sequence != 40)));
+        println!("{repeats} of {} ticks saw the frame the tick before them saw", ticks.len());
     }
 }
