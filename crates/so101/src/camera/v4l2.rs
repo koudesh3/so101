@@ -30,6 +30,7 @@ pub struct V4l2Camera {
     stream: Stream<'static>,
     _device: Device,
     clock: Arc<dyn Clock>,
+    skipped: u64,
 }
 
 impl V4l2Camera {
@@ -68,7 +69,14 @@ impl V4l2Camera {
             stream.queue(index)?;
         }
         stream.start()?;
-        Ok(Self { role, path: path.to_string(), period, settings, stream, _device: device, clock })
+        Ok(Self { role, path: path.to_string(), period, settings, stream, _device: device, clock, skipped: 0 })
+    }
+}
+
+impl V4l2Camera {
+    /// Frames the driver delivered but that were corrupt or truncated, and so skipped.
+    pub fn skipped(&self) -> u64 {
+        self.skipped
     }
 }
 
@@ -102,6 +110,7 @@ impl Camera for V4l2Camera {
             // A buffer the driver marks corrupt, or one that isn't a whole JPEG, is skipped; its
             // sequence number still counts, so it shows as a gap.
             let Some(jpeg) = whole_jpeg(filled).filter(|_| !meta.flags.contains(Flags::ERROR)) else {
+                self.skipped += 1;
                 continue;
             };
             let t_capture = Timestamp(meta.timestamp.sec as u64 * 1_000_000_000 + meta.timestamp.usec as u64 * 1_000);

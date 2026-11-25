@@ -30,13 +30,7 @@ pub fn conforms(camera: &mut dyn Camera, n: usize) -> Continuity {
         assert_eq!(frame.camera, role);
         assert!(frame.t_receive >= frame.t_capture, "received before captured: {frame:?}");
         assert_eq!(&frame.jpeg[..2], &[0xFF, 0xD8], "a JPEG starts with SOI");
-        let tail = &frame.jpeg[frame.jpeg.len().saturating_sub(24)..];
-        assert_eq!(
-            &frame.jpeg[frame.jpeg.len() - 2..],
-            &[0xFF, 0xD9],
-            "and ends with EOI: {} bytes, tail {tail:02x?}",
-            frame.jpeg.len()
-        );
+        assert_eq!(&frame.jpeg[frame.jpeg.len() - 2..], &[0xFF, 0xD9], "and ends with EOI");
         if let Some(prev) = &last {
             if frame.sequence != prev.sequence + 1 {
                 println!(
@@ -174,7 +168,7 @@ fn a_real_camera_conforms() {
     let mut camera = V4l2Camera::open(CameraRole::Wrist, &path, (640, 480), &controls, clock.clone()).unwrap();
     println!("{:?}, period {:?}", camera.describe(), camera.nominal_period());
     let c = conforms(&mut camera, 300);
-    println!("{c:?}");
+    println!("{c:?}; skipped as corrupt or truncated: {}", camera.skipped());
     assert_eq!(c.missing, 0, "no frames lost in 10 s");
     assert!(c.long_intervals <= 1, "the camera kept its rate");
 }
