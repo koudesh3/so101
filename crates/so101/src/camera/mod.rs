@@ -2,7 +2,6 @@
 //! times (contract 3), and the `Camera` trait the real, synthetic and replayed cameras implement.
 //! `stream` runs one on its own thread; `LatestFrame` is what the control loop reads, never waiting.
 
-mod ffmpeg;
 mod synthetic;
 #[cfg(target_os = "linux")]
 mod v4l2;
@@ -17,7 +16,6 @@ use bytes::Bytes;
 
 use crate::clock::Timestamp;
 
-pub use ffmpeg::{read_controls, FfmpegCamera};
 pub use synthetic::SyntheticCamera;
 #[cfg(target_os = "linux")]
 pub use v4l2::{control_name, V4l2Camera};

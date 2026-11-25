@@ -1,6 +1,7 @@
 //! The `so101` command line: picks the arms, transports and session, and puts them together.
 
 mod console;
+mod scene_video;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,7 @@ use so101::arm::{
     check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::camera::{read_controls, CameraRole, FfmpegCamera};
+use so101::camera::{stream, Camera, CameraRole, Description, Streaming, SyntheticCamera};
 use so101::control::{
     request_realtime, run, ArmRole, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
@@ -138,6 +139,13 @@ enum Command {
         #[arg(long, default_value = "data/logs")]
         record_dir: PathBuf,
     },
+    /// Encode recordings' raw scene video (`<name>-scene.mjpeg`) to H.264, timed from their CSVs.
+    /// Teleop starts this itself when a recording stops; this finishes any it didn't. Each PATH is
+    /// a recording prefix or a folder of recordings.
+    EncodeScenes {
+        #[arg(default_value = "data/logs")]
+        paths: Vec<PathBuf>,
+    },
     /// Recorded sessions (MCAP files).
     Session {
         #[command(subcommand)]
@@ -245,6 +253,7 @@ fn main() {
             )
         }
         Command::Session { command: SessionCommand::Recover { input, output } } => cmd_session_recover(&input, &output),
+        Command::EncodeScenes { paths } => cmd_encode_scenes(&paths),
     };
     if let Some(trace) = &trace {
         trace.flush();
@@ -479,11 +488,15 @@ fn cmd_teleop(
         ("lead_ms".into(), lead.map(|d| d.as_millis().to_string()).join(",")),
         ("source".into(), "teleop".into()),
     ]);
+    let wrist = open_camera(CameraRole::Wrist, io.wrist.as_ref(), &io, sim, &clock);
+    let scene = open_camera(CameraRole::Scene, io.scene.as_ref(), &io, sim, &clock);
+    let described: Vec<(CameraRole, Description)> =
+        [&wrist, &scene].into_iter().flatten().map(|c| (c.role(), c.describe())).collect();
     let recording = Arc::new(Recording::new(RecordingSetup {
         dir: io.record_dir.clone(),
-        scene_video: io.scene.is_some(),
+        scene_video: scene.is_some(),
         clock: clock.clone(),
-        header: session_header(config, calibration_files, registers, &io),
+        header: session_header(config, calibration_files, registers, described, &io),
     }));
     bus.attach(recording.clone());
     let console = Arc::new(Console {
@@ -493,24 +506,26 @@ fn cmd_teleop(
         recording: recording.clone(),
     });
     let printer = print_teleop(bus.subscribe(), hz, console.live.clone());
-    let mut cameras = Vec::new();
-    if let Some((device, size)) = &io.wrist {
+    let mut streams: Vec<(CameraRole, Streaming)> = Vec::new();
+    if let Some(camera) = wrist {
         let (feed, bus) = (console.wrist.clone(), bus.clone());
-        let started =
-            FfmpegCamera::start(CameraRole::Wrist, device, size, &io.controls_for(device), clock.clone(), move |f| {
+        streams.push((
+            CameraRole::Wrist,
+            stream(camera, move |f| {
                 feed.put(f.jpeg.clone());
                 bus.publish(Event::frame(f));
-            });
-        cameras.push(report_camera("wrist", device, started));
+            }),
+        ));
     }
-    if let Some((device, size)) = &io.scene {
+    if let Some(camera) = scene {
         let (feed, recording) = (console.scene.clone(), recording.clone());
-        let started =
-            FfmpegCamera::start(CameraRole::Scene, device, size, &io.controls_for(device), clock.clone(), move |f| {
+        streams.push((
+            CameraRole::Scene,
+            stream(camera, move |f| {
                 feed.put(f.jpeg.clone());
                 recording.scene_frame(&f);
-            });
-        cameras.push(report_camera("scene", device, started));
+            }),
+        ));
     }
     if let Some(port) = io.console_port {
         match console.serve(port) {
@@ -529,7 +544,18 @@ fn cmd_teleop(
             println!("ERROR closing the recording: {e}");
         }
     }
-    drop(cameras);
+    for (role, streaming) in streams {
+        let stats = streaming.stop();
+        let c = stats.continuity;
+        println!(
+            "{} camera: {} frames, {} missing, {} long intervals{}",
+            role.name(),
+            c.frames,
+            c.missing,
+            c.long_intervals,
+            stats.error.map(|e| format!("; stopped: {e}")).unwrap_or_default()
+        );
+    }
     drop(bus);
     let _ = printer.join();
     let stats = stats?;
@@ -579,17 +605,74 @@ impl TeleopIo {
     }
 }
 
-fn report_camera(role: &str, device: &str, started: std::io::Result<FfmpegCamera>) -> Option<FfmpegCamera> {
-    match started {
-        Ok(camera) => {
-            println!("{role} camera on {device}");
-            Some(camera)
-        }
-        Err(e) => {
-            println!("{role} camera off: {device}: {e}");
-            None
+/// The camera for `role`: the V4L2 device if one is given, a synthetic camera under `--sim`,
+/// otherwise none. A camera that won't open is reported and left out; teleop runs without it.
+fn open_camera(
+    role: CameraRole,
+    device: Option<&(String, String)>,
+    io: &TeleopIo,
+    sim: bool,
+    clock: &Arc<dyn so101::clock::Clock>,
+) -> Option<Box<dyn Camera>> {
+    match device {
+        Some((path, size)) => match open_v4l2(role, path, size, &io.controls_for(path), clock.clone()) {
+            Ok(camera) => {
+                println!("{} camera on {path}: {}", role.name(), camera.describe().settings);
+                Some(camera)
+            }
+            Err(e) => {
+                println!("{} camera off: {path}: {e}", role.name());
+                None
+            }
+        },
+        None if sim => Some(Box::new(SyntheticCamera::new(role, clock.clone()))),
+        None => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn open_v4l2(
+    role: CameraRole,
+    path: &str,
+    size: &str,
+    controls: &[String],
+    clock: Arc<dyn so101::clock::Clock>,
+) -> std::result::Result<Box<dyn Camera>, String> {
+    let (w, h) = size.split_once('x').ok_or_else(|| format!("size {size} isn't WxH"))?;
+    let size = (w.parse().map_err(|_| format!("bad width {w}"))?, h.parse().map_err(|_| format!("bad height {h}"))?);
+    let camera = so101::camera::V4l2Camera::open(role, path, size, controls, clock).map_err(|e| e.to_string())?;
+    Ok(Box::new(camera))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_v4l2(
+    _: CameraRole,
+    _: &str,
+    _: &str,
+    _: &[String],
+    _: Arc<dyn so101::clock::Clock>,
+) -> std::result::Result<Box<dyn Camera>, String> {
+    Err("V4L2 cameras are Linux only (use --sim for synthetic ones)".into())
+}
+
+fn cmd_encode_scenes(paths: &[PathBuf]) -> Result<()> {
+    let mut failed = 0;
+    for path in paths {
+        let prefixes = if path.is_dir() { scene_video::pending(path) } else { vec![path.clone()] };
+        for prefix in prefixes {
+            match scene_video::encode(&prefix) {
+                Ok(line) => println!("encoded {line}"),
+                Err(e) => {
+                    println!("not encoded: {e}");
+                    failed += 1;
+                }
+            }
         }
     }
+    if failed > 0 {
+        return Err(Error::Other(format!("{failed} scene videos stay raw")));
+    }
+    Ok(())
 }
 
 /// A session header, made fresh at each recording's start: the commit, teleop's settings, both
@@ -600,6 +683,7 @@ fn session_header(
     config: BTreeMap<String, String>,
     calibrations: Vec<(&'static str, PathBuf)>,
     registers: [String; JOINT_COUNT],
+    cameras: Vec<(CameraRole, Description)>,
     io: &TeleopIo,
 ) -> Box<dyn Fn() -> (Header, Vec<Attachment>) + Send + Sync> {
     // As applied: read once, at start, not again at each recording.
@@ -608,10 +692,6 @@ fn session_header(
         media_type: "application/json".into(),
         data,
     });
-    let cameras: Vec<(&str, String, Vec<String>)> = [("wrist", &io.wrist), ("scene", &io.scene)]
-        .into_iter()
-        .filter_map(|(role, cam)| cam.as_ref().map(|(device, _)| (role, device.clone(), io.controls_for(device))))
-        .collect();
     Box::new(move || {
         let mut header = Header::now();
         let git = |args: &[&str]| {
@@ -635,12 +715,11 @@ fn session_header(
         for joint in Joint::ALL {
             header.servos.insert(joint.name().to_string(), registers[joint.index()].clone());
         }
-        for (role, device, controls) in &cameras {
-            let names: Vec<&str> = controls.iter().filter_map(|c| c.split('=').next()).collect();
-            header.cameras.insert(
-                role.to_string(),
-                CameraInfo { device: device.clone(), settings: read_controls(device, &names) },
-            );
+        // Read back when each camera opened (contract 7); nothing changes them while teleop runs.
+        for (role, d) in &cameras {
+            header
+                .cameras
+                .insert(role.name().to_string(), CameraInfo { device: d.device.clone(), settings: d.settings.clone() });
         }
         (header, attachments)
     })

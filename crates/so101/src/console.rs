@@ -1,13 +1,14 @@
 //! The teleop console: one page served by teleop on the Spark, on 127.0.0.1 only (`just console`
 //! tunnels it to the laptop), with both cameras live, the follower's load, and a record button.
 //! A recording is the session's MCAP (events and the wrist camera) plus the scene camera beside
-//! it as video, with a CSV tying each scene frame to the MCAP's clock.
+//! it: saved raw while recording and encoded after it stops (`scene_video`), with a CSV tying
+//! each scene frame to the MCAP's clock.
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Instant;
 
@@ -17,6 +18,8 @@ use so101::camera::Frame;
 use so101::clock::Clock;
 use so101::control::{Event, Health, Sink};
 use so101::session::{Attachment, Header, Recorder, RecorderOptions};
+
+use crate::scene_video::{self, SceneRaw};
 
 const PAGE: &str = include_str!("console.html");
 
@@ -77,49 +80,9 @@ struct Active {
     name: String,
     started: Instant,
     recorder: Recorder<BufWriter<File>>,
-    scene: Option<SceneVideo>,
-}
-
-// The scene camera's frames, compressed into an MKV by ffmpeg (H.264, timed by arrival; the
-// camera's MJPEG copied straight is about 22 GB an hour at 1280x720), and each frame's receive
-// time on the session's clock in a CSV.
-struct SceneVideo {
-    ffmpeg: Child,
-    stdin: Option<ChildStdin>,
-    times: BufWriter<File>,
-    frames: u64,
-}
-
-impl SceneVideo {
-    fn start(video: &PathBuf, times: &PathBuf) -> std::io::Result<Self> {
-        let mut ffmpeg = Command::new("ffmpeg")
-            .args(["-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1"])
-            // image2pipe stamps each frame when it arrives; the mjpeg demuxer would assume 25 fps.
-            .args(["-f", "image2pipe", "-c:v", "mjpeg", "-i", "-", "-fps_mode", "passthrough"])
-            .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"])
-            .arg(video)
-            .stdin(Stdio::piped())
-            .spawn()?;
-        let stdin = ffmpeg.stdin.take();
-        let mut times = BufWriter::new(File::create(times)?);
-        writeln!(times, "frame,sequence,t_receive_ns")?;
-        Ok(Self { ffmpeg, stdin, times, frames: 0 })
-    }
-
-    fn add(&mut self, frame: &Frame) -> std::io::Result<()> {
-        let stdin = self.stdin.as_mut().ok_or_else(|| std::io::Error::other("closed"))?;
-        stdin.write_all(&frame.jpeg)?;
-        writeln!(self.times, "{},{},{}", self.frames, frame.sequence, frame.t_receive.0)?;
-        self.frames += 1;
-        Ok(())
-    }
-
-    fn finish(mut self) -> std::io::Result<u64> {
-        drop(self.stdin.take());
-        self.ffmpeg.wait()?;
-        self.times.flush()?;
-        Ok(self.frames)
-    }
+    // The scene camera's frames, saved raw; encoded after the recording stops.
+    scene: Option<SceneRaw>,
+    prefix: PathBuf,
 }
 
 impl Recording {
@@ -150,13 +113,14 @@ impl Recording {
             RecorderOptions::default(),
         )
         .map_err(|e| e.to_string())?;
+        let prefix = self.setup.dir.join(&name);
         let scene = match self.setup.scene_video {
-            true => Some(SceneVideo::start(&path("-scene.mkv"), &path("-scene.csv")).map_err(|e| e.to_string())?),
+            true => Some(SceneRaw::create(&prefix).map_err(|e| e.to_string())?),
             false => None,
         };
         *self.sink.write().expect("sink") = Some(recorder.sink());
         println!("recording {}", path(".mcap").display());
-        *active = Some(Active { name: name.clone(), started: Instant::now(), recorder, scene });
+        *active = Some(Active { name: name.clone(), started: Instant::now(), recorder, scene, prefix });
         Ok(name)
     }
 
@@ -168,7 +132,14 @@ impl Recording {
         *self.sink.write().expect("sink") = None;
         let seconds = a.started.elapsed().as_secs_f64();
         let (_, summary) = a.recorder.finish().map_err(|e| e.to_string())?;
-        let scene_frames = a.scene.map(SceneVideo::finish).transpose().map_err(|e| e.to_string())?.unwrap_or(0);
+        let scene_frames = a.scene.map(SceneRaw::finish).transpose().map_err(|e| e.to_string())?;
+        if scene_frames.is_some() {
+            // Off the live path: its own low-priority process, which outlives teleop if need be.
+            if let Err(e) = scene_video::encode_in_background(&a.prefix) {
+                eprintln!("scene video stays raw ({e}); `just encode-scenes` encodes it");
+            }
+        }
+        let scene_frames = scene_frames.unwrap_or(0);
         let line = format!(
             "{}: {seconds:.0} s, {} messages, {} wrist frames dropped, {scene_frames} scene frames{}",
             a.name,
@@ -197,6 +168,10 @@ impl Recording {
             "name": active.as_ref().map(|a| a.name.clone()),
             "seconds": active.as_ref().map(|a| a.started.elapsed().as_secs()),
             "last": *self.last.lock().expect("last"),
+            "encoding": scene_video::pending(&self.setup.dir)
+                .iter()
+                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect::<Vec<_>>(),
         })
     }
 }

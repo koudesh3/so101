@@ -77,6 +77,11 @@ linux *args:
       -v so101-linux-uv:/root/.cache/uv \
       so101-linux bash -c 'if [ "${1:-}" = cargo ]; then "$@"; else just "$@"; fi' _ {{args}}
 
+# On the Spark: encode any recording's scene video still raw (teleop starts this itself when a
+# recording stops; this finishes any it didn't, e.g. after a crash)
+encode-scenes:
+    cargo run --release -q -- encode-scenes data/logs
+
 # On the laptop: tunnel the Spark's teleop console to http://localhost:8090 (Ctrl-C to close)
 console host="spark":
     @echo "console: http://localhost:8090"
