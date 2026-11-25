@@ -19,6 +19,10 @@ serde_json.workspace = true
 serialport.workspace = true
 sha2.workspace = true
 
+# V4L2 cameras are Linux's; on the laptop the camera folder compiles without them.
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l.workspace = true
+
 [build-dependencies]
 prost.workspace = true
 prost-build.workspace = true

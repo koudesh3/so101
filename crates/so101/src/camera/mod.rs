@@ -4,6 +4,8 @@
 
 mod ffmpeg;
 mod synthetic;
+#[cfg(target_os = "linux")]
+mod v4l2;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,6 +19,8 @@ use crate::clock::Timestamp;
 
 pub use ffmpeg::{read_controls, FfmpegCamera};
 pub use synthetic::SyntheticCamera;
+#[cfg(target_os = "linux")]
+pub use v4l2::{control_name, V4l2Camera};
 
 /// Contract 3: a capture interval longer than this many nominal periods is a drop, even without a
 /// sequence gap (the icSpring slowed to 16-20 fps under auto exposure with no gaps).

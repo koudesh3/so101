@@ -67,6 +67,16 @@ rig:
       --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json \
       --wrist-camera "$WRIST_CAMERA" --scene-camera "$SCENE_CAMERA" "${controls[@]}"
 
+# Run a recipe or cargo command in Linux (arm64, like the Spark) on the laptop, e.g. `just linux check`
+# or `just linux cargo test -p so101 --test cameras`: builds the Linux-only code (V4L2) without
+# the Spark. Its own target dir and cargo cache, in Docker volumes.
+linux *args:
+    docker build -q -t so101-linux -f tools/linux.Dockerfile tools >/dev/null
+    docker run --rm -t -v "$PWD":/src -w /src \
+      -v so101-linux-target:/src/target -v so101-linux-cargo:/usr/local/cargo/registry \
+      -v so101-linux-uv:/root/.cache/uv \
+      so101-linux bash -c 'if [ "${1:-}" = cargo ]; then "$@"; else just "$@"; fi' _ {{args}}
+
 # On the laptop: tunnel the Spark's teleop console to http://localhost:8090 (Ctrl-C to close)
 console host="spark":
     @echo "console: http://localhost:8090"

@@ -136,3 +136,23 @@ fn a_role_the_session_never_recorded_has_no_replay_camera() {
     let (session, _) = recorded_wrist(5);
     assert!(ReplayCamera::new(&session, CameraRole::Scene, stepped()).is_none());
 }
+
+/// The real thing, on the Spark: `SO101_TEST_CAMERA=/dev/v4l/by-id/... cargo test --test cameras
+/// -- --ignored` (nothing else may have the camera open).
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore]
+fn a_real_camera_conforms() {
+    use so101::camera::V4l2Camera;
+    use so101::clock::MonotonicClock;
+    let path = std::env::var("SO101_TEST_CAMERA").expect("SO101_TEST_CAMERA=<device>");
+    let controls: Vec<String> =
+        std::env::var("SO101_TEST_CONTROLS").unwrap_or_default().split_whitespace().map(str::to_string).collect();
+    let clock = Arc::new(MonotonicClock);
+    let mut camera = V4l2Camera::open(CameraRole::Wrist, &path, (640, 480), &controls, clock.clone()).unwrap();
+    println!("{:?}, period {:?}", camera.describe(), camera.nominal_period());
+    let c = conforms(&mut camera, 300);
+    println!("{c:?}");
+    assert_eq!(c.missing, 0, "no frames lost in 10 s");
+    assert!(c.long_intervals <= 1, "the camera kept its rate");
+}
