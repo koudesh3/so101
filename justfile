@@ -10,13 +10,13 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
-# Each module uses only modules on lower levels (clock; arm and camera; policy; control; session),
+# Each module uses only modules on lower levels (clock and rng; arm and camera; policy; control; session),
 # never one beside it; and the control loop reaches arms only through the Arm trait
 check-layers:
     #!/usr/bin/env bash
     set -euo pipefail
     cd crates/so101/src
-    levels=("clock" "arm camera" "policy" "control" "session")
+    levels=("clock rng" "arm camera" "policy" "control" "session")
     for i in "${!levels[@]}"; do
         for module in ${levels[$i]}; do
             path=$module; [ -d "$module" ] || path=$module.rs

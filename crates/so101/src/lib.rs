@@ -6,4 +6,5 @@ pub mod camera;
 pub mod clock;
 pub mod control;
 pub mod policy;
+pub mod rng;
 pub mod session;

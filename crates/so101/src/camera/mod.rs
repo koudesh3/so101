@@ -16,7 +16,7 @@ use bytes::Bytes;
 
 use crate::clock::Timestamp;
 
-pub use simulated::SimulatedCamera;
+pub use simulated::{CameraProfile, SimulatedCamera};
 #[cfg(target_os = "linux")]
 pub use v4l2::{control_name, V4l2Camera};
 

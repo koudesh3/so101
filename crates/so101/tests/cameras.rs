@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use std::io::Cursor;
 
-use so101::camera::{stream, Camera, CameraRole, Continuity, LatestFrame, SimulatedCamera};
+use so101::camera::{stream, Camera, CameraProfile, CameraRole, Continuity, LatestFrame, SimulatedCamera};
 use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
 use so101::control::{Event, EventBus};
 use so101::session::{CameraInfo, Header, Recorder, RecorderOptions, ReplayCamera, Session};
@@ -55,28 +55,45 @@ fn stepped() -> Arc<ReplayClock> {
 }
 
 #[test]
-fn the_simulated_camera_conforms() {
-    let mut camera = SimulatedCamera::new(CameraRole::Wrist, stepped());
-    let c = conforms(&mut camera, 120);
-    assert_eq!((c.frames, c.missing, c.long_intervals), (120, 0, 0));
+fn the_simulated_camera_conforms_and_keeps_the_measured_rate() {
+    for (role, fps) in [(CameraRole::Wrist, 29.80), (CameraRole::Scene, 29.51)] {
+        let mut camera = SimulatedCamera::new(role, stepped());
+        let mut c = Continuity::default();
+        let mut first = None;
+        let mut last = None;
+        for _ in 0..3000 {
+            let f = camera.next_frame().unwrap();
+            c.add(&f, camera.nominal_period());
+            first.get_or_insert(f.t_capture);
+            last = Some(f.t_capture);
+        }
+        let seconds = last.unwrap().since(first.unwrap()).as_secs_f64();
+        let measured = (c.frames + c.missing - 1) as f64 / seconds;
+        assert!((measured - fps).abs() < 0.05, "{role:?}: {measured:.3} fps, measured on the rig {fps}");
+        assert_eq!(c.long_intervals, c.missing, "only a lost frame makes a long interval");
+    }
+    let c = conforms(&mut SimulatedCamera::new(CameraRole::Wrist, stepped()), 300);
+    assert_eq!(c.frames, 300);
 }
 
 #[test]
 fn a_lost_frame_shows_as_a_gap_and_a_long_interval() {
-    let mut camera = SimulatedCamera::new(CameraRole::Wrist, stepped()).losing(&[5, 6]);
+    let steady = CameraProfile::steady(Duration::from_millis(33), Duration::ZERO);
+    let mut camera = SimulatedCamera::new(CameraRole::Wrist, stepped()).with_profile(steady).losing(&[5, 6]);
     let c = conforms(&mut camera, 20);
     assert_eq!(c.missing, 2);
     assert_eq!(c.long_intervals, 1, "three periods between frames 4 and 7");
 }
 
 #[test]
-fn simulated_frames_arrive_at_exact_times_on_the_test_clock() {
+fn a_frame_arrives_when_the_next_one_is_captured() {
+    // Measured on both cameras: capture-to-receive tracks the next interval (r 0.91-0.94).
     let clock = stepped();
-    let mut camera = SimulatedCamera::new(CameraRole::Scene, clock.clone())
-        .with_period(Duration::from_millis(40))
-        .with_latency(Duration::from_millis(10));
+    let steady = CameraProfile::steady(Duration::from_millis(40), Duration::from_micros(500));
+    let mut camera = SimulatedCamera::new(CameraRole::Scene, clock.clone()).with_profile(steady);
     let first = camera.next_frame().unwrap();
-    assert_eq!((first.t_capture, first.t_receive), (Timestamp(40_000_000), Timestamp(50_000_000)));
+    assert_eq!(first.t_capture, Timestamp(40_000_000));
+    assert_eq!(first.t_receive, Timestamp(80_500_000));
     assert_eq!(clock.now(), first.t_receive, "it waited for the frame to arrive");
     let second = camera.next_frame().unwrap();
     assert_eq!(second.t_capture, Timestamp(80_000_000));
