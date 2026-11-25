@@ -146,17 +146,27 @@ facts; the fakes then carry them, so the code that handles them runs on every `j
 hardware time goes to measuring, not to finding bugs. Each hardware surprise becomes a fake's
 behaviour and a test, as servo 1's missed read after torque-on did
 (`SimulatedServos::deaf_after_torque_on`). One fake per thing, no more:
-- **`SimulatedServos` gets the measured dynamics** instead of a separate mock arm: about 50 ms of
-  dead time (more under gravity), a reversal dead band (0.3-0.4° on most joints, 1.7° on the
-  elbow), the elbow's sag of about 1° under gravity, junk temperature and voltage readings at the
-  measured rate (about 1 in 500, one servo at a time), and realistic bus time per transaction
-  (status reads 1-4 ms). It already speaks the protocol byte for byte, so the real driver runs in
-  every test; a second `Arm` implementation would skip that code and need keeping in sync.
-  Fault injection there too: a stall at a position, an overload flag, a servo that stops
-  answering.
-- **`SimulatedCamera` gets the icSpring's timing:** alternating 32.3/36.6 ms intervals and an
-  occasional lost frame, so nothing downstream can quietly assume a steady 30 fps. Exact known
-  answers make it the right fixture for tick-to-frame pairing.
+- **`SimulatedServos` has the measured dynamics** (done 2026-11-24) instead of a separate mock
+  arm, its numbers in `ServoProfile::FOLLOWER`, each citing its measurement. Per servo, in order:
+  dead time (a goal acts 50 ms after it's written), gravity sag (`sag x cos(angle)`: 0.32° elbow,
+  0.13° wrist flex, 0.10° lift), play (a point the motor aims at, moved only when the goal pushes
+  past half the play: 0.30-0.44° on most joints, 1.74° on the elbow; it gives both the reversal
+  dead band and the half-play settling error measured), then the motor as before. Junk readings
+  from a per-servo seeded `Rng` (temperature about 1 in 500 on every servo; voltage on wrist roll
+  and the gripper only); a 12 V supply; and bus time charged per transaction (0.38 ms turnaround
+  plus 10 µs per byte), so the loop sees the bus's real cost. Physics in 1 ms sub-steps, so a test
+  jumping the clock integrates like many short waits. Faults stay separate test knobs: a silent
+  servo, one deaf after torque-on, one answering slowly every Nth read (`slow_replies`), an
+  obstacle. It speaks the protocol byte for byte, so the real driver runs in every test; a second
+  `Arm` implementation would skip that code and need keeping in sync. Tests in
+  `end_to_end.rs::measured_behaviour` state each behaviour as an outcome.
+- **`SimulatedCamera` has the cameras' measured timing** (done 2026-11-24, `CameraProfile::WRIST`
+  and `SCENE`): two minutes of each through V4L2 showed intervals in two clusters, about 32 and
+  36 ms, a long one never followed by another (after a short: long 64% of the time on the wrist,
+  90% on the scene camera); a frame arrives when the next is captured, plus about 0.35 ms; the
+  wrist camera lost 1 frame in 3,605. So nothing downstream can quietly assume a steady 30 fps,
+  and the newest frame is always at least ~32 ms old when it arrives. Exact known answers
+  (`CameraProfile::steady`) make it the fixture for tick-to-frame pairing.
 - **Deferred to the exporter (Phase 4):** a replay arm and recorded sessions as test fixtures.
   Their value is real data for the exporter; for Phase 1 the simulated camera gives the same
   coverage with exact answers, and 10 s of wrist video is about 10 MB of git history. Short real
@@ -224,8 +234,9 @@ A day of teleop on the real rig, a fine-motion measurement, two analysed episode
 - **Lag in real use is 60-80 ms** from leader to follower on every joint (cross-correlation over
   whole episodes), about twice the 33-42 ms of the slow-move test.
 - **Reversal dead band and elbow hysteresis.** Slow single-joint moves settle within 0.1-0.2° of
-  the goal, but a reversal waits 0.3-0.4° (most joints) or 1.7° (elbow, which also sags about 1°
-  under gravity) before following. The servos' own dead-zone registers are 1 count (0.09°); this
+  the goal, but a reversal waits 0.3-0.4° (most joints) or 1.7° (elbow) before following, and a
+  joint settles about half that short of its goal; gravity adds about 0.3° on the elbow (the
+  mean of the two approach directions; an earlier note's "about 1°" mixed in the dead band). The servos' own dead-zone registers are 1 count (0.09°); this
   is friction against P 32. Phase 3's "arrived" tolerance of 0.7° is too tight for the elbow.
 - **Wrist camera settings changed** (contract 7): white balance fixed at 3500 K (auto turned the
   warm room orange-red) and exposure cut from 30 ms to 12 ms with gain 40, because at 30 ms frames

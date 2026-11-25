@@ -11,11 +11,16 @@ use crate::arm::Error;
 use crate::arm::Transport;
 use crate::arm::IDS;
 use crate::clock::{Clock, MonotonicClock, Timestamp};
+use crate::rng::Rng;
 
 // note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
 pub const MAX_SPEED_COUNTS_PER_S: f64 = 3100.0;
 
 const LOOP_GAIN_PER_S: f64 = 25.0;
+// The physics' longest time step.
+const MAX_STEP_S: f64 = 0.001;
+// One byte on the wire at 1 Mbaud: 10 bits.
+const BYTE_TIME_S: f64 = 10e-6;
 const AMBIENT_C: f64 = 31.0;
 
 // Load (0..1000) per tick of position error while torque is on.
@@ -44,6 +49,48 @@ const FACTORY_DEFAULTS: [(Register, i32); 13] = [
     (servos::RETURN_DELAY, 0),
 ];
 
+/// How our follower's servos behave beyond the protocol, measured on the rig. Per joint, in
+/// LeRobot's order (shoulder pan .. gripper). Zero a field to leave its behaviour out.
+#[derive(Clone, Copy, Debug)]
+pub struct ServoProfile {
+    /// A goal takes effect this long after it's written: wrist roll started moving 49.6-53.2 ms
+    /// after a goal write, wrist flex 58-72 ms (step tests, 2026-11-23).
+    pub dead_time: Duration,
+    /// Play, in counts: a goal moving back by less than this doesn't move the joint, and a joint
+    /// settles half of it short of its goal. Fine-motion test, 2026-11-24: 0.33° pan, 0.30° lift,
+    /// 1.74° elbow, 0.44° wrist flex, 0.35° roll, 0.15% gripper (about 2 counts).
+    pub play: [f64; 6],
+    /// Gravity's pull, in counts, scaled by cos(angle): the mean of the settled errors from
+    /// either side (same test): 0.10° lift, 0.32° elbow, 0.13° wrist flex.
+    pub sag: [f64; 6],
+    /// One temperature reading in this many is junk (45-150 C in a steady band): 2026-11-24, both
+    /// episodes, about 1 in 500 on every servo. 0 for none.
+    pub junk_temperature_one_in: u32,
+    /// One voltage reading in this many is junk (10.2-11.2 V on 11.9 V), per servo: only wrist
+    /// roll (21 in ~24,000) and the gripper (37 in ~24,000) did, 2026-11-24.
+    pub junk_voltage_one_in: [u32; 6],
+    /// Supply, in volts: the follower's 12 V adapter (11.8-11.9 V at the servos).
+    pub supply_v: f64,
+    /// Bus time per transaction: the USB adapter's turnaround plus 10 µs per byte at 1 Mbaud. A
+    /// position read of all six took 1.0 ms (62 bytes), a status read about 1.6 ms more (2026-11-23).
+    pub bus_turnaround: Duration,
+}
+
+impl ServoProfile {
+    const DEG: f64 = 4096.0 / 360.0;
+
+    /// The follower, as measured.
+    pub const FOLLOWER: ServoProfile = ServoProfile {
+        dead_time: Duration::from_millis(50),
+        play: [0.33 * Self::DEG, 0.30 * Self::DEG, 1.74 * Self::DEG, 0.44 * Self::DEG, 0.35 * Self::DEG, 2.0],
+        sag: [0.0, 0.10 * Self::DEG, 0.32 * Self::DEG, 0.13 * Self::DEG, 0.0, 0.0],
+        junk_temperature_one_in: 500,
+        junk_voltage_one_in: [0, 0, 0, 0, 1100, 650],
+        supply_v: 11.9,
+        bus_turnaround: Duration::from_micros(380),
+    };
+}
+
 // Moves a torque-off servo: given (id, time in seconds), returns its shaft angle in counts.
 pub type Hand = Arc<dyn Fn(u8, f64) -> Option<f64> + Send + Sync>;
 
@@ -60,6 +107,13 @@ pub struct SimServo {
     // Winding temperature, integrated from load.
     pub temperature_c: f64,
     pub saturated_s: f64,
+    // Goals as written, (time s, register value), oldest first: the dead time picks from these.
+    goals: VecDeque<(f64, i32)>,
+    // Where the play lets the motor aim: moves only when the goal pushes past half the play.
+    aim: f64,
+    rng: Rng,
+    // Supply in decivolts, as the voltage register counts.
+    supply_dv: f64,
 }
 
 pub struct SimulatedServos {
@@ -76,6 +130,11 @@ pub struct SimulatedServos {
     // These IDs miss the first read after their torque comes on, as servo 1 did on hardware.
     pub deaf_after_torque_on: Vec<u8>,
     deaf: Vec<u8>,
+    pub profile: ServoProfile,
+    // Faults: (id, every Nth read, extra time): that servo answers late now and then (one took
+    // 13.5 ms, 2026-11-23).
+    pub slow_replies: Vec<(u8, u32, Duration)>,
+    reads: u64,
 }
 
 impl SimServo {
@@ -87,6 +146,10 @@ impl SimServo {
             last_update_s: 0.0,
             temperature_c: AMBIENT_C,
             saturated_s: 0.0,
+            goals: VecDeque::new(),
+            aim: start_counts,
+            rng: Rng::new(0x5E4F0 + id as u64),
+            supply_dv: 119.0,
         };
         for (reg, value) in FACTORY_DEFAULTS {
             s.set(reg, value);
@@ -117,12 +180,31 @@ impl SimServo {
         self.actual_counts.round() as i32 - self.homing_offset()
     }
 
-    fn step(&mut self, now: f64, hand: Option<&Hand>, obstacle: Option<&Obstacle>) {
+    // Advances the servo to `now` in steps of at most `MAX_STEP_S`, so a long wait (a test jumping
+    // the clock) integrates the same as many short ones.
+    fn step(&mut self, now: f64, profile: &ServoProfile, hand: Option<&Hand>, obstacle: Option<&Obstacle>) {
+        let start = self.last_update_s;
+        let steps = ((now - start) / MAX_STEP_S).ceil().max(1.0);
+        for k in 1..=steps as u64 {
+            self.integrate(start + (now - start) * k as f64 / steps, profile, hand, obstacle);
+        }
+        let joint = (self.id as usize).saturating_sub(1).min(5);
+        self.junk_readings(profile, joint);
+    }
+
+    fn integrate(&mut self, now: f64, profile: &ServoProfile, hand: Option<&Hand>, obstacle: Option<&Obstacle>) {
         let dt = (now - self.last_update_s).max(0.0);
         self.last_update_s = now;
+        let joint = (self.id as usize).saturating_sub(1).min(5);
+        self.supply_dv = profile.supply_v * 10.0;
+        let angle = (self.actual_counts - CENTER_COUNT as f64) / COUNTS_PER_TURN as f64 * std::f64::consts::TAU;
         if self.torque_on() {
-            let goal_actual = (self.get(servos::GOAL_POSITION) + self.homing_offset()) as f64;
-            let error = goal_actual - self.actual_counts;
+            // The stages, in order: dead time, gravity, play, then the motor.
+            let goal = self.goal_in_effect(now, profile.dead_time);
+            let goal_actual = (goal + self.homing_offset()) as f64 - profile.sag[joint] * angle.cos();
+            let half_play = profile.play[joint] / 2.0;
+            self.aim = self.aim.clamp(goal_actual - half_play, goal_actual + half_play);
+            let error = self.aim - self.actual_counts;
             let wanted = error * LOOP_GAIN_PER_S * dt;
             let cap = MAX_SPEED_COUNTS_PER_S * dt;
             let delta = wanted.clamp(-cap, cap).clamp(-error.abs(), error.abs());
@@ -131,15 +213,14 @@ impl SimServo {
             if let Some(floor) = obstacle.and_then(|o| o(self.id, now)) {
                 self.actual_counts = self.actual_counts.max(floor);
             }
-            let residual = goal_actual - self.actual_counts;
+            let residual = self.aim - self.actual_counts;
             if dt > 0.0 {
                 self.set(servos::PRESENT_SPEED, ((self.actual_counts - before) / dt).round() as i32);
             }
             self.set(servos::MOVING, if residual.abs() > 2.0 { 1 } else { 0 });
             // Load: what the loop pushes against (error) plus the arm's weight,
             // capped by the torque limit, like the real output stage.
-            let angle = (self.actual_counts - CENTER_COUNT as f64) / COUNTS_PER_TURN as f64 * std::f64::consts::TAU;
-            let gravity = GRAVITY_LOAD[(self.id as usize).saturating_sub(1).min(5)] * angle.cos();
+            let gravity = GRAVITY_LOAD[joint] * angle.cos();
             let cap = self.get(servos::TORQUE_LIMIT).min(self.get(servos::MAX_TORQUE)).max(0) as f64;
             let moving_fast = dt > 0.0 && ((self.actual_counts - before) / dt).abs() > 0.1 * MAX_SPEED_COUNTS_PER_S;
             self.set_effort((residual * LOAD_PER_COUNT_ERROR + gravity).clamp(-cap, cap), true, dt, moving_fast);
@@ -147,12 +228,47 @@ impl SimServo {
             if let Some(counts) = hand.and_then(|h| h(self.id, now)) {
                 self.actual_counts = counts;
             }
+            self.aim = self.actual_counts;
+            self.goals.clear();
             self.set(servos::PRESENT_SPEED, 0);
             self.set(servos::MOVING, 0);
             self.set_effort(0.0, false, dt, false);
         }
         self.actual_counts = self.actual_counts.clamp(0.0, (COUNTS_PER_TURN - 1) as f64);
         self.set(servos::PRESENT_POSITION, self.present_counts());
+    }
+
+    // Notes a goal as written at `now`, for the dead time.
+    fn note_goal(&mut self, now: f64, dead_time: Duration) {
+        let goal = self.get(servos::GOAL_POSITION);
+        match self.goals.back() {
+            Some(&(_, last)) if last == goal => {}
+            // The first goal (at torque-on, the present position) holds from the start.
+            None => self.goals.push_back((now - dead_time.as_secs_f64(), goal)),
+            Some(_) => self.goals.push_back((now, goal)),
+        }
+    }
+
+    // The newest goal written at least `dead_time` before `now`; older ones are dropped.
+    fn goal_in_effect(&mut self, now: f64, dead_time: Duration) -> i32 {
+        let due = now - dead_time.as_secs_f64();
+        while self.goals.len() > 1 && self.goals[1].0 <= due {
+            self.goals.pop_front();
+        }
+        self.goals.front().map_or_else(|| self.get(servos::GOAL_POSITION), |&(_, g)| g)
+    }
+
+    // Single junk readings, as the real servos send now and then (with a correct checksum).
+    fn junk_readings(&mut self, profile: &ServoProfile, joint: usize) {
+        let one_in = |n: u32, rng: &mut Rng| n > 0 && rng.chance(1.0 / f64::from(n));
+        if one_in(profile.junk_temperature_one_in, &mut self.rng) {
+            let junk = 45.0 + self.rng.unit() * 105.0;
+            self.set(servos::PRESENT_TEMPERATURE, junk as i32);
+        }
+        if one_in(profile.junk_voltage_one_in[joint], &mut self.rng) {
+            let junk = 102.0 + self.rng.unit() * 10.0;
+            self.set(servos::PRESENT_VOLTAGE, junk as i32);
+        }
     }
 
     // `moving_fast`: a spinning motor's back-EMF limits its current, so only a
@@ -166,7 +282,7 @@ impl SimServo {
         self.set(servos::PRESENT_LOAD, load.round() as i32);
         self.set(servos::PRESENT_CURRENT, current.round() as i32);
         self.set(servos::PRESENT_TEMPERATURE, self.temperature_c.round() as i32);
-        self.set(servos::PRESENT_VOLTAGE, (74.0 - current / 120.0).round() as i32);
+        self.set(servos::PRESENT_VOLTAGE, (self.supply_dv - current / 120.0).round() as i32);
         let cap = self.get(servos::TORQUE_LIMIT).min(self.get(servos::MAX_TORQUE)).max(1) as f64;
         self.saturated_s =
             if torque_on && magnitude >= cap * 0.98 && !moving_fast { self.saturated_s + dt } else { 0.0 };
@@ -219,6 +335,9 @@ impl SimulatedServos {
             silenced_ids: Vec::new(),
             deaf_after_torque_on: Vec::new(),
             deaf: Vec::new(),
+            profile: ServoProfile::FOLLOWER,
+            slow_replies: Vec::new(),
+            reads: 0,
         }
     }
 
@@ -270,12 +389,17 @@ impl SimulatedServos {
         self.servos.iter_mut().find(|s| s.id == id)
     }
 
+    pub fn with_profile(mut self, profile: ServoProfile) -> Self {
+        self.profile = profile;
+        self
+    }
+
     pub fn settle(&mut self) {
         let now = self.now_s();
         let hand = self.hand.as_ref();
         let obstacle = self.obstacle.as_ref();
         for s in &mut self.servos {
-            s.step(now, hand, obstacle);
+            s.step(now, &self.profile, hand, obstacle);
         }
     }
 
@@ -293,13 +417,43 @@ impl SimulatedServos {
     fn handle_instruction(&mut self, id: u8, instruction: Instruction, params: &[u8]) {
         self.settle();
         let torque_before: Vec<(u8, bool)> = self.servos.iter().map(|s| (s.id, s.torque_on())).collect();
+        let replied_before = self.reply_queue.len();
         self.dispatch(id, instruction, params);
+        let now = self.now_s();
+        let dead_time = self.profile.dead_time;
+        for s in self.servos.iter_mut().filter(|s| s.torque_on()) {
+            s.note_goal(now, dead_time);
+        }
+        self.charge_bus_time(id, instruction, params, self.reply_queue.len() - replied_before);
         for (id, was_on) in torque_before {
             let now_on = self.servo(id).is_some_and(|s| s.torque_on());
             if !was_on && now_on && self.deaf_after_torque_on.contains(&id) {
                 self.deaf.push(id);
             }
         }
+    }
+
+    // The clock moves by what the transaction takes on the wire, so the loop sees the bus's real
+    // cost per cycle; and a servo set to answer slowly now and then does.
+    fn charge_bus_time(&mut self, id: u8, instruction: Instruction, params: &[u8], reply_bytes: usize) {
+        if self.profile.bus_turnaround.is_zero() {
+            return;
+        }
+        let bytes = params.len() + 6 + reply_bytes;
+        let mut cost = self.profile.bus_turnaround.as_secs_f64() + bytes as f64 * BYTE_TIME_S;
+        if matches!(instruction, Instruction::Read | Instruction::SyncRead) {
+            self.reads += 1;
+            let asked: Vec<u8> = match instruction {
+                Instruction::SyncRead => params.get(2..).unwrap_or_default().to_vec(),
+                _ => vec![id],
+            };
+            for &(slow_id, every, extra) in &self.slow_replies {
+                if asked.contains(&slow_id) && every > 0 && self.reads.is_multiple_of(u64::from(every)) {
+                    cost += extra.as_secs_f64();
+                }
+            }
+        }
+        self.clock.sleep_until(self.clock.now() + Duration::from_secs_f64(cost));
     }
 
     fn dispatch(&mut self, id: u8, instruction: Instruction, params: &[u8]) {

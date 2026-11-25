@@ -327,19 +327,24 @@ fn read_only_register_is_refused_before_touching_the_wire() {
 
 #[test]
 fn servo_tracks_goal_within_speed_limit() {
+    // Rated 0.22 s per 60 degrees unloaded: about 3,100 counts/s, never more.
     let clock = stepped();
     let sim = SimulatedServos::new("servos", &[1], clock.clone());
+    let play = sim.profile.play[0];
     let mut servos = Servos::new(Box::new(sim));
     servos.write(1, servos::TORQUE_ENABLE, 1).unwrap();
     servos.write(1, servos::GOAL_POSITION, 3048).unwrap();
-
-    advance(&clock, Duration::from_millis(100));
-    let after_100ms = servos.read(1, servos::PRESENT_POSITION).unwrap();
-    assert!(after_100ms > 2048 && after_100ms <= 2048 + 310, "{after_100ms}");
-
+    let (mut t, mut p) = (clock.now(), servos.read(1, servos::PRESENT_POSITION).unwrap());
+    for _ in 0..40 {
+        advance(&clock, Duration::from_millis(10));
+        let (t2, p2) = (clock.now(), servos.read(1, servos::PRESENT_POSITION).unwrap());
+        let speed = f64::from(p2 - p) / t2.since(t).as_secs_f64();
+        assert!(speed <= 3100.0 * 1.01, "{speed:.0} counts/s");
+        (t, p) = (t2, p2);
+    }
     advance(&clock, Duration::from_secs(2));
     let settled = servos.read(1, servos::PRESENT_POSITION).unwrap();
-    assert!((settled - 3048).abs() <= 2, "{settled}");
+    assert!(f64::from((3048 - settled).abs()) <= play / 2.0 + 1.0, "{settled}: within half the play");
     assert_eq!(servos.read(1, servos::MOVING).unwrap(), 0);
 }
 
@@ -496,7 +501,8 @@ fn actuator_status_decodes_every_field_in_one_read() {
     let a = arm.read_actuator(Joint::ElbowFlex).unwrap();
     assert_eq!(a.joint, Joint::ElbowFlex);
     assert_eq!(a.temperature_c, Some(31.0));
-    assert!((a.voltage_v.unwrap() - 7.4).abs() < 1e-4);
+    let supply = so101::arm::ServoProfile::FOLLOWER.supply_v as f32;
+    assert!((a.voltage_v.unwrap() - supply).abs() < 0.05, "{:?}", a.voltage_v);
     assert_eq!(a.velocity_deg_s, Some(0.0));
     assert!(a.faults.is_empty());
 }
@@ -1026,4 +1032,118 @@ fn an_overload_flag_left_over_from_a_hold_does_not_trap_the_gripper_open() {
     let last = reports.last().unwrap();
     assert!(!last.held(Joint::Gripper), "gripper trapped in a hold after the leader opened");
     assert!(last.follower[g] > 2300, "gripper did not open: {}", last.follower[g]);
+}
+
+// The simulated follower behaves the way the real one was measured to (ServoProfile).
+mod measured_behaviour {
+    use super::*;
+    use so101::arm::ServoProfile;
+
+    /// One servo, torque on and holding at the centre, on the test clock.
+    fn holding(profile: ServoProfile) -> (Arc<ReplayClock>, Servos) {
+        let clock = stepped();
+        let sim = SimulatedServos::new("servos", &[3], clock.clone()).with_profile(profile);
+        let mut servos = Servos::new(Box::new(sim));
+        servos.write(3, servos::TORQUE_ENABLE, 1).unwrap();
+        advance(&clock, Duration::from_millis(500));
+        (clock, servos)
+    }
+
+    fn position(servos: &mut Servos) -> i32 {
+        servos.read(3, servos::PRESENT_POSITION).unwrap()
+    }
+
+    #[test]
+    fn a_goal_takes_effect_after_the_dead_time() {
+        let (clock, mut servos) = holding(ServoProfile::FOLLOWER);
+        let start = position(&mut servos);
+        servos.write(3, servos::GOAL_POSITION, start + 400).unwrap();
+        advance(&clock, Duration::from_millis(40));
+        assert!((position(&mut servos) - start).abs() <= 1, "still at 40 ms");
+        advance(&clock, Duration::from_millis(40));
+        assert!(position(&mut servos) - start > 50, "moving by 80 ms");
+    }
+
+    #[test]
+    fn a_reversal_smaller_than_the_play_leaves_the_joint_still() {
+        // Elbow (servo 3): 1.74 degrees of play, about 20 counts.
+        let profile = ServoProfile { sag: [0.0; 6], ..ServoProfile::FOLLOWER };
+        let (clock, mut servos) = holding(profile);
+        let goal = position(&mut servos) + 200;
+        servos.write(3, servos::GOAL_POSITION, goal).unwrap();
+        advance(&clock, Duration::from_secs(1));
+        let settled = position(&mut servos);
+        assert!((goal - settled - 10).abs() <= 1, "settles half the play short: {settled} for {goal}");
+        servos.write(3, servos::GOAL_POSITION, goal - 15).unwrap();
+        advance(&clock, Duration::from_secs(1));
+        assert!((position(&mut servos) - settled).abs() <= 1, "a 15-count reversal doesn't move it");
+        servos.write(3, servos::GOAL_POSITION, goal - 60).unwrap();
+        advance(&clock, Duration::from_secs(1));
+        assert!((position(&mut servos) - (goal - 50)).abs() <= 1, "a bigger one moves it, half the play behind");
+    }
+
+    #[test]
+    fn gravity_pulls_the_elbow_below_its_goal_most_when_level() {
+        let profile = ServoProfile { play: [0.0; 6], ..ServoProfile::FOLLOWER };
+        let (clock, mut servos) = holding(profile);
+        // Level (the centre, angle 0) and straight up (a quarter turn).
+        for (goal, sag) in [(2048, profile.sag[2]), (3072, 0.0)] {
+            servos.write(3, servos::GOAL_POSITION, goal).unwrap();
+            advance(&clock, Duration::from_secs(1));
+            let below = f64::from(goal - position(&mut servos));
+            assert!((below - sag).abs() <= 1.0, "goal {goal}: {below} counts below, expected {sag:.1}");
+        }
+    }
+
+    #[test]
+    fn junk_readings_come_at_the_measured_rate_and_are_single() {
+        let (clock, mut servos) = holding(ServoProfile::FOLLOWER);
+        let mut junk = 0;
+        let mut previous_junk = false;
+        for _ in 0..20_000 {
+            advance(&clock, Duration::from_millis(1));
+            let t = servos.read(3, servos::PRESENT_TEMPERATURE).unwrap();
+            let is_junk = t > 40;
+            assert!(!(is_junk && previous_junk), "junk comes one reading at a time");
+            junk += i32::from(is_junk);
+            previous_junk = is_junk;
+        }
+        assert!((20..=60).contains(&junk), "{junk} junk in 20,000: about 1 in 500");
+    }
+
+    #[test]
+    fn a_status_read_of_six_takes_the_measured_bus_time() {
+        let clock = stepped();
+        let mut servos = Servos::new(Box::new(SimulatedServos::arm("follower").with_clock(clock.clone())));
+        let t0 = clock.now();
+        servos.sync_read_block(&so101::arm::IDS, 56, 15).unwrap();
+        let took = clock.now().since(t0).as_secs_f64() * 1e3;
+        assert!((1.5..=3.5).contains(&took), "{took:.2} ms");
+    }
+
+    #[test]
+    fn a_servo_that_answers_slowly_makes_a_late_cycle() {
+        let clock = stepped();
+        let mut follower_sim = SimulatedServos::arm("follower").with_clock(clock.clone());
+        follower_sim.slow_replies.push((2, 50, Duration::from_millis(14)));
+        let mut leader = sim_arm(SimulatedServos::arm("leader").with_clock(clock.clone()), "leader", &clock);
+        let mut follower = sim_arm(follower_sim, "follower", &clock);
+        let options = RunOptions { hz: 120.0, max_ticks: Some(240), read_actuators: true };
+        let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+        let stats = run.result.unwrap();
+        assert!(stats.skipped > 0 || stats.late > 0, "{stats:?}");
+        assert_eq!(stats.errors, 0, "slow isn't failed");
+    }
+
+    #[test]
+    fn teleop_at_120_hz_keeps_up_with_the_measured_bus() {
+        let clock = stepped();
+        let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+        let mut follower = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+        let options = RunOptions { hz: 120.0, max_ticks: Some(1200), read_actuators: true };
+        follower.set_step_limit(Some(20));
+        let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+        let stats = run.result.unwrap();
+        assert_eq!((stats.skipped, stats.errors), (0, 0), "{stats:?}");
+    }
 }
