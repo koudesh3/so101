@@ -327,24 +327,27 @@ fn read_only_register_is_refused_before_touching_the_wire() {
 
 #[test]
 fn servo_tracks_goal_within_speed_limit() {
-    // Rated 0.22 s per 60 degrees unloaded: about 3,100 counts/s, never more.
+    // Never faster than its fitted top speed, and it gets to its goal.
     let clock = stepped();
     let sim = SimulatedServos::new("servos", &[1], clock.clone());
-    let play = sim.profile.play[0];
+    let profile = sim.profile;
+    let max_counts_s = profile.motor[0].max_speed_deg_s * 4096.0 / 360.0;
+    let play = profile.play_deg[0] * 4096.0 / 360.0;
     let mut servos = Servos::new(Box::new(sim));
     servos.write(1, servos::TORQUE_ENABLE, 1).unwrap();
     servos.write(1, servos::GOAL_POSITION, 3048).unwrap();
     let (mut t, mut p) = (clock.now(), servos.read(1, servos::PRESENT_POSITION).unwrap());
-    for _ in 0..40 {
-        advance(&clock, Duration::from_millis(10));
+    // 50 ms windows: a read's bus time skews a short window by a few percent.
+    for _ in 0..8 {
+        advance(&clock, Duration::from_millis(50));
         let (t2, p2) = (clock.now(), servos.read(1, servos::PRESENT_POSITION).unwrap());
         let speed = f64::from(p2 - p) / t2.since(t).as_secs_f64();
-        assert!(speed <= 3100.0 * 1.01, "{speed:.0} counts/s");
+        assert!(speed <= max_counts_s * 1.01, "{speed:.0} counts/s");
         (t, p) = (t2, p2);
     }
     advance(&clock, Duration::from_secs(2));
     let settled = servos.read(1, servos::PRESENT_POSITION).unwrap();
-    assert!(f64::from((3048 - settled).abs()) <= play / 2.0 + 1.0, "{settled}: within half the play");
+    assert!(f64::from((3048 - settled).abs()) <= play / 2.0 + 2.0, "{settled}: within half the play");
     assert_eq!(servos.read(1, servos::MOVING).unwrap(), 0);
 }
 
@@ -1053,46 +1056,93 @@ mod measured_behaviour {
         servos.read(3, servos::PRESENT_POSITION).unwrap()
     }
 
+    const COUNTS_PER_DEG: f64 = 4096.0 / 360.0;
+
+    /// The profile with no gravity, so a test can look at one behaviour at a time.
+    fn weightless() -> ServoProfile {
+        ServoProfile { gravity: [so101::arm::Gravity::flat(0.0); 6], ..ServoProfile::FOLLOWER }
+    }
+
     #[test]
     fn a_goal_takes_effect_after_the_dead_time() {
+        // Elbow (servo 3): 54.7 ms fitted; every joint started moving 42-60 ms after a goal write.
         let (clock, mut servos) = holding(ServoProfile::FOLLOWER);
         let start = position(&mut servos);
         servos.write(3, servos::GOAL_POSITION, start + 400).unwrap();
         advance(&clock, Duration::from_millis(40));
         assert!((position(&mut servos) - start).abs() <= 1, "still at 40 ms");
         advance(&clock, Duration::from_millis(40));
-        assert!(position(&mut servos) - start > 50, "moving by 80 ms");
+        assert!(position(&mut servos) - start > 2, "moving by 80 ms");
+    }
+
+    #[test]
+    fn peak_speed_grows_with_step_size_as_measured() {
+        // Measured on every joint (system-ID run): about 22°/s for a 1° step, 55 for 3°, 125 for
+        // 10°, 190-240 for 20-30°.
+        for (step_deg, measured) in [(1.0, 22.0), (3.0, 55.0), (10.0, 125.0), (20.0, 190.0)] {
+            let (clock, mut servos) = holding(weightless());
+            let start = position(&mut servos);
+            servos.write(3, servos::GOAL_POSITION, start + (step_deg * COUNTS_PER_DEG) as i32).unwrap();
+            let (mut t, mut p, mut peak) = (clock.now(), start, 0.0_f64);
+            for _ in 0..80 {
+                advance(&clock, Duration::from_millis(5));
+                let (t2, p2) = (clock.now(), position(&mut servos));
+                peak = peak.max(f64::from(p2 - p) / t2.since(t).as_secs_f64() / COUNTS_PER_DEG);
+                (t, p) = (t2, p2);
+            }
+            assert!(
+                (peak - measured).abs() / measured < 0.3,
+                "{step_deg}° step: peak {peak:.0}°/s, measured {measured}"
+            );
+        }
     }
 
     #[test]
     fn a_reversal_smaller_than_the_play_leaves_the_joint_still() {
-        // Elbow (servo 3): 1.74 degrees of play, about 20 counts.
-        let profile = ServoProfile { sag: [0.0; 6], ..ServoProfile::FOLLOWER };
+        let profile = ServoProfile { play_deg: [2.0; 6], ..weightless() };
+        let play = 2.0 * COUNTS_PER_DEG;
         let (clock, mut servos) = holding(profile);
         let goal = position(&mut servos) + 200;
         servos.write(3, servos::GOAL_POSITION, goal).unwrap();
         advance(&clock, Duration::from_secs(1));
         let settled = position(&mut servos);
-        assert!((goal - settled - 10).abs() <= 1, "settles half the play short: {settled} for {goal}");
-        servos.write(3, servos::GOAL_POSITION, goal - 15).unwrap();
+        assert!(
+            (f64::from(goal - settled) - play / 2.0).abs() <= 1.5,
+            "settles half the play short: {settled} for {goal}"
+        );
+        servos.write(3, servos::GOAL_POSITION, goal - (play * 0.7) as i32).unwrap();
         advance(&clock, Duration::from_secs(1));
-        assert!((position(&mut servos) - settled).abs() <= 1, "a 15-count reversal doesn't move it");
+        assert!((position(&mut servos) - settled).abs() <= 1, "a reversal inside the play doesn't move it");
         servos.write(3, servos::GOAL_POSITION, goal - 60).unwrap();
         advance(&clock, Duration::from_secs(1));
-        assert!((position(&mut servos) - (goal - 50)).abs() <= 1, "a bigger one moves it, half the play behind");
+        let moved = position(&mut servos);
+        assert!(
+            (f64::from(moved - (goal - 60)) - play / 2.0).abs() <= 1.5,
+            "a bigger one moves it, half the play behind: {moved}"
+        );
     }
 
     #[test]
-    fn gravity_pulls_the_elbow_below_its_goal_most_when_level() {
-        let profile = ServoProfile { play: [0.0; 6], ..ServoProfile::FOLLOWER };
-        let (clock, mut servos) = holding(profile);
-        // Level (the centre, angle 0) and straight up (a quarter turn).
-        for (goal, sag) in [(2048, profile.sag[2]), (3072, 0.0)] {
-            servos.write(3, servos::GOAL_POSITION, goal).unwrap();
-            advance(&clock, Duration::from_secs(1));
-            let below = f64::from(goal - position(&mut servos));
-            assert!((below - sag).abs() <= 1.0, "goal {goal}: {below} counts below, expected {sag:.1}");
+    fn gravity_settles_the_lift_further_above_its_goal_stretched_out_than_tucked() {
+        // Shoulder lift (servo 2), sweeps of 15 poses: about 0.0° tucked, 1.0° stretched out.
+        let profile = ServoProfile { play_deg: [0.0; 6], ..ServoProfile::FOLLOWER };
+        let clock = stepped();
+        let sim = SimulatedServos::new("servos", &[2], clock.clone()).with_profile(profile);
+        let mut servos = Servos::new(Box::new(sim));
+        servos.write(2, servos::TORQUE_ENABLE, 1).unwrap();
+        let mut above_at = |deg: f64| {
+            let goal = 2048 + (deg * COUNTS_PER_DEG) as i32;
+            servos.write(2, servos::GOAL_POSITION, goal).unwrap();
+            advance(&clock, Duration::from_secs(2));
+            f64::from(servos.read(2, servos::PRESENT_POSITION).unwrap() - goal) / COUNTS_PER_DEG
+        };
+        let (tucked, stretched) = (above_at(-90.0), above_at(20.0));
+        let g = profile.gravity[1];
+        for (got, deg) in [(tucked, -90.0_f64), (stretched, 20.0)] {
+            let want = g.above_goal_deg(deg.to_radians());
+            assert!((got - want).abs() <= 0.1, "{deg}°: settles {got:.2}° above, the fit says {want:.2}°");
         }
+        assert!(stretched - tucked > 0.5, "tucked {tucked:.2}°, stretched {stretched:.2}°");
     }
 
     #[test]

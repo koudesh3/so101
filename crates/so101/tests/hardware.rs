@@ -89,6 +89,7 @@ enum Move {
     Triangle { amplitude: f64, speed: f64, periods: u32 },
 }
 
+#[derive(Clone)]
 struct Segment {
     joint: Joint,
     start_s: f64,
@@ -97,6 +98,7 @@ struct Segment {
 }
 
 /// The whole run: ease from where the arm is to REACH, each joint's moves, ease back.
+#[derive(Clone)]
 struct Schedule {
     segments: Vec<Segment>,
     moves_end_s: f64,
@@ -206,6 +208,11 @@ trait Script: Send {
     fn end_s(&self) -> f64;
     /// Inside the scripted moves (the range margin applies), not the eases to and from home.
     fn scripted(&self, t: f64) -> bool;
+    /// How far inside the calibrated ranges scripted targets must stay, in degrees (% on the
+    /// gripper).
+    fn margin(&self) -> f32 {
+        5.0
+    }
     fn at(&self, t: f64, home: Pose) -> Pose;
 }
 
@@ -236,6 +243,7 @@ const AWAY_DEG: f32 = 4.0;
 /// for 112-6,779 cycles, wrist flex as used there), lift, elbow and wrist flex settle onto their
 /// target from 4° above, then from 4° below. The mean of the two is gravity's pull at that pose;
 /// the difference, the play. Enters and leaves through REACH, a path the arm has taken.
+#[derive(Clone)]
 struct GravitySweep {
     name: &'static str,
     // (start s, target pose, how it gets there: true eases, false steps)
@@ -367,6 +375,86 @@ impl Script for GravitySweep {
     }
 }
 
+/// A recorded goal stream played back: `t,pan,lift,elbow,wrist_flex,wrist_roll,gripper` (seconds,
+/// degrees, gripper %), eased into from home and back out to it. To check the simulator against
+/// the arm as it is now, on goals it once got from the leader.
+#[derive(Clone)]
+struct Replay {
+    t: Vec<f64>,
+    goals: Vec<[f32; JOINT_COUNT]>,
+}
+
+impl Replay {
+    fn load(path: &str) -> Self {
+        let text = std::fs::read_to_string(path).unwrap();
+        let (mut t, mut goals) = (Vec::new(), Vec::new());
+        for line in text.lines().skip(1) {
+            let v: Vec<f32> = line.split(',').map(|x| x.parse().unwrap()).collect();
+            t.push(f64::from(v[0]));
+            goals.push(std::array::from_fn(|i| v[i + 1]));
+        }
+        Self { t, goals }
+    }
+
+    fn span(&self) -> f64 {
+        self.t[self.t.len() - 1] - self.t[0]
+    }
+}
+
+impl Script for Replay {
+    fn name(&self) -> &'static str {
+        "replay"
+    }
+
+    fn end_s(&self) -> f64 {
+        EASE_S + 1.0 + self.span() + 1.0 + EASE_S + 1.0
+    }
+
+    fn scripted(&self, t: f64) -> bool {
+        t >= EASE_S && t < EASE_S + 2.0 + self.span()
+    }
+
+    /// Recorded goals the arm already executed, which the range clamp capped: inside the range is
+    /// enough (a fifth of a degree for rounding).
+    fn margin(&self) -> f32 {
+        -0.2
+    }
+
+    fn at(&self, t: f64, home: Pose) -> Pose {
+        let ease = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let blend = |a: &[f32; JOINT_COUNT], b: &[f32; JOINT_COUNT], u: f64| {
+            Pose(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * u as f32))
+        };
+        let (first, last) = (self.goals[0], self.goals[self.goals.len() - 1]);
+        let played = t - EASE_S - 1.0;
+        if played < 0.0 {
+            return blend(&home.0, &first, ease(t / EASE_S));
+        }
+        if played > self.span() + 1.0 {
+            return blend(&last, &home.0, ease((played - self.span() - 1.0) / EASE_S));
+        }
+        let at = self.t[0] + played;
+        let i = self.t.partition_point(|&x| x <= at).saturating_sub(1).min(self.goals.len() - 1);
+        Pose(self.goals[i])
+    }
+}
+
+/// `SO101_REPLAY=<goals.csv>`: dry-runs it (ranges, camera clearance, the simulator); with
+/// `SO101_FOLLOWER` and `SO101_RECORD` set too, then plays it on the real follower and records it.
+#[test]
+#[ignore]
+fn replay_goals() {
+    let path = std::env::var("SO101_REPLAY").expect("SO101_REPLAY=<goals.csv>");
+    let closest = dry_run(Replay::load(&path));
+    println!("replay: {:.0} s, camera never closer than {closest:.1} mm", Replay::load(&path).end_s());
+    if std::env::var("SO101_FOLLOWER").is_ok() {
+        run_on_follower(Replay::load(&path));
+    }
+}
+
 /// Every scripted target is inside the calibrated ranges by 5° (5% on the gripper), the eases to
 /// and from where the arm starts (REST, which sits within 1° of lift's end) stay inside them, the
 /// wrist camera stays clear of the arm throughout (checked every 10 ms), and the run completes on
@@ -387,7 +475,7 @@ fn dry_run<S: Script>(script: S) -> f32 {
                 let mid = (c.range_min + c.range_max) as f32 / 2.0;
                 ((c.range_min as f32 - mid) * deg, (c.range_max as f32 - mid) * deg)
             };
-            let margin = if script.scripted(t) { 5.0 } else { 0.0 };
+            let margin = if script.scripted(t) { script.margin() } else { 0.0 };
             let v = pose.0[joint.index()];
             assert!(
                 v >= lo + margin && v <= hi - margin,
@@ -467,7 +555,9 @@ fn the_gravity_sweep_is_safe_and_completes_on_the_simulator() {
 
 /// Runs a script on the real follower and records it: configure, read the gains back, torque on,
 /// the script at 120 Hz with every servo's load and current, torque off. Ctrl-C stops it.
-fn run_on_follower<S: Script>(script: S) {
+fn run_on_follower<S: Script + Clone>(script: S) {
+    // Never on the arm without passing the same checks on the simulator first.
+    dry_run(script.clone());
     let port = std::env::var("SO101_FOLLOWER").expect("SO101_FOLLOWER=<serial port>");
     let out = std::env::var("SO101_RECORD").expect("SO101_RECORD=<file.mcap>");
     let gains = FollowerGains::load(&repo("data/gains.json")).unwrap();

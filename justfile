@@ -77,6 +77,20 @@ linux *args:
       -v so101-linux-uv:/root/.cache/uv \
       so101-linux bash -c 'if [ "${1:-}" = cargo ]; then "$@"; else just "$@"; fi' _ {{args}}
 
+# On the Spark: the follower's system-ID run, gravity sweeps and load map, about 8 minutes of motion
+# with the arm clear, recorded to /projects/spikes/sysid-<date>/ for refitting the simulator
+# (docs/phase1.md); each is dry-run on the simulator first
+sysid:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . /projects/robot.conf
+    out=/projects/spikes/sysid-$(date +%Y%m%d)
+    mkdir -p "$out"
+    for run in system_identification gravity_sweep gravity_sweep_folded load_map; do
+      SO101_FOLLOWER="$FOLLOWER_PORT" SO101_RECORD="$out/$run-$(date +%H%M%S).mcap" \
+        cargo test -q --release -p so101 --test hardware "$run" -- --ignored --exact --nocapture
+    done
+
 # On the Spark: encode any recording's scene video still raw (teleop starts this itself when a
 # recording stops; this finishes any it didn't, e.g. after a crash)
 encode-scenes:

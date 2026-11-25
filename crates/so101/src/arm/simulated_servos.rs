@@ -13,10 +13,8 @@ use crate::arm::IDS;
 use crate::clock::{Clock, MonotonicClock, Timestamp};
 use crate::rng::Rng;
 
-// note: unloaded STS3215 is rated 0.22 s per 60 degrees, about 3100 counts/s.
-pub const MAX_SPEED_COUNTS_PER_S: f64 = 3100.0;
-
-const LOOP_GAIN_PER_S: f64 = 25.0;
+// Counts per degree of a servo's own angle.
+const COUNTS_PER_DEG: f64 = COUNTS_PER_TURN as f64 / 360.0;
 // The physics' longest time step.
 const MAX_STEP_S: f64 = 0.001;
 // One byte on the wire at 1 Mbaud: 10 bits.
@@ -49,20 +47,20 @@ const FACTORY_DEFAULTS: [(Register, i32); 13] = [
     (servos::RETURN_DELAY, 0),
 ];
 
-/// How our follower's servos behave beyond the protocol, measured on the rig. Per joint, in
-/// LeRobot's order (shoulder pan .. gripper). Zero a field to leave its behaviour out.
+/// How our follower's servos behave beyond the protocol, fitted to the rig (2026-11-24,
+/// /projects/spikes/sysid-20261124 on the Spark): the motion from the system-ID run
+/// (`tests/hardware.rs`: steps of 1-30°, ramps to 150°/s and small reversals on each joint), the
+/// static part from the gravity sweeps (each joint settling from above and below at 15 poses).
+/// Checked against recordings the fit never saw: the fine-motion test and both teleop episodes.
+/// Per joint, in LeRobot's order (shoulder pan .. gripper); the gripper's numbers are in its raw
+/// counts' degrees (4096 to a turn), like the others.
 #[derive(Clone, Copy, Debug)]
 pub struct ServoProfile {
-    /// A goal takes effect this long after it's written: wrist roll started moving 49.6-53.2 ms
-    /// after a goal write, wrist flex 58-72 ms (step tests, 2026-11-23).
-    pub dead_time: Duration,
-    /// Play, in counts: a goal moving back by less than this doesn't move the joint, and a joint
-    /// settles half of it short of its goal. Fine-motion test, 2026-11-24: 0.33° pan, 0.30° lift,
-    /// 1.74° elbow, 0.44° wrist flex, 0.35° roll, 0.15% gripper (about 2 counts).
-    pub play: [f64; 6],
-    /// Gravity's pull, in counts, scaled by cos(angle): the mean of the settled errors from
-    /// either side (same test): 0.10° lift, 0.32° elbow, 0.13° wrist flex.
-    pub sag: [f64; 6],
+    pub motor: [Motor; 6],
+    /// A goal moving back by less than this doesn't move the joint, which settles half of it short
+    /// of its goal: the difference between settling from above and from below (sweeps).
+    pub play_deg: [f64; 6],
+    pub gravity: [Gravity; 6],
     /// One temperature reading in this many is junk (45-150 C in a steady band): 2026-11-24, both
     /// episodes, about 1 in 500 on every servo. 0 for none.
     pub junk_temperature_one_in: u32,
@@ -76,19 +74,73 @@ pub struct ServoProfile {
     pub bus_turnaround: Duration,
 }
 
-impl ServoProfile {
-    const DEG: f64 = 4096.0 / 360.0;
+/// How a servo moves toward its goal: after a dead time, its speed is a pull proportional to the
+/// distance left, limited in acceleration and capped. Peak speed then grows with step size as
+/// measured (about 22°/s for 1°, 55 for 3°, 125 for 10°, 240 for 30°), which neither a pure
+/// first-order servo nor a fixed speed cap does.
+#[derive(Clone, Copy, Debug)]
+pub struct Motor {
+    pub dead_time: Duration,
+    pub gain_per_s: f64,
+    pub accel_deg_s2: f64,
+    pub max_speed_deg_s: f64,
+}
 
-    /// The follower, as measured.
+/// How far above its goal a joint settles under gravity, in degrees:
+/// `constant + cos_term * cos(angle) + sin_term * sin(angle)` of the joint's own angle from the
+/// servo's centre. Only shoulder lift's varies, 0.0° tucked to 1.0° stretched out (one cosine fits
+/// the 15 poses to 0.08°); the others are flat to within an encoder count (0.09°).
+#[derive(Clone, Copy, Debug)]
+pub struct Gravity {
+    pub constant: f64,
+    pub cos_term: f64,
+    pub sin_term: f64,
+}
+
+impl Gravity {
+    pub const fn flat(deg: f64) -> Self {
+        Self { constant: deg, cos_term: 0.0, sin_term: 0.0 }
+    }
+
+    pub fn above_goal_deg(&self, angle_rad: f64) -> f64 {
+        self.constant + self.cos_term * angle_rad.cos() + self.sin_term * angle_rad.sin()
+    }
+}
+
+impl ServoProfile {
+    /// The follower, as fitted.
     pub const FOLLOWER: ServoProfile = ServoProfile {
-        dead_time: Duration::from_millis(50),
-        play: [0.33 * Self::DEG, 0.30 * Self::DEG, 1.74 * Self::DEG, 0.44 * Self::DEG, 0.35 * Self::DEG, 2.0],
-        sag: [0.0, 0.10 * Self::DEG, 0.32 * Self::DEG, 0.13 * Self::DEG, 0.0, 0.0],
+        motor: [
+            Motor::new(50.3, 21.3, 2330.0, 342.0),
+            Motor::new(52.2, 26.6, 2110.0, 226.0),
+            Motor::new(54.7, 24.8, 1990.0, 327.0),
+            Motor::new(52.7, 23.7, 1870.0, 350.0),
+            Motor::new(37.9, 17.3, 2100.0, 454.0),
+            // The gripper's top speed is its 30% torque ceiling (gains.json).
+            Motor::new(42.3, 40.2, 1460.0, 93.0),
+        ],
+        play_deg: [0.31, 0.46, 0.38, 0.19, 0.33, 0.37],
+        gravity: [
+            Gravity::flat(0.05),
+            Gravity { constant: 0.635, cos_term: 0.096, sin_term: 0.568 },
+            // Unresolved: teleop recordings earlier the same day settled 0.1-1.3° lower, at the
+            // same poses (docs/phase1.md).
+            Gravity::flat(0.56),
+            Gravity::flat(0.22),
+            Gravity::flat(0.02),
+            Gravity::flat(-0.04),
+        ],
         junk_temperature_one_in: 500,
         junk_voltage_one_in: [0, 0, 0, 0, 1100, 650],
         supply_v: 11.9,
         bus_turnaround: Duration::from_micros(380),
     };
+}
+
+impl Motor {
+    const fn new(dead_ms: f64, gain_per_s: f64, accel_deg_s2: f64, max_speed_deg_s: f64) -> Self {
+        Self { dead_time: Duration::from_micros((dead_ms * 1000.0) as u64), gain_per_s, accel_deg_s2, max_speed_deg_s }
+    }
 }
 
 // Moves a torque-off servo: given (id, time in seconds), returns its shaft angle in counts.
@@ -111,6 +163,8 @@ pub struct SimServo {
     goals: VecDeque<(f64, i32)>,
     // Where the play lets the motor aim: moves only when the goal pushes past half the play.
     aim: f64,
+    // The motor's speed, in counts/s: it changes no faster than the acceleration limit.
+    speed: f64,
     rng: Rng,
     // Supply in decivolts, as the voltage register counts.
     supply_dv: f64,
@@ -148,6 +202,7 @@ impl SimServo {
             saturated_s: 0.0,
             goals: VecDeque::new(),
             aim: start_counts,
+            speed: 0.0,
             rng: Rng::new(0x5E4F0 + id as u64),
             supply_dv: 119.0,
         };
@@ -198,18 +253,28 @@ impl SimServo {
         let joint = (self.id as usize).saturating_sub(1).min(5);
         self.supply_dv = profile.supply_v * 10.0;
         let angle = (self.actual_counts - CENTER_COUNT as f64) / COUNTS_PER_TURN as f64 * std::f64::consts::TAU;
+        let motor = profile.motor[joint];
+        let max_speed = motor.max_speed_deg_s * COUNTS_PER_DEG;
         if self.torque_on() {
             // The stages, in order: dead time, gravity, play, then the motor.
-            let goal = self.goal_in_effect(now, profile.dead_time);
-            let goal_actual = (goal + self.homing_offset()) as f64 - profile.sag[joint] * angle.cos();
-            let half_play = profile.play[joint] / 2.0;
+            let goal = self.goal_in_effect(now, motor.dead_time);
+            let above = profile.gravity[joint].above_goal_deg(angle) * COUNTS_PER_DEG;
+            let goal_actual = (goal + self.homing_offset()) as f64 + above;
+            let half_play = profile.play_deg[joint] * COUNTS_PER_DEG / 2.0;
             self.aim = self.aim.clamp(goal_actual - half_play, goal_actual + half_play);
             let error = self.aim - self.actual_counts;
-            let wanted = error * LOOP_GAIN_PER_S * dt;
-            let cap = MAX_SPEED_COUNTS_PER_S * dt;
-            let delta = wanted.clamp(-cap, cap).clamp(-error.abs(), error.abs());
+            let wanted = (motor.gain_per_s * error).clamp(-max_speed, max_speed);
+            let max_change = motor.accel_deg_s2 * COUNTS_PER_DEG * dt;
+            self.speed += (wanted - self.speed).clamp(-max_change, max_change);
             let before = self.actual_counts;
-            self.actual_counts += delta;
+            let delta = self.speed * dt;
+            if error * (error - delta) < 0.0 {
+                // It would pass the aim: it stops there.
+                self.actual_counts = self.aim;
+                self.speed = 0.0;
+            } else {
+                self.actual_counts += delta;
+            }
             if let Some(floor) = obstacle.and_then(|o| o(self.id, now)) {
                 self.actual_counts = self.actual_counts.max(floor);
             }
@@ -222,13 +287,14 @@ impl SimServo {
             // capped by the torque limit, like the real output stage.
             let gravity = GRAVITY_LOAD[joint] * angle.cos();
             let cap = self.get(servos::TORQUE_LIMIT).min(self.get(servos::MAX_TORQUE)).max(0) as f64;
-            let moving_fast = dt > 0.0 && ((self.actual_counts - before) / dt).abs() > 0.1 * MAX_SPEED_COUNTS_PER_S;
+            let moving_fast = dt > 0.0 && ((self.actual_counts - before) / dt).abs() > 0.1 * max_speed;
             self.set_effort((residual * LOAD_PER_COUNT_ERROR + gravity).clamp(-cap, cap), true, dt, moving_fast);
         } else {
             if let Some(counts) = hand.and_then(|h| h(self.id, now)) {
                 self.actual_counts = counts;
             }
             self.aim = self.actual_counts;
+            self.speed = 0.0;
             self.goals.clear();
             self.set(servos::PRESENT_SPEED, 0);
             self.set(servos::MOVING, 0);
@@ -420,9 +486,9 @@ impl SimulatedServos {
         let replied_before = self.reply_queue.len();
         self.dispatch(id, instruction, params);
         let now = self.now_s();
-        let dead_time = self.profile.dead_time;
         for s in self.servos.iter_mut().filter(|s| s.torque_on()) {
-            s.note_goal(now, dead_time);
+            let joint = (s.id as usize).saturating_sub(1).min(5);
+            s.note_goal(now, self.profile.motor[joint].dead_time);
         }
         self.charge_bus_time(id, instruction, params, self.reply_queue.len() - replied_before);
         for (id, was_on) in torque_before {

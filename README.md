@@ -141,7 +141,8 @@ so101 --trace bytes.jsonl teleop --leader <port> --follower <port> \
 On the Spark, `just rig` runs teleop with both cameras and the console, taking the ports and
 camera settings from `/projects/robot.conf`; on the laptop, `just console` tunnels the console to
 http://localhost:8090 (live cameras, follower load, record and stop). Recordings go to the Spark's
-`data/logs/`.
+`data/logs/`. `just sysid` re-measures the follower for the simulator (about 8 minutes of
+scripted motion; docs/phase1.md).
 
 ## The Spark
 

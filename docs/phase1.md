@@ -146,20 +146,31 @@ facts; the fakes then carry them, so the code that handles them runs on every `j
 hardware time goes to measuring, not to finding bugs. Each hardware surprise becomes a fake's
 behaviour and a test, as servo 1's missed read after torque-on did
 (`SimulatedServos::deaf_after_torque_on`). One fake per thing, no more:
-- **`SimulatedServos` has the measured dynamics** (done 2026-11-24) instead of a separate mock
-  arm, its numbers in `ServoProfile::FOLLOWER`, each citing its measurement. Per servo, in order:
-  dead time (a goal acts 50 ms after it's written), gravity sag (`sag x cos(angle)`: 0.32° elbow,
-  0.13° wrist flex, 0.10° lift), play (a point the motor aims at, moved only when the goal pushes
-  past half the play: 0.30-0.44° on most joints, 1.74° on the elbow; it gives both the reversal
-  dead band and the half-play settling error measured), then the motor as before. Junk readings
-  from a per-servo seeded `Rng` (temperature about 1 in 500 on every servo; voltage on wrist roll
-  and the gripper only); a 12 V supply; and bus time charged per transaction (0.38 ms turnaround
-  plus 10 µs per byte), so the loop sees the bus's real cost. Physics in 1 ms sub-steps, so a test
-  jumping the clock integrates like many short waits. Faults stay separate test knobs: a silent
-  servo, one deaf after torque-on, one answering slowly every Nth read (`slow_replies`), an
-  obstacle. It speaks the protocol byte for byte, so the real driver runs in every test; a second
-  `Arm` implementation would skip that code and need keeping in sync. Tests in
-  `end_to_end.rs::measured_behaviour` state each behaviour as an outcome.
+- **`SimulatedServos` is fitted to the follower** (done 2026-11-24, `ServoProfile::FOLLOWER`). Per
+  joint: a goal acts after a dead time (38-55 ms); the motor's speed is a pull proportional to the
+  distance left (17-40/s), limited in acceleration (1,460-2,330°/s²) and capped (93°/s on the
+  gripper, its 30% torque ceiling; 226-454°/s elsewhere), so peak speed grows with step size as
+  measured (22°/s for 1°, 125 for 10°, 240 for 30°); it settles within a play band (0.19-0.46°)
+  offset by gravity (shoulder lift's follows one cosine of its angle, 0.0° tucked to 1.0°
+  stretched out; the others are flat). Plus junk readings from a seeded `Rng`, a 12 V supply, bus
+  time charged per transaction, physics in 1 ms sub-steps, and fault knobs (silent, deaf after
+  torque-on, slow every Nth read, an obstacle). Fitted on scripted runs (`tests/hardware.rs`: the
+  system-ID run, two gravity sweeps, a load map; `just sysid` records them again), checked on
+  recordings the fit never saw (the fine-motion test, both teleop episodes): median 0.1-0.44° per
+  joint, p95 0.3-1.9°; the gripper's p95 of 3.5° is grasping, which stays a fault (an obstacle),
+  not motor behaviour. The fit's data and scripts: `/projects/spikes/sysid-20261124` on the Spark;
+  `~/Downloads/so101-sim-*.png` from 2026-11-24 show it against the real follower. Its tests
+  (`end_to_end.rs::measured_behaviour`) state each behaviour as an outcome.
+  - **Known gaps.** The loaded elbow ignores small slow corrections: at the reaching pose, coming
+    down it stops up to 1.3° above a slowly moving goal, while the model's band is 0.38°. And
+    teleop recordings from 19:00-20:30 put the elbow's resting offset 0.4-1.9° from the scripted
+    runs at the same poses; unexplained, and a question about the arm rather than the simulator
+    (`replay_goals` in `tests/hardware.rs` replays a recording's goals on the follower to settle it).
+  - **Tried and not taken: a physical model** (inertia, stiffness, damping, static and kinetic
+    friction, gravity's torque from the pose). It reproduces the elbow's slow-reversal stickiness
+    and lift's ring after a step, and cuts the held-out p95 to 0.3-1.45°, but medians don't move
+    and no logic test depends on the tail; eight numbers per joint and half-millisecond steps
+    weren't worth it. The fit is in the spike folder if a test ever needs it.
 - **`SimulatedCamera` has the cameras' measured timing** (done 2026-11-24, `CameraProfile::WRIST`
   and `SCENE`): two minutes of each through V4L2 showed intervals in two clusters, about 32 and
   36 ms, a long one never followed by another (after a short: long 64% of the time on the wrist,
