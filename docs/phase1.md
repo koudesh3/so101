@@ -141,12 +141,32 @@ Takeover from the leader (Phase 4) is a mux switch.
 the same band, from the 120 Hz `JointState` stream. Follower moving more than it was told to is
 shake. Logged per tick window as a health number; no action in Phase 1.
 
-**The mock arm** (`arm/`, implements `Arm`): follows goals the way the measurements say the
-follower does: about 50 ms of dead time (more under gravity), then a first-order approach with a
-speed limit, and a reversal dead band (0.3-0.4° on most joints, 1.7° on the elbow, measured
-2026-11-24). Fault injection: stall at a position, overload flag, a joint that stops answering.
-Fast and deterministic on a replayed clock; `--sim` can switch to it. `SimulatedServos` stays for
-testing the servo driver byte for byte.
+**Fakes that behave like the rig** (decided 2026-11-24). Hardware finds facts; the fakes then
+carry them, so the code that handles them runs on every `just check` and hardware time goes to
+measuring, not to finding bugs. Each hardware surprise becomes a fake's behaviour and a test, as
+servo 1's missed read after torque-on did (`SimulatedServos::deaf_after_torque_on`).
+- **The mock arm** (`arm/`, implements `Arm`): follows goals the way the measurements say the
+  follower does: about 50 ms of dead time (more under gravity), then a first-order approach with a
+  speed limit, a reversal dead band (0.3-0.4° on most joints, 1.7° on the elbow) and the elbow's
+  sag of about 1° under gravity (measured 2026-11-24). Fault injection: stall at a position,
+  overload flag, a joint that stops answering. Fast and deterministic on a replayed clock; `--sim`
+  can switch to it. `SimulatedServos` stays for testing the servo driver byte for byte.
+- **A replay arm, with `ReplayCamera`, as the realistic fixture:** a recorded session's joint
+  states played back through the `Arm` trait at their recorded times, beside its cameras. Real
+  jitter, real camera rates (29.8 and 29.5 fps), real frame timing and real junk readings,
+  recorded once on the rig and replayed by every test of tick-to-frame pairing and, later, the
+  exporter. A few short sessions are kept in the repo as fixtures (small: wrist JPEGs dominate).
+- **Fidelity knobs on today's fakes:** `SimulatedServos` sends junk temperature and voltage
+  readings at the measured rate (about 1 in 500, one servo at a time), so the health filter runs in
+  end-to-end tests, and takes realistic bus time per transaction (status reads 1-4 ms), so the
+  loop's overrun handling sees real-ish load. `SyntheticCamera` can deliver the icSpring's
+  alternating 32.3/36.6 ms intervals and lose an occasional frame, so nothing downstream can
+  quietly assume a steady 30 fps.
+- **Not built, and why:** a physics simulator (the spec rules sim out, and today's surprises
+  (firmware timing, camera quirks, friction) wouldn't be in it), and a virtual V4L2 device (the
+  container can't load kernel modules; the V4L2-specific handling is small and unit-tested as
+  plain functions). Replaying recorded byte traces as a transport waits until a second real bus
+  incident calls for it.
 
 **Cameras** (`camera/`; done 2026-11-24), the `Camera` trait (role, nominal period, device and
 read-back settings, blocking `next_frame`), `stream` to run one on its own thread counting
@@ -242,8 +262,11 @@ A day of teleop on the real rig, a fine-motion measurement, two analysed episode
 - Safety: range, slew and stall each clip and report the right `Limit`; the most severe wins in
   `Tick.clipped`; e-stop turns torque off within one cycle; the health filter ignores single junk
   readings (temperature and voltage) and trips on real ones.
-- One conformance suite for the `Arm` trait, passed by `ServoArm` on `SimulatedServos` and by the
-  mock arm; one for the camera trait, passed by the synthetic, replay and V4L2 cameras.
+- One conformance suite for the `Arm` trait, passed by `ServoArm` on `SimulatedServos`, the mock
+  arm and the replay arm; one for the camera trait, passed by the synthetic, replay and V4L2
+  cameras (done).
+- On a recorded session (replay arm and replay cameras): every tick names the frame that was
+  latest at its time, checked against the recorded frame times.
 - Teleop end to end on both, as today's tests, plus: the session it writes reads back with every
   tick's frames and clipping.
 - On the Spark, with the real arms and cameras: a 10-minute run's tick-jitter histogram and overrun
