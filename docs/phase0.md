@@ -176,8 +176,16 @@ needs. An earlier run with the arm moved by hand only bounded it within a frame 
 smooth); the driver labels its stamps start of exposure (`ts-src-soe`), which is close but not
 exact. **Decision:** the offset is under a quarter of a frame, so the converter uses the kernel
 stamp as is for now; if Phase 5 parity needs it, subtract 10 ms. The scene camera isn't a policy
-input, so it doesn't need this check. **Re-measure with V4L2 at the 2026-11-24 settings** (12 ms
-exposure, gain 40; contract 7): a shorter exposure moves the window's centre. The spike lives at `/projects/spikes/cam-offset` on the Spark
+input, so it doesn't need this check.
+
+**Re-measured 2026-11-24 at the new settings (12 ms exposure, gain 40): exposure starts about 7 ms
+*after* the kernel stamp.** Same script and pose (the follower folded at rest, wrist flex stepped
++/-10 degrees every 2 s): best fit at `ts + 6 ms` (r 0.991) and `ts + 8 ms` (r 0.993) in two runs.
+With the 30 ms measurement above, both fit one picture: exposure *ends* about 19-22 ms after the
+stamp whatever its length, so the stamp is tied to the end of the frame, and a shorter exposure
+starts later. At 12 ms, a frame stamped `ts` shows the arm over `ts + 7` to `ts + 19 ms`, centred
+about 13 ms after `ts`. Still under half a frame; the converter keeps the stamp as is, and if
+Phase 5 parity needs it, adds 13 ms. Runs: `step-12ms-215236/`, `step-12ms-215312/`. The spike lives at `/projects/spikes/cam-offset` on the Spark
 (`step.py`, `step_analyze.py`, `step_fit.py`, runs `step-134517/` and `roll-134728/`; the hand-moved run is `run-133941/`).
 
 **Measured: the follower takes about 50 ms to start moving after a goal write, more under load.**

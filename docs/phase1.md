@@ -212,7 +212,8 @@ A day of teleop on the real rig, a fine-motion measurement, two analysed episode
 - **Wrist camera settings changed** (contract 7): white balance fixed at 3500 K (auto turned the
   warm room orange-red) and exposure cut from 30 ms to 12 ms with gain 40, because at 30 ms frames
   lost a third of their sharpness even at slow arm speeds (3-15°/s) and two thirds on fast moves.
-  The 10 ms exposure-to-stamp offset (phase0.md) was measured at 30 ms; re-measure it with V4L2.
+  The exposure-to-stamp offset changes with it: re-measured the same day, exposure now starts
+  about 7 ms after the kernel stamp (it was 10 ms before it at 30 ms; phase0.md).
 - **ffmpeg's `mjpeg` input ignores arrival times** and stamps a fixed 25 fps, so the first H.264
   scene video ran 186 s for 158 s of recording. `image2pipe` keeps arrival times. The CSV beside
   each scene video is the source of truth for its frame times.
@@ -256,7 +257,8 @@ e-stop), and a tick-jitter histogram from a 10-minute run. Plus: teleop runs on 
 real arms and cameras and writes a session (MCAP with the wrist camera, scene video beside it) that
 passes the contract 1 Python check (a 10 s recording with the real cameras and simulated arms
 passes since 2026-11-24; ticks don't reference frames yet); 20 starts in a row with no
-first-cycle error.
+first-cycle error (done 2026-11-24 on the real follower, `tests/hardware.rs`, with the gains read
+back matching `data/gains.json` on every servo).
 
 ## Out of scope
 
