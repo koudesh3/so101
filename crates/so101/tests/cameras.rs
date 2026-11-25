@@ -38,6 +38,15 @@ pub fn conforms(camera: &mut dyn Camera, n: usize) -> Continuity {
             frame.jpeg.len()
         );
         if let Some(prev) = &last {
+            if frame.sequence != prev.sequence + 1 {
+                println!(
+                    "gap: frame {} after {} ({:.1} ms later, frame {} of {n})",
+                    frame.sequence,
+                    prev.sequence,
+                    frame.t_capture.since(prev.t_capture).as_secs_f64() * 1e3,
+                    continuity.frames + 1
+                );
+            }
             assert!(frame.t_capture > prev.t_capture, "capture times only go forward");
             assert!(frame.sequence > prev.sequence, "sequence numbers only go forward");
         }
