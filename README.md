@@ -33,7 +33,7 @@ data/            what isn't code
 docs/
   part2-spec.md    the plan for Part 2
   phase0.md        the contracts: what each part can rely on, and the log format
-  phase1.md        the Phase 1 design: the control loop's nested rates, on fakes
+  phase1.md        the Phase 1 design: the control loop's nested rates, on fakes and the real rig
   devlog/          dated entries: what was tried, how, and what it showed
 justfile         the commands for the whole repo; mise.toml pins the tools they need
 ```
@@ -96,11 +96,12 @@ parts arrive with the phase that needs them, not before, each in its thing's fol
 
 - Phase 0 is built: the contracts and the session log ([phase0.md](docs/phase0.md))
 - Phase 1: the control loop runs on the arm's trait, with a mock arm beside the real one; the
-  safety wrapper, target mux and action queue; teleop moves into it
+  safety wrapper, target mux and action queue; teleop moves into it (done: teleop records
+  sessions from its console); V4L2 cameras with kernel timestamps, moved up from Phase 4
 - Phase 2: the trained ACT policy runs with ONNX Runtime, in `policy/`
 - Phase 3: skills, checks, the step runner and the Hanoi sequencer
-- Phase 4: USB cameras in `camera/`, and a PyO3 crate so LeRobot records and trains through this
-  driver
+- Phase 4: a PyO3 crate so LeRobot records and trains through this driver, and the exporter from
+  sessions to LeRobot datasets
 - `ml/` grows training, ONNX export, checkpoint probes and parity tests
 
 ## Use
@@ -125,6 +126,11 @@ so101 --trace bytes.jsonl teleop --leader <port> --follower <port> \
 
 `just teleop` runs the last of these with the files in `data/calibration/`, tracing to `data/traces/`, taking the ports from
 `LEADER` and `FOLLOWER`.
+
+On the Spark, `just rig` runs teleop with both cameras and the console, taking the ports and
+camera settings from `/projects/robot.conf`; on the laptop, `just console` tunnels the console to
+http://localhost:8090 (live cameras, follower load, record and stop). Recordings go to the Spark's
+`data/logs/`.
 
 ## The Spark
 

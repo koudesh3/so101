@@ -1,11 +1,13 @@
-# Phase 1 design: the control loop on fakes
+# Phase 1 design: the control loop, on fakes and the real rig
 
-Status: design, 2026-11-23. Implements Phase 1 of [part2-spec.md](part2-spec.md), on the contracts
-of [phase0.md](phase0.md). Names follow the glossary in the [README](../README.md).
+Status: design 2026-11-23; revised 2026-11-24 after a day of teleop, recording and two analysed
+episodes on the real arms (see "What 2026-11-24 changed"). Implements Phase 1 of
+[part2-spec.md](part2-spec.md), on the contracts of [phase0.md](phase0.md). Names follow the
+glossary in the [README](../README.md).
 
 Phase 1 builds the loop that every later phase runs inside: one loop for teleop, scripts and
 policies, at fixed rates, with safety in it and every decision recorded. It runs on a mock arm and
-replayed or synthetic cameras, so it needs no hardware, and on the real arms unchanged.
+synthetic or replayed cameras, so it needs no hardware, and on the real arms and cameras unchanged.
 
 ## The loops
 
@@ -27,7 +29,7 @@ and only its gains are (contract 8).
 **Rules.**
 1. **A slower loop never blocks a faster one.** Inference runs on its own thread and hands chunks
    to the action queue; the tick takes whatever is queued and never waits. Checks on frames
-   (Phase 3) work the same way.
+   (Phase 3) work the same way, and so do cameras, the recorder and the console.
 2. **Each loop talks only to its neighbours.** The tick never sees servos (the `Arm` trait is the
    boundary, enforced by `just check`); the sequencer never sees ticks.
 3. **Safety lives at the fastest loop that can see the danger.** Stall holds and the slew limit
@@ -51,37 +53,62 @@ and only its gains are (contract 8).
   overlapping chunks. The default stays the spec's: play `n_action_steps` of each chunk, ensembling
   off, as `lerobot-eval` does.
 - **`Tick.clipped` covers its four cycles:** a joint is listed if any of its cycles was clipped,
-  with the most severe reason (`Stall`, then `Step`, then `Range`).
+  with the most severe reason (`Stall`, then `Collision`, then `Step`, then `Range`).
+- **Real V4L2 capture moves into Phase 1** (decided 2026-11-24, from Phase 4). Teleop already
+  records real cameras, and demos are about to be recorded for training; capture through ffmpeg
+  can't give the kernel's capture timestamps or frame numbers that contract 3 requires. The camera
+  trait arrives with three implementations: V4L2, synthetic and replay. `FfmpegCamera` is retired
+  once V4L2 lands.
+- **The scene camera is stored beside the session, not in it** (decided 2026-11-24): an H.264 MKV
+  plus a CSV of each frame's sequence and times on the session clock, next to the MCAP. The wrist
+  camera, the only policy input, stays in the MCAP as the camera's own JPEGs. Scene JPEGs at
+  1280x720 are about 22 GB an hour; H.264 is about 1.5 GB. Contract 1 and the Python check change
+  to match (phase0.md).
+- **Training reads `Tick.action`**, the target as sent, after every limit (contract 2). The
+  exporter (Phase 4) takes it from there, never from the leader's pose.
 
 ## What gets built
 
 All in `crates/so101/src/control/` unless noted. Every part works through the `Arm` trait, so it
 runs on `ServoArm` and the mock arm alike.
 
-**Already in place** (the refactor before Phase 1, 2026-11-23):
+**Already in place.** From the refactor before Phase 1 (2026-11-23):
 - **One `Clock`.** The grid, `ServoArm`'s timestamps, the simulated servos and the loop all take
-  their time from it. Tests run everything on one stepped `ReplayClock`, so they're exact: the two
-  timing tests that flaked are gone, and the end-to-end suite runs in 0.09 s.
+  their time from it. Tests run everything on one stepped `ReplayClock`, so they're exact.
 - **The `Arm` trait speaks poses.** `command(target)` returns `Sent`: what was written and, per
   joint, which `Limit` changed it. `ServoArm` owns its protections in the counts they were tuned
-  in: range clamp, stall hold, and the step limit (LeRobot keeps `max_relative_target` in its robot
-  driver too). The loop never sees counts, faults or calibration.
+  in. The loop never sees counts, faults or calibration.
 - **`run` and `Pilot`.** `control::run` drives a follower on the grid: each cycle it reads the
-  follower, asks the `Pilot` for a target, commands it, and publishes the follower's
-  `JointState`, whatever the pilot observed, the `JointTarget` and the `Tick` on the `EventBus`.
-  `Teleop` is the first pilot: the leader arm and the lead predictor. The CLI and the tests
-  subscribe to the bus; the session recorder will too.
-- **The grid's overrun rule** (contract 5): work that runs past the next grid point skips it, so a
-  skipped cycle is a gap in `JointState`'s sequence. `RunStats` counts skipped cycles and cycles that
-  started more than 1 ms late, with the worst lateness: the 10-minute Hanoi run had one cycle 4.5 ms
-  late (an OS wake-up), and 99% within 0.27 ms of the grid.
+  follower (and, with `read_actuators`, every servo's load, voltage, temperature and current),
+  asks the `Pilot` for a target, commands it, and publishes `JointState`, `ActuatorStatus`,
+  whatever the pilot observed, the `JointTarget` and the `Tick` on the `EventBus`. `Teleop` is the
+  first pilot.
+- **The grid's overrun rule** (contract 5), with lateness counted: `RunStats` counts skipped cycles
+  and cycles that started more than 1 ms late. `sleep_until` spins the last 1 ms, and the loop
+  runs at `SCHED_FIFO` 40 on the Spark.
+
+From 2026-11-24:
+- **Teleop records sessions.** Teleop owns both cameras and serves the console on 127.0.0.1:8090
+  (`console.rs`; `just console` tunnels it to the laptop): both live views (the wrist view turned
+  90° clockwise to match its mounting; recordings keep the camera's orientation), the follower's
+  per-joint load, a contact tone, and record/stop. A recording is `data/logs/<date-time>.mcap`
+  (every event and the wrist camera, through `session::Recorder`) with the scene camera's
+  `-scene.mkv` and `-scene.csv` beside it. The header carries the commit, teleop's settings, both
+  calibration files and each camera's device and read-back settings. `just rig` starts it all on
+  the Spark from `/projects/robot.conf`.
+- **Cameras through ffmpeg** (`camera/ffmpeg.rs`, interim): MJPEG off the camera, copied, split
+  into JPEGs. Its frames are stamped on arrival (capture time = receive time) and numbered by us,
+  which contract 3 doesn't allow; V4L2 replaces it (below).
+- **Gripper torque 30%** by default (it was 50%; see "What 2026-11-24 changed").
 
 Phase 1 builds on that:
 
 **Ticks every 4th cycle, with stepping** (30 Hz): on a tick, take the latest `JointState` and each
-camera's latest `Frame`, and ask the pilot for a target. On the cycles between, command a goal
-stepped linearly from the previous target toward it. `Tick.clipped` collects its cycles' limits,
-most severe first.
+camera's latest `Frame`, record their identities in `Tick.wrist` and `Tick.scene`, and ask the
+pilot for a target. On the cycles between, command a goal stepped linearly from the previous
+target toward it. `Tick.clipped` collects its cycles' limits, most severe first. Today every cycle
+writes a `Tick` with no frames referenced, so an exporter would have to pair frames by time
+(contract 2 forbids it).
 
 **Pilots**, one interface (`Pilot`): given the follower's state, a target `Pose` and what was
 observed to decide it.
@@ -103,11 +130,11 @@ Takeover from the leader (Phase 4) is a mux switch.
 |---|---|---|
 | Joint range | `ServoArm`, every write (exists) | clamp to the calibrated range (`Limit::Range`) |
 | Step limit | `ServoArm`, every write (exists) | limit each goal's step from the last (`Limit::Step`) |
-| Stall or overload | `ServoArm`, every write (exists) | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`) |
-| Drive ceiling | servo firmware, set at connect (exists) | Max_Torque per joint at about 1.2x the most Hanoi moves used (pan 90%, lift 80%, elbow 70%, wrist flex 80%, roll 70%, gripper 50%); in EEPROM so a brownout reboot keeps it |
-| Wrist camera vs arm | `ServoArm`, every write (exists) | a goal that brings the camera within 10 mm of the arm, and closer than the last goal, keeps elbow, wrist flex and wrist roll where they were (`Limit::Collision`). Clearance comes from `data/camera_clearance.json`, precomputed from the SO-101 model by `tools/camera_clearance.py`; it blocks both measured bumps and 0.2% of the Hanoi run (three moments the follower was being held back). Shoulder and base contact isn't covered |
-| Supply current | `ServoArm`, every write (exists) | summed follower current over 1.5 A for 50 ms cuts the step limit to 10 counts until 250 ms under (`Limit::Step`); the 12 V 2 A supply browned out once at full speed |
-| Actuator health | cycle | act on the median of each joint's last 5 temperature and voltage readings (single readings are sometimes junk); count impossible values (contract 8) |
+| Stall or overload | `ServoArm`, every write (exists) | hold at the contact point; the gripper keeps a small squeeze (`Limit::Stall`). On the gripper this is now the grip-force regulator: in the 2026-11-24 episode it held every grasp (6 holds, 1.5-5 s) at about 21% load instead of the 30% ceiling, and released as soon as the leader opened past about 7% |
+| Drive ceiling | servo firmware, set at connect (exists) | Max_Torque per joint at about 1.2x the most Hanoi moves used (pan 90%, lift 80%, elbow 70%, wrist flex 80%, roll 70%) and the gripper at 30%; in EEPROM so a brownout reboot keeps it |
+| Wrist camera vs arm | `ServoArm`, every write (exists) | a goal that brings the camera within 10 mm of the arm, and closer than the last goal, keeps elbow, wrist flex and wrist roll where they were (`Limit::Collision`). Clearance comes from `data/camera_clearance.json`, precomputed from the SO-101 model by `tools/camera_clearance.py`. Shoulder and base contact isn't covered |
+| Supply current | `ServoArm`, every write (exists) | summed follower current over 1.5 A for 50 ms cuts the step limit to 10 counts until 250 ms under (`Limit::Step`). Teleop with the 30% gripper peaks at 0.67 A |
+| Actuator health | cycle | act on the median of each joint's last 5 temperature and voltage readings; count impossible values (contract 8). Both kinds of junk are real: on 2026-11-24 about 1 in 500 temperature readings was 45-150 C in a steady 34-39 C band (5x the earlier estimate), and the wrist roll and gripper servos alone reported single-sample voltages of 10.2-11.2 V at near-zero current, never two servos together, while the others read 11.8-11.9 V. The console's power line and status show the median too, not the minimum |
 | E-stop | cycle | torque off on the next cycle; the session records why |
 | Follower failing | cycle (exists) | after 0.5 s of failed cycles, torque off and stop |
 
@@ -117,21 +144,68 @@ shake. Logged per tick window as a health number; no action in Phase 1.
 
 **The mock arm** (`arm/`, implements `Arm`): follows goals the way the measurements say the
 follower does: about 50 ms of dead time (more under gravity), then a first-order approach with a
-speed limit. Fault injection: stall at a position, overload flag, a joint that stops answering.
+speed limit, and a reversal dead band (0.3-0.4° on most joints, 1.7° on the elbow, measured
+2026-11-24). Fault injection: stall at a position, overload flag, a joint that stops answering.
 Fast and deterministic on a replayed clock; `--sim` can switch to it. `SimulatedServos` stays for
 testing the servo driver byte for byte.
 
-**Cameras on fakes:** a synthetic camera (generated frames with exact times) and a replay camera
-(frames from a session or a LeRobot dataset video, at their recorded times). The camera trait
-arrives with them, in `camera/`.
+**Cameras** (`camera/`), one trait, three implementations:
+- **V4L2** (moved from Phase 4): the camera's MJPEG through the kernel's buffers, with each
+  frame's kernel timestamp as `t_capture` (start of exposure, contract 3), our receive time as
+  `t_receive`, and the kernel's frame number as `sequence`, so a gap is a real drop. Applies and
+  reads back the settings from robot.conf (contract 7).
+- **Synthetic:** generated frames with exact times.
+- **Replay:** frames from a session or a LeRobot dataset video, at their recorded times.
 
-**The session, in place of Part 1's prints:** teleop publishes to the `EventBus`, the recorder
-writes the session, and the header is built in one place, with the calibration files and hashes
-(contract 6), each camera's device and read-back settings (contract 7), and the gains read back
-from every servo (contract 8). The gains come from one file in `data/`, applied on every start.
+**The session:** the header gains the gain and limit registers read back from every servo
+(contract 8), applied on every start from one gains file in `data/`, so the `act` wrapper and our
+runtime agree (P 32, I 0, D 32, per-joint Max_Torque, gripper 30%). The recorder keeps the scene
+camera beside the MCAP, with its CSV on the session clock.
 
-**Smaller changes:** `JointState.t` is the midpoint of request and reply, not the reply; teleop
-defaults to 120 Hz and the gripper to LeRobot's 50% torque.
+**Smaller changes:**
+- `JointState.t` is the midpoint of request and reply, not the reply.
+- The startup error: the first cycle after connect sometimes fails ("reply from servo 2, expected
+  1", seen in several runs on 2026-11-23 and 24). The likely cause is the EEPROM writes in
+  `configure_follower_with` leaving servos busy; wait for them, or read back, before the first
+  cycle.
+
+## What 2026-11-24 changed
+
+A day of teleop on the real rig, a fine-motion measurement, two analysed episodes
+(`20261124-200321`, 203 s, and `20261124-202319`, 158 s) and the first recordings.
+
+- **Gripper force was the cause of discs flying, and 30% fixes it.** At 50% the gripper flung
+  discs. In every grasp the operator closes the leader against its stop (0.5%) while the jaw stops
+  at the disc (3.5-6%), so grip force is set by the torque ceiling, not the hand. At 30% with the
+  stall hold, nothing flew in the second episode. The one ring that flew in the first left
+  because it snagged, not because of the squeeze: the jaw opened and the shoulder lifted in the
+  same 0.1 s, the lift's load jumped from 6% to 22%, and the ring sprang off the peg.
+- **Load alone doesn't mean holding.** A fast open or close of an empty gripper also hits the
+  ceiling (the 30% jaw trails the leader by 0.2-0.3 s). A holding check (Phase 3) uses the jaw's
+  gap to its goal and the stall hold, not load.
+- **Lag in real use is 60-80 ms** from leader to follower on every joint (cross-correlation over
+  whole episodes), about twice the 33-42 ms of the slow-move test.
+- **Reversal dead band and elbow hysteresis.** Slow single-joint moves settle within 0.1-0.2° of
+  the goal, but a reversal waits 0.3-0.4° (most joints) or 1.7° (elbow, which also sags about 1°
+  under gravity) before following. The servos' own dead-zone registers are 1 count (0.09°); this
+  is friction against P 32. Phase 3's "arrived" tolerance of 0.7° is too tight for the elbow.
+- **Wrist camera settings changed** (contract 7): white balance fixed at 3500 K (auto turned the
+  warm room orange-red) and exposure cut from 30 ms to 12 ms with gain 40, because at 30 ms frames
+  lost a third of their sharpness even at slow arm speeds (3-15°/s) and two thirds on fast moves.
+  The 10 ms exposure-to-stamp offset (phase0.md) was measured at 30 ms; re-measure it with V4L2.
+- **ffmpeg's `mjpeg` input ignores arrival times** and stamps a fixed 25 fps, so the first H.264
+  scene video ran 186 s for 158 s of recording. `image2pipe` keeps arrival times. The CSV beside
+  each scene video is the source of truth for its frame times.
+- **Timing with cameras, recording and the console all running:** 0 skipped cycles and 0 errors
+  per session; a few cycles per run start 3-7 ms late, and the worst bus work reaches 12-15 ms. The
+  exit criterion's 10-minute histogram is taken with all of them on.
+- **Tried and removed: fine mode** (follower motion scaled to a third of the leader's, switched by
+  a key or by opening the gripper fully). It helped but wasn't the problem; the grip torque was.
+- **Contact the arm can't see.** Pressing the gripper into the base doesn't show on the console's
+  raw load bars, which also rise on fast moves and under gravity. A free-motion load model
+  (gravity and acceleration, fitted from logged telemetry) would show only unexplained load; it
+  belongs with the Phase 3 checks, not the loop.
+- **Recording footprint:** the MCAP is 95% wrist JPEGs (35 KB each at gain 40, about 4 GB an hour).
 
 ## Tests (written first)
 
@@ -139,28 +213,34 @@ defaults to 120 Hz and the gripper to LeRobot's 50% torque.
   as a sequence gap; ticks fall on every 4th cycle.
 - Stepping: four cycles move the goal in equal steps from one target to the next; a skipped cycle
   doesn't change where the next tick's target lands.
+- Ticks reference frames: each `Tick` names the latest frame of each camera at its time, from a
+  synthetic camera with known times.
 - Action queue: `n_action_steps` of each chunk, in order; the next chunk is requested in time; a
   late chunk holds the last target; ensembling, when on, matches LeRobot's weights.
 - Mux: one active source; a switch starts from the present pose; `Tick.source` changes on that tick.
 - Safety: range, slew and stall each clip and report the right `Limit`; the most severe wins in
   `Tick.clipped`; e-stop turns torque off within one cycle; the health filter ignores single junk
-  readings and trips on real ones.
+  readings (temperature and voltage) and trips on real ones.
 - One conformance suite for the `Arm` trait, passed by `ServoArm` on `SimulatedServos` and by the
-  mock arm.
+  mock arm; one for the camera trait, passed by the synthetic, replay and V4L2 cameras.
 - Teleop end to end on both, as today's tests, plus: the session it writes reads back with every
   tick's frames and clipping.
-- On the Spark, with the real arms: a 10-minute run's tick-jitter histogram and overrun count.
+- On the Spark, with the real arms and cameras: a 10-minute run's tick-jitter histogram and overrun
+  count, with both cameras streaming and a recording running; the V4L2 camera's frames carry
+  kernel stamps before their receive times and no sequence gaps.
 
 ## Exit criteria
 
 From the spec: unit tests on the action queue and the safety checks (joint limits, rate limits,
 e-stop), and a tick-jitter histogram from a 10-minute run. Plus: teleop runs on the new loop on the
-real arms and writes a session that passes the contract 1 Python check; the flaky timing tests are
-gone.
+real arms and cameras and writes a session (MCAP with the wrist camera, scene video beside it) that
+passes the contract 1 Python check, which the 2026-11-24 recordings fail (frames stamped on
+arrival, ticks without frames); the startup error is gone.
 
 ## Out of scope
 
-Real cameras (Phase 4), the policy itself (Phase 2; Phase 1 feeds the action queue test chunks),
-skills, checks and the sequencer (Phase 3), the LeRobot plugin (Phase 4). The byte trace stays a
+The policy itself (Phase 2; Phase 1 feeds the action queue test chunks), skills, checks and the
+sequencer (Phase 3), the LeRobot plugin and the exporter to LeRobot datasets (Phase 4), episode
+tags and per-skill segments in recordings (Phase 4, with the exporter). The byte trace stays a
 separate file; moving it into the session as an optional channel can wait until something needs
 the two together.

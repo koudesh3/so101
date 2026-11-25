@@ -23,6 +23,10 @@ names come last, as the implementation of those promises.
 - A session log is one MCAP file. MCAP is the envelope (records, chunks, index); each message
   inside is protobuf; a camera frame's picture is the camera's own JPEG bytes inside a protobuf
   message.
+- **Except the scene camera** (decided 2026-11-24): it isn't a policy input, and its 1280x720 JPEGs
+  would be about 22 GB an hour, so it's stored beside the MCAP as `<name>-scene.mkv` (H.264) with
+  `<name>-scene.csv` giving each frame's sequence and times on the session clock. The header names
+  the files; the CSV, not the video's own timestamps, is the source of truth for frame times.
 - Every file embeds the exact schema each message was written with, so Python and Foxglove decode
   any log, old or new, without generated code.
 - The `.proto` files in `proto` (package `so101.v1`) are the single definition of every logged
@@ -170,7 +174,8 @@ needs. An earlier run with the arm moved by hand only bounded it within a frame 
 smooth); the driver labels its stamps start of exposure (`ts-src-soe`), which is close but not
 exact. **Decision:** the offset is under a quarter of a frame, so the converter uses the kernel
 stamp as is for now; if Phase 5 parity needs it, subtract 10 ms. The scene camera isn't a policy
-input, so it doesn't need this check. The spike lives at `/projects/spikes/cam-offset` on the Spark
+input, so it doesn't need this check. **Re-measure with V4L2 at the 2026-11-24 settings** (12 ms
+exposure, gain 40; contract 7): a shorter exposure moves the window's centre. The spike lives at `/projects/spikes/cam-offset` on the Spark
 (`step.py`, `step_analyze.py`, `step_fit.py`, runs `step-134517/` and `roll-134728/`; the hand-moved run is `run-133941/`).
 
 **Measured: the follower takes about 50 ms to start moving after a goal write, more under load.**
@@ -226,13 +231,18 @@ re-assembly), and older logs would describe slightly wrong poses relative to the
 ### 7. A policy runs at the camera settings it was trained at
 
 The wrist camera (the icSpring) forgets its settings when unplugged; `act record` re-applies them, and the runtime must
-too, or a policy trained at one exposure runs at another.
+too, or a policy trained at one exposure runs at another. Its settings in robot.conf since
+2026-11-24: manual exposure 12 ms (`exposure_time_absolute=120`), gain 40, white balance fixed at
+3500 K. Auto white balance turned the warm room orange-red; at 30 ms exposure the frames lost a
+third of their sharpness even at slow arm speeds. Anything recorded before that runs at 30 ms,
+gain 0 or 16, auto white balance.
 - Every log's header stores, per camera role, **the physical device** (its `/dev/v4l/by-id/` path
   or serial) and **the settings read back from it** at session start, in recordings and runs
   alike. Tying settings to the device makes a swapped wrist/scene config visible instead of
   silently applying one camera's settings to the other.
-- The runtime refuses to start if a camera's read-back settings differ from the training data's
-  (Phase 4, when the runtime first drives real cameras).
+- The runtime refuses to start a policy if a camera's read-back settings differ from its training
+  data's (when a policy first runs on the real cameras; Phase 1 brings the V4L2 camera that
+  applies and reads them back).
 
 ### 8. A policy runs at the servo gains it was trained at
 
@@ -241,11 +251,15 @@ connects writes its own: Part 1's teleop writes P 32; LeRobot's follower writes 
 every connect, and caps the gripper at Max_Torque 500, Protection_Current 250, Overload_Torque 25
 (ours: 800). So the follower's stiffness depends on which tool ran last, and nothing records it.
 - **One file in the repo holds the follower's gains and limits**: P 32, I 0, D 32 (measured
-  above), and the gripper at LeRobot's limits (Max_Torque 500, Protection_Current 250,
-  Overload_Torque 25), decided 2026-11-23. 50% closes more slowly than Part 1's 80% but heats less
-  while holding a disc through a transit, and matches anything recorded with `act` before Phase 4.
-  Revisit only if a gripper test with the real discs shows slipping. Our
-  runtime applies it on every start and reads it back; `act` passes the same values to LeRobot
+  above), Max_Torque per joint at about 1.2x what Hanoi moves used (pan 900, lift 800, elbow 700,
+  wrist flex 800, roll 700), and the gripper at Max_Torque 300, Protection_Current 250,
+  Overload_Torque 25. **Revised 2026-11-24:** the gripper was decided at LeRobot's 500 (50%) on
+  2026-11-23, to revisit if real discs slipped; instead they flew. Teleop closes the leader against
+  its stop in every grasp, so grip force is the torque ceiling; at 300, with the stall hold
+  regulating the squeeze (about 21% load while holding), nothing flew in a 158 s episode. Anything
+  recorded with `act` uses LeRobot's 500 unless `act` passes 300 too. Not built yet: today the
+  values are constants in `servo_arm.rs` and CLI defaults. Our runtime will apply the file on every
+  start and read it back; `act` passes the same values to LeRobot
   (`--robot.position_p_coefficient=32` and the I and D equivalents).
 - **Every log's header stores the gain and limit registers read back from each servo** at session
   start, like calibration and camera settings.
@@ -312,10 +326,12 @@ episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase
 
 ## Where logs come from
 
-The arms and cameras are on the Spark, so real sessions are logged there, into `/projects/logs/`.
-The laptop logs simulated runs only, into `data/logs/`, with synthetic or replayed cameras; the
-header's host and clock source keep the two from being confused. Names follow
-`<kind>-<YYYYMMDD-HHMMSS>.mcap`, so nothing is ever overwritten.
+The arms and cameras are on the Spark, so real sessions are logged there, into the checkout's
+`data/logs/` (`/projects/so101/data/logs/`, not in git; teleop's record button writes
+`<YYYYMMDD-HHMMSS>.mcap` with the scene camera's `-scene.mkv` and `-scene.csv` beside it). The
+laptop logs simulated runs only, with synthetic or replayed cameras; the header's host and clock
+source keep the two from being confused. Names carry the date and time, and the recorder refuses
+to overwrite a file.
 
 ## Implementation
 
