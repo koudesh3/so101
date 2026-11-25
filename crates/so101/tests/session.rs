@@ -334,6 +334,7 @@ fn python_reads_a_session_without_generated_code() {
     let out = std::process::Command::new("uv")
         .args(["run", "-q", script])
         .arg(&path)
+        .arg("--sample")
         .output()
         .expect("uv not found: `mise install` provides it");
     let _ = std::fs::remove_file(&path);
