@@ -79,8 +79,9 @@ struct Active {
     scene: Option<SceneVideo>,
 }
 
-// The scene camera's frames, copied into an MKV by ffmpeg (timed by arrival), and each frame's
-// receive time on the session's clock in a CSV.
+// The scene camera's frames, compressed into an MKV by ffmpeg (H.264, timed by arrival; the
+// camera's MJPEG copied straight is about 22 GB an hour at 1280x720), and each frame's receive
+// time on the session's clock in a CSV.
 struct SceneVideo {
     ffmpeg: Child,
     stdin: Option<ChildStdin>,
@@ -92,7 +93,9 @@ impl SceneVideo {
     fn start(video: &PathBuf, times: &PathBuf) -> std::io::Result<Self> {
         let mut ffmpeg = Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1"])
-            .args(["-f", "mjpeg", "-i", "-", "-c:v", "copy"])
+            .args([
+                "-f", "mjpeg", "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+            ])
             .arg(video)
             .stdin(Stdio::piped())
             .spawn()?;
