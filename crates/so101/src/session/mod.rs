@@ -3,6 +3,7 @@
 
 mod reader;
 mod recorder;
+mod replay_camera;
 mod wire;
 
 use std::collections::BTreeMap;
@@ -14,6 +15,7 @@ use crate::control::Event;
 
 pub use reader::{recover, replay, Drop, DropKind, RecoverSummary};
 pub use recorder::{RecordSummary, Recorder, RecorderOptions};
+pub use replay_camera::ReplayCamera;
 
 /// Embedded in every MCAP schema record, so any log decodes without generated code.
 pub const DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptors.binpb"));

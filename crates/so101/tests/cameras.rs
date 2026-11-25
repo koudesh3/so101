@@ -4,8 +4,12 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use std::io::Cursor;
+
 use so101::camera::{stream, Camera, CameraRole, Continuity, LatestFrame, SyntheticCamera};
 use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
+use so101::control::{Event, EventBus};
+use so101::session::{CameraInfo, Header, Recorder, RecorderOptions, ReplayCamera, Session};
 
 /// Pulls `n` frames and checks each against contract 3; returns what it counted.
 pub fn conforms(camera: &mut dyn Camera, n: usize) -> Continuity {
@@ -82,4 +86,53 @@ fn a_streamed_camera_feeds_its_latest_frame_slot_until_stopped() {
     assert_eq!(stats.continuity.missing, 0);
     let latest = slot.get().unwrap();
     assert_eq!(u64::from(latest.id.sequence) + 1, stats.continuity.frames, "the slot holds the last frame");
+}
+
+/// A session holding `n` synthetic wrist frames (one of them lost), written and read back.
+fn recorded_wrist(n: usize) -> (Session, Vec<so101::camera::Frame>) {
+    let clock = stepped();
+    let mut header = Header::now();
+    header.cameras.insert(
+        "wrist".into(),
+        CameraInfo { device: "/dev/v4l/by-id/wrist".into(), settings: "exposure_time_absolute=120".into() },
+    );
+    let recorder =
+        Recorder::start(Cursor::new(Vec::new()), &header, &[], clock.clone(), RecorderOptions::default()).unwrap();
+    let bus = EventBus::new();
+    bus.attach(recorder.sink());
+    let mut camera = SyntheticCamera::new(CameraRole::Wrist, clock).losing(&[3]);
+    let frames: Vec<_> = (0..n).map(|_| camera.next_frame().unwrap()).collect();
+    for f in &frames {
+        bus.publish(Event::frame(f.clone()));
+    }
+    let (out, _) = recorder.finish().unwrap();
+    (Session::from_bytes(&out.into_inner()).unwrap(), frames)
+}
+
+#[test]
+fn the_replay_camera_conforms_and_keeps_what_was_recorded() {
+    let (session, recorded) = recorded_wrist(40);
+    let clock = stepped();
+    let mut camera = ReplayCamera::new(&session, CameraRole::Wrist, clock.clone()).unwrap();
+    assert_eq!(camera.describe().device, "replay of /dev/v4l/by-id/wrist");
+    assert_eq!(camera.describe().settings, "exposure_time_absolute=120", "the recorded settings travel along");
+    let c = conforms(&mut camera, 40);
+    assert_eq!((c.missing, c.long_intervals), (1, 1), "the recording's loss replays as a loss");
+    let mut again = ReplayCamera::new(&session, CameraRole::Wrist, stepped()).unwrap();
+    for original in &recorded {
+        let replayed = again.next_frame().unwrap();
+        assert_eq!((replayed.sequence, &replayed.jpeg), (original.sequence, &original.jpeg));
+        assert_eq!(
+            replayed.t_receive.0 - replayed.t_capture.0,
+            original.t_receive.0 - original.t_capture.0,
+            "staleness is kept"
+        );
+    }
+    assert!(matches!(again.next_frame(), Err(so101::camera::Error::Ended)));
+}
+
+#[test]
+fn a_role_the_session_never_recorded_has_no_replay_camera() {
+    let (session, _) = recorded_wrist(5);
+    assert!(ReplayCamera::new(&session, CameraRole::Scene, stepped()).is_none());
 }
