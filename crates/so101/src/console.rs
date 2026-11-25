@@ -15,8 +15,8 @@ use std::time::Instant;
 use bytes::Bytes;
 use so101::arm::{ActuatorStatus, Joint, Limit, JOINT_COUNT};
 use so101::camera::Frame;
-use so101::clock::Clock;
-use so101::control::{Event, Health, Sink};
+use so101::clock::{Clock, Timestamp};
+use so101::control::{Event, Health, Message, Sink};
 use so101::session::{Attachment, Header, Recorder, RecorderOptions};
 
 use crate::scene_video::{self, SceneRaw};
@@ -69,11 +69,19 @@ pub struct RecordingSetup {
 
 /// Starts and stops recordings while teleop runs. Attach it to the bus once: it passes events to
 /// the open recording's MCAP, if there is one.
+///
+/// A recording starts clean: every tick in it names frames that are in it. Between recordings it
+/// keeps each camera's newest frame and writes it first when one starts (the first ticks decide
+/// on it), and ticks decided before the start are left out, as their follower state is.
 pub struct Recording {
     setup: RecordingSetup,
     active: Mutex<Option<Active>>,
-    sink: RwLock<Option<Arc<dyn Sink>>>,
+    // The open recording's MCAP, and when it started. Taken for writing only to start or stop.
+    sink: RwLock<Option<(Arc<dyn Sink>, Timestamp)>>,
     last: Mutex<Option<String>>,
+    // Each camera's newest frame while nothing records.
+    idle_wrist: Mutex<Option<Event>>,
+    idle_scene: Mutex<Option<Frame>>,
 }
 
 struct Active {
@@ -87,7 +95,14 @@ struct Active {
 
 impl Recording {
     pub fn new(setup: RecordingSetup) -> Self {
-        Self { setup, active: Mutex::new(None), sink: RwLock::new(None), last: Mutex::new(None) }
+        Self {
+            setup,
+            active: Mutex::new(None),
+            sink: RwLock::new(None),
+            last: Mutex::new(None),
+            idle_wrist: Mutex::new(None),
+            idle_scene: Mutex::new(None),
+        }
     }
 
     pub fn is_recording(&self) -> bool {
@@ -114,11 +129,23 @@ impl Recording {
         )
         .map_err(|e| e.to_string())?;
         let prefix = self.setup.dir.join(&name);
-        let scene = match self.setup.scene_video {
+        let mut scene = match self.setup.scene_video {
             true => Some(SceneRaw::create(&prefix).map_err(|e| e.to_string())?),
             false => None,
         };
-        *self.sink.write().expect("sink") = Some(recorder.sink());
+        // Holding `active` keeps scene frames out until the held one is written; holding the sink
+        // for writing does the same for events, so nothing lands between the held frame and the
+        // ones after it.
+        if let (Some(raw), Some(frame)) = (scene.as_mut(), self.idle_scene.lock().expect("idle").take()) {
+            raw.add(&frame).map_err(|e| e.to_string())?;
+        }
+        let mut sink = self.sink.write().expect("sink");
+        let mcap = recorder.sink();
+        if let Some(frame) = self.idle_wrist.lock().expect("idle").take() {
+            mcap.accept(&frame);
+        }
+        *sink = Some((mcap, self.setup.clock.now()));
+        drop(sink);
         println!("recording {}", path(".mcap").display());
         *active = Some(Active { name: name.clone(), started: Instant::now(), recorder, scene, prefix });
         Ok(name)
@@ -133,7 +160,8 @@ impl Recording {
         let seconds = a.started.elapsed().as_secs_f64();
         let (_, summary) = a.recorder.finish().map_err(|e| e.to_string())?;
         let scene_frames = a.scene.map(SceneRaw::finish).transpose().map_err(|e| e.to_string())?;
-        if scene_frames.is_some() {
+        // (Tests stop at the raw files: the encoder is this program's own subcommand.)
+        if scene_frames.is_some() && !cfg!(test) {
             // Off the live path: its own low-priority process, which outlives teleop if need be.
             if let Err(e) = scene_video::encode_in_background(&a.prefix) {
                 eprintln!("scene video stays raw ({e}); `just encode-scenes` encodes it");
@@ -154,10 +182,14 @@ impl Recording {
 
     /// The scene camera's frames go to the video, not the MCAP.
     pub fn scene_frame(&self, frame: &Frame) {
-        if let Some(scene) = self.active.lock().expect("recording").as_mut().and_then(|a| a.scene.as_mut()) {
-            if let Err(e) = scene.add(frame) {
-                eprintln!("scene video: {e}");
+        let mut active = self.active.lock().expect("recording");
+        match active.as_mut() {
+            Some(a) => {
+                if let Some(Err(e)) = a.scene.as_mut().map(|scene| scene.add(frame)) {
+                    eprintln!("scene video: {e}");
+                }
             }
+            None => *self.idle_scene.lock().expect("idle") = Some(frame.clone()),
         }
     }
 
@@ -178,8 +210,12 @@ impl Recording {
 
 impl Sink for Recording {
     fn accept(&self, event: &Event) {
-        if let Some(sink) = self.sink.read().expect("sink").as_ref() {
-            sink.accept(event);
+        let sink = self.sink.read().expect("sink");
+        match (sink.as_ref(), &event.message) {
+            (None, Message::Frame(_)) => *self.idle_wrist.lock().expect("idle") = Some(event.clone()),
+            (None, _) => {}
+            (Some((_, started)), Message::Tick(tick)) if tick.t < *started => {}
+            (Some((mcap, _)), _) => mcap.accept(event),
         }
     }
 }
@@ -291,4 +327,83 @@ fn local_stamp() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("session-{}", std::process::id()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use so101::arm::Pose;
+    use so101::camera::{CameraRole, FrameRef};
+    use so101::clock::{ReplayClock, ReplaySpeed};
+    use so101::control::{Source, Tick};
+    use so101::session::Session;
+
+    const MS: u64 = 1_000_000;
+
+    fn frame(camera: CameraRole, sequence: u32, received_ms: u64) -> Frame {
+        Frame {
+            camera,
+            sequence,
+            t_capture: Timestamp((received_ms - 33) * MS),
+            t_receive: Timestamp(received_ms * MS),
+            jpeg: Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xD9]),
+        }
+    }
+
+    fn tick(decided_ms: u64, wrist: u32, scene: u32) -> Event {
+        let t = Timestamp(decided_ms * MS);
+        let tick = Tick {
+            t,
+            cycle: 0,
+            state: Pose::default(),
+            wrist: Some(FrameRef { camera: CameraRole::Wrist, sequence: wrist }),
+            scene: Some(FrameRef { camera: CameraRole::Scene, sequence: scene }),
+            action: Pose::default(),
+            source: Source::Teleop,
+            requested: Pose::default(),
+            clipped: Vec::new(),
+        };
+        Event { sequence: 0, log_time: t, publish_time: t, message: Message::Tick(tick) }
+    }
+
+    #[test]
+    fn a_recording_starts_with_the_frames_its_first_ticks_decided_on() {
+        let dir = std::env::temp_dir().join(format!("so101-console-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let clock = Arc::new(ReplayClock::new(Timestamp(1000 * MS), ReplaySpeed::AsFastAsPossible));
+        let recording = Recording::new(RecordingSetup {
+            dir: dir.clone(),
+            scene_video: true,
+            clock: clock.clone(),
+            header: Box::new(|| (Header::now(), Vec::new())),
+        });
+        // Before Record: frames arrive, and a tick decides on them.
+        recording.accept(&Event::frame(frame(CameraRole::Wrist, 4, 960)));
+        recording.accept(&Event::frame(frame(CameraRole::Wrist, 5, 990)));
+        recording.scene_frame(&frame(CameraRole::Scene, 7, 995));
+        recording.accept(&tick(998, 5, 7));
+        let name = recording.start().unwrap();
+        // After: the next tick still sees those frames; then new ones arrive.
+        clock.sleep_until(Timestamp(1010 * MS));
+        recording.accept(&tick(1005, 5, 7));
+        recording.accept(&Event::frame(frame(CameraRole::Wrist, 6, 1020)));
+        recording.scene_frame(&frame(CameraRole::Scene, 8, 1025));
+        recording.stop().unwrap();
+
+        let session = Session::open(dir.join(format!("{name}.mcap"))).unwrap();
+        let wrist: Vec<u32> = session.topic("/cam/wrist").map(|e| e.sequence).collect();
+        let ticks: Vec<Timestamp> = session
+            .topic("/tick")
+            .map(|e| match &e.message {
+                Message::Tick(t) => t.t,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let scene_csv = std::fs::read_to_string(dir.join(format!("{name}-scene.csv"))).unwrap();
+        let scene: Vec<&str> = scene_csv.lines().skip(1).map(|l| l.split(',').nth(1).unwrap()).collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(wrist, [5, 6], "the newest wrist frame from before the start, then the rest");
+        assert_eq!(scene, ["7", "8"], "the same for the scene");
+        assert_eq!(ticks, [Timestamp(1005 * MS)], "the tick decided before the start is left out");
+    }
 }

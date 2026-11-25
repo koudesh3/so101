@@ -26,6 +26,7 @@ with open(path, "rb") as f:
     header = {m.name: dict(m.metadata) for m in reader.iter_metadata()}
     attachments = {a.name: a.data for a in reader.iter_attachments()}
     counts = Counter()
+    wrist_frames, tick_frames = set(), []
     for schema, channel, message, pb in reader.iter_decoded_messages(log_time_order=True):
         counts[channel.topic] += 1
         if channel.topic == "/follower/state":
@@ -38,9 +39,13 @@ with open(path, "rb") as f:
             assert message.publish_time == t_capture
             # Contract 3: received after captured (a stamp on arrival would make them equal).
             assert message.log_time > message.publish_time, (channel.topic, message.sequence)
+            if channel.topic == "/cam/wrist":
+                wrist_frames.add(message.sequence)
         elif channel.topic == "/tick":
             assert len(pb.state) == 6 and len(pb.action) == 6 and len(pb.requested) == 6 and pb.wrist.sequence >= 0
             counts["clipped"] += len(pb.clipped)
+            tick_frames.append((message.sequence, pb.wrist.sequence if pb.HasField("wrist") else None,
+                                pb.scene.sequence if pb.HasField("scene") else None))
         elif channel.topic == "/policy/chunk":
             assert pb.k * 6 == len(pb.actions)
 
@@ -59,6 +64,11 @@ for role in cameras:
 assert header["so101.session_end"]["complete"] == "true", header
 required = {"/follower/state", "/follower/target", "/tick"}
 assert required <= set(counts), counts
+# Contract 2: every frame a tick names is in the recording, from its first tick on.
+named = [w for _, w, _ in tick_frames if w is not None]
+if "/cam/wrist" in counts:
+    missing = [(n, w) for n, w, _ in tick_frames if w is not None and w not in wrist_frames]
+    assert not missing, f"ticks naming wrist frames not in the log (tick, frame): {missing[:5]}"
 
 # Contract 1's exception: the scene camera beside the log, its frame times in a CSV.
 scene = ""
@@ -66,6 +76,9 @@ if "scene" in cameras and not sample:
     prefix = str(path)[: -len(".mcap")]
     rows = list(csv.DictReader(open(f"{prefix}-scene.csv")))
     assert rows, "no scene frames"
+    scene_frames = {int(r["sequence"]) for r in rows}
+    missing = [(n, sc) for n, _, sc in tick_frames if sc is not None and sc not in scene_frames]
+    assert not missing, f"ticks naming scene frames not in the CSV (tick, frame): {missing[:5]}"
     for a, b in zip(rows, rows[1:]):
         assert int(b["t_capture_ns"]) > int(a["t_capture_ns"]) and int(b["sequence"]) > int(a["sequence"])
         assert int(a["t_receive_ns"]) > int(a["t_capture_ns"])
@@ -83,4 +96,5 @@ if sample:
 
 counts.pop("clipped", None)
 cams = ", ".join(f"{t} {counts[t]}" for t in sorted(counts) if t.startswith("/cam/"))
-print(f"python read {sum(counts.values())} messages on {len(counts)} topics without generated code ({cams}){scene}")
+print(f"python read {sum(counts.values())} messages on {len(counts)} topics without generated code ({cams}){scene}; "
+      f"{len(named)} of {len(tick_frames)} ticks name a wrist frame, all in the log")

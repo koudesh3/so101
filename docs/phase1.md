@@ -115,7 +115,13 @@ target toward it. `Tick.clipped` collects its cycles' limits, most severe first.
 - **Teleop is 25 ms slower** on the fitted simulator, replaying a recorded hand (episode 202319):
   the follower trails it by 100-167 ms per joint, against 75-142 ms deciding every cycle. A
   longer lead buys back only 8-17 ms (the predictor smooths) and costs steadiness on the gripper,
-  so the lead stays 40 ms until it's been felt on the rig.
+  so the lead stays 40 ms until it's been felt on the rig. Felt on the rig 2026-11-24: fine.
+- **On the rig** (2026-11-24, a 76 s recording): 30.01 Hz, no tick gaps, every tick named the
+  newest frame received; the wrist frame was a median 17 ms old at the decision (max 37); 3% of
+  ticks saw the same frame as the tick before. Its first two ticks named a frame from just before
+  Record, so recordings now start clean: the console's recorder keeps each camera's newest frame
+  while idle and writes it first, and leaves out ticks decided before the start.
+  `read_session.py` checks every tick's frames are in the recording.
 
 **Pilots**, one interface (`Pilot`): given the follower's state, a target `Pose` and what was
 observed to decide it.
