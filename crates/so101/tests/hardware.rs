@@ -11,7 +11,7 @@ use so101::arm::{
     SimulatedServos, JOINT_COUNT,
 };
 use so101::clock::{Clock, MonotonicClock, ReplayClock, ReplaySpeed, Timestamp};
-use so101::control::{run, Event, EventBus, Message, Pilot, RunOptions, Source};
+use so101::control::{run, EventBus, Message, Pilot, RunOptions, Source};
 use so101::session::{Attachment, Header, Recorder, RecorderOptions};
 
 /// Commands the follower's pose as it was when torque came on: nothing moves.
@@ -127,6 +127,24 @@ impl Move {
     }
 }
 
+impl Script for Schedule {
+    fn name(&self) -> &'static str {
+        "system-id"
+    }
+
+    fn end_s(&self) -> f64 {
+        self.moves_end_s + EASE_S + 1.0
+    }
+
+    fn scripted(&self, t: f64) -> bool {
+        t >= EASE_S && t < self.moves_end_s
+    }
+
+    fn at(&self, t: f64, home: Pose) -> Pose {
+        self.target(t, home)
+    }
+}
+
 impl Schedule {
     fn new() -> Self {
         let mut segments = Vec::new();
@@ -159,12 +177,8 @@ impl Schedule {
         Self { segments, moves_end_s: t }
     }
 
-    fn end_s(&self) -> f64 {
-        self.moves_end_s + EASE_S + 1.0
-    }
-
     /// The target at `t` seconds, for an arm that started at `home`.
-    fn at(&self, t: f64, home: Pose) -> Pose {
+    fn target(&self, t: f64, home: Pose) -> Pose {
         let ease = |x: f64| {
             let x = x.clamp(0.0, 1.0);
             x * x * (3.0 - 2.0 * x)
@@ -186,74 +200,172 @@ impl Schedule {
     }
 }
 
-/// Plays the schedule from the follower's pose when it starts.
-struct SystemId {
-    schedule: Schedule,
+/// A scripted run: the target at each moment, for an arm that started at `home`.
+trait Script: Send {
+    fn name(&self) -> &'static str;
+    fn end_s(&self) -> f64;
+    /// Inside the scripted moves (the range margin applies), not the eases to and from home.
+    fn scripted(&self, t: f64) -> bool;
+    fn at(&self, t: f64, home: Pose) -> Pose;
+}
+
+/// Plays a script from the follower's pose when it starts.
+struct Scripted<S: Script> {
+    script: S,
     started: Option<(Timestamp, Pose)>,
 }
 
-impl Pilot for SystemId {
+impl<S: Script> Pilot for Scripted<S> {
     fn source(&self) -> Source {
-        Source::Script("system-id".into())
+        Source::Script(self.script.name().into())
     }
 
     fn target(&mut self, now: Timestamp, follower: &JointState) -> Result<(Pose, Vec<Message>)> {
         let (t0, home) = *self.started.get_or_insert((now, follower.pose));
-        Ok((self.schedule.at(now.since(t0).as_secs_f64(), home), Vec::new()))
+        Ok((self.script.at(now.since(t0).as_secs_f64(), home), Vec::new()))
     }
 }
 
 // The folded rest pose the arm usually starts from (read 2026-11-24).
 const REST: [f32; JOINT_COUNT] = [-18.9, -104.2, 94.3, 75.1, -5.1, 2.4];
 
+const SETTLE_S: f64 = 1.5;
+const AWAY_DEG: f32 = 4.0;
+
+/// Gravity sweep: at poses along the band teleop actually used (2026-11-24 episodes, each visited
+/// for 112-6,779 cycles, wrist flex as used there), lift, elbow and wrist flex settle onto their
+/// target from 4° above, then from 4° below. The mean of the two is gravity's pull at that pose;
+/// the difference, the play. Enters and leaves through REACH, a path the arm has taken.
+struct GravitySweep {
+    // (start s, target pose, how it gets there: true eases, false steps)
+    keys: Vec<(f64, [f32; JOINT_COUNT], bool)>,
+    end_s: f64,
+}
+
+/// (lift, elbow, wrist flex), in visiting order.
+const SWEEP: [(f32, f32, f32); 12] = [
+    (-58.0, 35.0, 65.0),
+    (-45.0, 40.0, 32.0),
+    (-28.0, 40.0, 28.0),
+    (-28.0, 55.0, -4.0),
+    (-12.0, 65.0, -6.0),
+    (-12.0, 50.0, -13.0),
+    (-12.0, 35.0, 13.0),
+    (0.0, 50.0, -16.0),
+    (0.0, 35.0, 6.0),
+    (0.0, 15.0, 35.0),
+    (15.0, 25.0, 15.0),
+    (20.0, 10.0, 29.0),
+];
+
+impl GravitySweep {
+    fn new() -> Self {
+        let pose = |(lift, elbow, wrist): (f32, f32, f32), d: f32| [0.0, lift + d, elbow + d, wrist + d, 0.0, 40.0];
+        let mut keys = vec![(0.0, REACH, true)];
+        let mut t = EASE_S + 1.0;
+        for p in SWEEP {
+            keys.push((t, pose(p, AWAY_DEG), true));
+            t += 2.0 + 0.5;
+            keys.push((t, pose(p, 0.0), false));
+            t += SETTLE_S;
+            keys.push((t, pose(p, -AWAY_DEG), false));
+            t += 0.5;
+            keys.push((t, pose(p, 0.0), false));
+            t += SETTLE_S;
+        }
+        keys.push((t, REACH, true));
+        t += 3.0;
+        Self { keys, end_s: t + EASE_S + 1.0 }
+    }
+
+    fn sweep_end_s(&self) -> f64 {
+        self.keys.last().unwrap().0 + 3.0
+    }
+}
+
+impl Script for GravitySweep {
+    fn name(&self) -> &'static str {
+        "gravity-sweep"
+    }
+
+    fn end_s(&self) -> f64 {
+        self.end_s
+    }
+
+    fn scripted(&self, t: f64) -> bool {
+        t >= EASE_S && t < self.sweep_end_s()
+    }
+
+    fn at(&self, t: f64, home: Pose) -> Pose {
+        let ease = |x: f64| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let blend = |a: &[f32; JOINT_COUNT], b: &[f32; JOINT_COUNT], u: f64| {
+            Pose(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * u as f32))
+        };
+        if t < EASE_S {
+            return blend(&home.0, &REACH, ease(t / EASE_S));
+        }
+        if t >= self.sweep_end_s() {
+            return blend(&REACH, &home.0, ease((t - self.sweep_end_s()) / EASE_S));
+        }
+        // The key in effect and the one before it: eases take 2 s from the previous key.
+        let i = self.keys.iter().rposition(|k| k.0 <= t).unwrap_or(0);
+        let (t1, to, eased) = self.keys[i];
+        if !eased || i == 0 {
+            return Pose(to);
+        }
+        let from = self.keys[i - 1].1;
+        blend(&from, &to, ease((t - t1) / 2.0))
+    }
+}
+
 /// Every scripted target is inside the calibrated ranges by 5° (5% on the gripper), the eases to
-/// and from where the arm starts (REST, which sits within 1° of lift's end) stay inside them, and
-/// the wrist camera stays clear of the arm throughout, every 10 ms; and the run completes on the
-/// simulator with nothing clipped but the range and step limits it doesn't use.
-#[test]
-fn the_system_id_run_is_safe_and_completes_on_the_simulator() {
-    let schedule = Schedule::new();
+/// and from where the arm starts (REST, which sits within 1° of lift's end) stay inside them, the
+/// wrist camera stays clear of the arm throughout (checked every 10 ms), and the run completes on
+/// the simulator with no range or collision clips. Returns the camera's closest approach.
+fn dry_run<S: Script>(script: S) -> f32 {
     let calibration = Calibration::load(&repo("data/calibration/follower.json")).unwrap();
     let map = ClearanceMap::load(&repo("data/camera_clearance.json")).unwrap();
     let deg = 360.0 / 4096.0;
     let mut t = 0.0;
     let mut closest = f32::MAX;
-    while t < schedule.end_s() {
-        let pose = schedule.at(t, Pose(REST));
+    while t < script.end_s() {
+        let pose = script.at(t, Pose(REST));
         for joint in Joint::ALL {
             let c = calibration.joints[joint.index()];
-            let (lo, hi, margin) = if joint == Joint::Gripper {
-                (0.0, 100.0, 5.0)
+            let (lo, hi) = if joint == Joint::Gripper {
+                (0.0, 100.0)
             } else {
                 let mid = (c.range_min + c.range_max) as f32 / 2.0;
-                ((c.range_min as f32 - mid) * deg, (c.range_max as f32 - mid) * deg, 5.0)
+                ((c.range_min as f32 - mid) * deg, (c.range_max as f32 - mid) * deg)
             };
+            let margin = if script.scripted(t) { 5.0 } else { 0.0 };
             let v = pose.0[joint.index()];
-            let margin = if t >= EASE_S && t < schedule.moves_end_s { margin } else { 0.0 };
             assert!(
                 v >= lo + margin && v <= hi - margin,
-                "{} at {v:.1} (t {t:.2} s), range {lo:.0}..{hi:.0}",
+                "{}: {} at {v:.1} (t {t:.2} s), range {lo:.0}..{hi:.0}",
+                script.name(),
                 joint.name()
             );
         }
         closest = closest.min(map.clearance_mm(&pose));
         t += 0.01;
     }
-    assert!(closest >= 10.0, "the camera comes within {closest:.1} mm of the arm");
+    assert!(closest >= 10.0, "{}: the camera comes within {closest:.1} mm of the arm", script.name());
     // SO101_SCHEDULE_CSV=<file> writes the targets, for a look before the arm moves.
     if let Ok(path) = std::env::var("SO101_SCHEDULE_CSV") {
         let mut rows = String::from("t,pan,lift,elbow,wrist_flex,wrist_roll,gripper\n");
         let mut t = 0.0;
-        while t < schedule.end_s() {
-            let p = schedule.at(t, Pose(REST)).0;
+        while t < script.end_s() {
+            let p = script.at(t, Pose(REST)).0;
             rows.push_str(&format!("{t:.3},{}\n", p.map(|v| format!("{v:.3}")).join(",")));
             t += 0.01;
         }
         std::fs::write(path, rows).unwrap();
     }
-    println!("system id: {:.0} s, camera never closer than {closest:.1} mm", schedule.end_s());
 
-    // The same run on the simulated follower.
     let clock = Arc::new(ReplayClock::new(Timestamp(0), ReplaySpeed::AsFastAsPossible));
     let mut sim = SimulatedServos::arm("follower").with_clock(clock.clone());
     let counts = calibration.to_counts(&Pose(REST));
@@ -264,12 +376,13 @@ fn the_system_id_run_is_safe_and_completes_on_the_simulator() {
     follower.set_camera_guard(map, 10.0);
     let bus = EventBus::new();
     let events = bus.subscribe();
-    let ticks = (schedule.end_s() * 120.0) as u64;
-    let mut pilot = SystemId { schedule, started: None };
+    let ticks = (script.end_s() * 120.0) as u64;
+    let name = script.name();
+    let mut pilot = Scripted { script, started: None };
     let options = RunOptions { hz: 120.0, max_ticks: Some(ticks), read_actuators: true };
     let stats = run(&mut follower, &mut pilot, options, clock, &AtomicBool::new(false), &bus, |_| {}).unwrap();
     drop(bus);
-    assert_eq!((stats.errors, stats.skipped), (0, 0), "{stats:?}");
+    assert_eq!((stats.errors, stats.skipped), (0, 0), "{name}: {stats:?}");
     let clipped: Vec<Limit> = events
         .into_iter()
         .filter_map(|e| match e.message {
@@ -278,14 +391,25 @@ fn the_system_id_run_is_safe_and_completes_on_the_simulator() {
         })
         .flatten()
         .collect();
-    assert!(!clipped.iter().any(|l| matches!(l, Limit::Collision | Limit::Range)), "{clipped:?}");
+    assert!(!clipped.iter().any(|l| matches!(l, Limit::Collision | Limit::Range)), "{name}: {clipped:?}");
+    closest
 }
 
-/// On the real follower: `SO101_FOLLOWER=<port> SO101_RECORD=<file.mcap> cargo test --release
-/// --test hardware system_identification -- --ignored --nocapture`. About 5 minutes of motion.
 #[test]
-#[ignore]
-fn system_identification() {
+fn the_system_id_run_is_safe_and_completes_on_the_simulator() {
+    let closest = dry_run(Schedule::new());
+    println!("system id: {:.0} s, camera never closer than {closest:.1} mm", Schedule::new().end_s());
+}
+
+#[test]
+fn the_gravity_sweep_is_safe_and_completes_on_the_simulator() {
+    let closest = dry_run(GravitySweep::new());
+    println!("gravity sweep: {:.0} s, camera never closer than {closest:.1} mm", GravitySweep::new().end_s());
+}
+
+/// Runs a script on the real follower and records it: configure, read the gains back, torque on,
+/// the script at 120 Hz with every servo's load and current, torque off. Ctrl-C stops it.
+fn run_on_follower<S: Script>(script: S) {
     let port = std::env::var("SO101_FOLLOWER").expect("SO101_FOLLOWER=<serial port>");
     let out = std::env::var("SO101_RECORD").expect("SO101_RECORD=<file.mcap>");
     let gains = FollowerGains::load(&repo("data/gains.json")).unwrap();
@@ -298,7 +422,7 @@ fn system_identification() {
     follower.set_camera_guard(ClearanceMap::load(&repo("data/camera_clearance.json")).unwrap(), 10.0);
 
     let mut header = Header::now();
-    header.config.insert("source".into(), "system-id".into());
+    header.config.insert("source".into(), script.name().into());
     header.config.insert("reach_pose".into(), format!("{REACH:?}"));
     for (joint, r) in Joint::ALL.iter().zip(registers) {
         header.servos.insert(joint.name().into(), r);
@@ -316,10 +440,9 @@ fn system_identification() {
     let recorder = Recorder::start(file, &header, &attachments, clock.clone(), RecorderOptions::default()).unwrap();
     let bus = EventBus::new();
     bus.attach(recorder.sink());
-    let schedule = Schedule::new();
-    let ticks = (schedule.end_s() * 120.0) as u64;
-    println!("system id: {:.0} s of motion; Ctrl-C stops it with torque off", schedule.end_s());
-    let mut pilot = SystemId { schedule, started: None };
+    let ticks = (script.end_s() * 120.0) as u64;
+    println!("{}: {:.0} s of motion; Ctrl-C stops it with torque off", script.name(), script.end_s());
+    let mut pilot = Scripted { script, started: None };
     let options = RunOptions { hz: 120.0, max_ticks: Some(ticks), read_actuators: true };
     let stats =
         run(&mut follower, &mut pilot, options, clock, &AtomicBool::new(false), &bus, |e| println!("ERROR {e}"));
@@ -327,5 +450,19 @@ fn system_identification() {
     let (_, summary) = recorder.finish().unwrap();
     println!("{stats:?}\nrecorded {out}: {summary:?}");
     stats.unwrap();
-    let _: Option<Event> = None;
+}
+
+/// On the real follower: `SO101_FOLLOWER=<port> SO101_RECORD=<file.mcap> cargo test --release
+/// --test hardware system_identification -- --ignored --nocapture`. About 4.7 minutes of motion.
+#[test]
+#[ignore]
+fn system_identification() {
+    run_on_follower(Schedule::new());
+}
+
+/// On the real follower, as above with `gravity_sweep`. About 1.5 minutes of motion.
+#[test]
+#[ignore]
+fn gravity_sweep() {
+    run_on_follower(GravitySweep::new());
 }
