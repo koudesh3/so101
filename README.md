@@ -10,7 +10,7 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
   arm/             the arm: joints, poses, its errors and the `Arm` trait (mod.rs); `ServoArm`, the
                    SO-101 on its STS3215 servos (servo_arm.rs); the servos and their registers
                    (servos.rs); their UART; simulated servos; calibration; the camera clearance map
-  camera/          the `Camera` trait and frames; V4L2 cameras (Linux), synthetic ones
+  camera/          the `Camera` trait and frames; V4L2 cameras (Linux), simulated ones
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop (run.rs) on its grid of cycles, ticks, events, the event bus, and the
                    pilots that drive it (pilots/: teleop so far)
@@ -87,7 +87,7 @@ One concept, one name, one home.
 | `JointTarget` | a pose the loop commanded, with its time, counts and source | `control` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
-| `CameraRole` / `Camera` | which camera (wrist, scene) / a source of frames: V4L2, synthetic or replay (a trait) | `camera` |
+| `CameraRole` / `Camera` | which camera (wrist, scene) / a source of frames: V4L2, simulated or replay (a trait) | `camera` |
 | `LatestFrame` | a camera's newest frame, for the control loop to read without waiting | `camera` |
 | `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |

@@ -7,7 +7,7 @@ glossary in the [README](../README.md).
 
 Phase 1 builds the loop that every later phase runs inside: one loop for teleop, scripts and
 policies, at fixed rates, with safety in it and every decision recorded. It runs on a mock arm and
-synthetic or replayed cameras, so it needs no hardware, and on the real arms and cameras unchanged.
+simulated or replayed cameras, so it needs no hardware, and on the real arms and cameras unchanged.
 
 ## The loops
 
@@ -57,7 +57,7 @@ and only its gains are (contract 8).
 - **Real V4L2 capture moves into Phase 1** (decided 2026-11-24, from Phase 4). Teleop already
   records real cameras, and demos are about to be recorded for training; capture through ffmpeg
   can't give the kernel's capture timestamps or frame numbers that contract 3 requires. The camera
-  trait arrives with three implementations: V4L2, synthetic and replay. `FfmpegCamera` is retired
+  trait arrives with three implementations: V4L2, simulated and replay. `FfmpegCamera` is retired
   once V4L2 lands.
 - **The scene camera is stored beside the session, not in it** (decided 2026-11-24): an H.264 MKV
   plus a CSV of each frame's sequence and times on the session clock, next to the MCAP. The wrist
@@ -154,11 +154,11 @@ behaviour and a test, as servo 1's missed read after torque-on did
   every test; a second `Arm` implementation would skip that code and need keeping in sync.
   Fault injection there too: a stall at a position, an overload flag, a servo that stops
   answering.
-- **`SyntheticCamera` gets the icSpring's timing:** alternating 32.3/36.6 ms intervals and an
+- **`SimulatedCamera` gets the icSpring's timing:** alternating 32.3/36.6 ms intervals and an
   occasional lost frame, so nothing downstream can quietly assume a steady 30 fps. Exact known
   answers make it the right fixture for tick-to-frame pairing.
 - **Deferred to the exporter (Phase 4):** a replay arm and recorded sessions as test fixtures.
-  Their value is real data for the exporter; for Phase 1 the synthetic camera gives the same
+  Their value is real data for the exporter; for Phase 1 the simulated camera gives the same
   coverage with exact answers, and 10 s of wrist video is about 10 MB of git history. Short real
   sessions are recorded now (with the full-rig check) and kept on the Spark, not in git.
 - **Not built:** a physics simulator (the spec rules sim out, and today's surprises (firmware
@@ -180,7 +180,7 @@ the real-time loop reads without waiting. Three implementations, one conformance
   truncated and are skipped. Measured on the Spark: both cameras 3 minutes together, 0 frames
   lost, 0 long intervals (wrist 29.8 fps, scene 29.5 fps); one wrist frame lost in an earlier
   10 s run, so losses happen but rarely.
-- **Synthetic** (`SyntheticCamera`): exact times on any clock, chosen losses; `--sim` uses it.
+- **Simulated** (`SimulatedCamera`): exact times on any clock, chosen losses; `--sim` uses it.
 - **Replay** (`session::ReplayCamera`): one role's frames from a session at their recorded times,
   with the recorded device and settings. Replay from LeRobot dataset video waits for the exporter.
 
@@ -253,16 +253,16 @@ A day of teleop on the real rig, a fine-motion measurement, two analysed episode
 - Stepping: four cycles move the goal in equal steps from one target to the next; a skipped cycle
   doesn't change where the next tick's target lands.
 - Ticks reference frames: each `Tick` names the latest frame of each camera at its time, from a
-  synthetic camera with known times.
+  simulated camera with known times.
 - Action queue: `n_action_steps` of each chunk, in order; the next chunk is requested in time; a
   late chunk holds the last target; ensembling, when on, matches LeRobot's weights.
 - Mux: one active source; a switch starts from the present pose; `Tick.source` changes on that tick.
 - Safety: range, slew and stall each clip and report the right `Limit`; the most severe wins in
   `Tick.clipped`; e-stop turns torque off within one cycle; the health filter ignores single junk
   readings (temperature and voltage) and trips on real ones.
-- One conformance suite for the camera trait, passed by the synthetic, replay and V4L2 cameras
+- One conformance suite for the camera trait, passed by the simulated, replay and V4L2 cameras
   (done).
-- On the synthetic camera's realistic timing (uneven intervals, a lost frame): every tick names
+- On the simulated camera's realistic timing (uneven intervals, a lost frame): every tick names
   the frame that was latest at its time.
 - Teleop end to end on both, as today's tests, plus: the session it writes reads back with every
   tick's frames and clipping.

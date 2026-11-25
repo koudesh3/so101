@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command;
 
-const JPEG: &[u8] = include_bytes!("../src/camera/synthetic.jpg");
+const JPEG: &[u8] = include_bytes!("../src/camera/simulated.jpg");
 
 /// Writes `<prefix>-scene.mjpeg` and its CSV for frames captured at `times_ms`; the last frame's
 /// bytes are cut short if `crash`.

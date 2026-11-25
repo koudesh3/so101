@@ -342,7 +342,7 @@ fn python_reads_a_session_without_generated_code() {
     assert!(out.status.success(), "{said}");
 }
 
-/// A small synthetic session with every message type.
+/// A small hand-built session with every message type.
 mod sample {
     use bytes::Bytes;
     use so101::arm::Limit;

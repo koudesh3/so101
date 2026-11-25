@@ -1,4 +1,4 @@
-//! `SyntheticCamera`: frames with exact, chosen times, for tests and `--sim`. It delivers each
+//! `SimulatedCamera`: frames with exact, chosen times, for tests and `--sim`. It delivers each
 //! frame `latency` after its capture time, on whatever clock it's given, so on a `ReplayClock` a
 //! test knows exactly which frame exists when.
 
@@ -11,9 +11,9 @@ use crate::camera::{Camera, CameraRole, Description, Frame, Result};
 use crate::clock::{Clock, Timestamp};
 
 // A real (tiny) JPEG, so a console shows something.
-const PICTURE: &[u8] = include_bytes!("synthetic.jpg");
+const PICTURE: &[u8] = include_bytes!("simulated.jpg");
 
-pub struct SyntheticCamera {
+pub struct SimulatedCamera {
     role: CameraRole,
     clock: Arc<dyn Clock>,
     period: Duration,
@@ -24,7 +24,7 @@ pub struct SyntheticCamera {
     picture: Bytes,
 }
 
-impl SyntheticCamera {
+impl SimulatedCamera {
     /// The icSpring's measured rate (29.8 fps) and capture-to-receive latency (about 33 ms),
     /// starting one period after the clock's present time.
     pub fn new(role: CameraRole, clock: Arc<dyn Clock>) -> Self {
@@ -60,7 +60,7 @@ impl SyntheticCamera {
     }
 }
 
-impl Camera for SyntheticCamera {
+impl Camera for SimulatedCamera {
     fn role(&self) -> CameraRole {
         self.role
     }
@@ -71,7 +71,7 @@ impl Camera for SyntheticCamera {
 
     fn describe(&self) -> Description {
         Description {
-            device: format!("synthetic-{}", self.role.name()),
+            device: format!("simulated-{}", self.role.name()),
             settings: format!("period_ns={} latency_ns={}", self.period.as_nanos(), self.latency.as_nanos()),
         }
     }

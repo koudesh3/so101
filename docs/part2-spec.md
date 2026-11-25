@@ -58,7 +58,7 @@ Hardware never appears inside the boundary: the SO-101 is reached only through `
 |---|---|---|---|---|
 | `arm/` | Joint, Pose, JointState, JointTarget, ActuatorStatus; the `Arm` trait | `Arm` on its `Servos` (STS3215), mock, replay | JointTarget | JointState, ActuatorStatus |
 | `arm/` (leader) | The leader as a target source | the leader `Arm`, replay | Leader joints | JointTarget |
-| `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, synthetic | USB video | Frame |
+| `camera/` | Frame, FrameRef; the camera trait (Phase 4) | v4l2 (wrist, scene), replay, simulated | USB video | Frame |
 | `policy/` | Obs, Chunk; the policy trait (contract 4) | ACT via ort, stubs | Obs | Chunk |
 | `control/` | The loop: 120 Hz cycles on a grid, Tick, events, bus; later safety, mux, action queue | — | Targets from the leader, scripts, the action queue; JointState; Frames | Clamped JointTarget, Tick, every Event |
 | `skills/`, `checks/` | `Skill`, `Check` (Phase 3) | transit (scripted), grasp, place; holding_rule, scene_slot | RunSubtask, Obs, Frame, JointState | Chunk or JointTarget; CheckResult |

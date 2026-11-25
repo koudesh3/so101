@@ -1,8 +1,8 @@
 //! The cameras: which one (`CameraRole`), the frames they produce with their capture and receive
-//! times (contract 3), and the `Camera` trait the real, synthetic and replayed cameras implement.
+//! times (contract 3), and the `Camera` trait the real, simulated and replayed cameras implement.
 //! `stream` runs one on its own thread; `LatestFrame` is what the control loop reads, never waiting.
 
-mod synthetic;
+mod simulated;
 #[cfg(target_os = "linux")]
 mod v4l2;
 
@@ -16,7 +16,7 @@ use bytes::Bytes;
 
 use crate::clock::Timestamp;
 
-pub use synthetic::SyntheticCamera;
+pub use simulated::SimulatedCamera;
 #[cfg(target_os = "linux")]
 pub use v4l2::{control_name, V4l2Camera};
 

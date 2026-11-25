@@ -87,7 +87,7 @@ policy; either can be clipped before it reaches the follower. So:
     which the UVC driver marks as start of exposure (`ts-src-soe`). Measured for the wrist camera
     (below): exposure actually starts about 10 ms before the stamp; no correction is applied yet. Each camera model needs
     its own check: the driver's claim depends on the camera's own clock reports.
-  - **Synthetic camera:** when the frame was generated (exact). **Replayed camera:** the original
+  - **Simulated camera:** when the frame was generated (exact). **Replayed camera:** the original
     capture time, offset onto the replay's clock.
   - **Ticks and targets:** the moment the loop made the decision (exact; we are the source).
 - **Nothing may assume a camera delivers frames at its nominal rate.** The icSpring delivers
@@ -342,7 +342,7 @@ episode start/end with tags and `Takeover` (Phase 4), `SequencerDecision` (Phase
 The arms and cameras are on the Spark, so real sessions are logged there, into the checkout's
 `data/logs/` (`/projects/so101/data/logs/`, not in git; teleop's record button writes
 `<YYYYMMDD-HHMMSS>.mcap` with the scene camera's `-scene.mkv` and `-scene.csv` beside it). The
-laptop logs simulated runs only, with synthetic or replayed cameras; the header's host and clock
+laptop logs simulated runs only, with simulated or replayed cameras; the header's host and clock
 source keep the two from being confused. Names carry the date and time, and the recorder refuses
 to overwrite a file.
 

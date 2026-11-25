@@ -13,7 +13,7 @@ use so101::arm::{
     check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
-use so101::camera::{stream, Camera, CameraRole, Description, Streaming, SyntheticCamera};
+use so101::camera::{stream, Camera, CameraRole, Description, SimulatedCamera, Streaming};
 use so101::control::{
     request_realtime, run, ArmRole, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
@@ -605,7 +605,7 @@ impl TeleopIo {
     }
 }
 
-/// The camera for `role`: the V4L2 device if one is given, a synthetic camera under `--sim`,
+/// The camera for `role`: the V4L2 device if one is given, a simulated camera under `--sim`,
 /// otherwise none. A camera that won't open is reported and left out; teleop runs without it.
 fn open_camera(
     role: CameraRole,
@@ -625,7 +625,7 @@ fn open_camera(
                 None
             }
         },
-        None if sim => Some(Box::new(SyntheticCamera::new(role, clock.clone()))),
+        None if sim => Some(Box::new(SimulatedCamera::new(role, clock.clone()))),
         None => None,
     }
 }
@@ -652,7 +652,7 @@ fn open_v4l2(
     _: &[String],
     _: Arc<dyn so101::clock::Clock>,
 ) -> std::result::Result<Box<dyn Camera>, String> {
-    Err("V4L2 cameras are Linux only (use --sim for synthetic ones)".into())
+    Err("V4L2 cameras are Linux only (use --sim for simulated ones)".into())
 }
 
 fn cmd_encode_scenes(paths: &[PathBuf]) -> Result<()> {

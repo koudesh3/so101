@@ -1,4 +1,4 @@
-//! The camera conformance suite (contract 3): every `Camera` (synthetic, replay, V4L2) must
+//! The camera conformance suite (contract 3): every `Camera` (simulated, replay, V4L2) must
 //! deliver frames whose times, sequence numbers and pictures mean what the contract says.
 
 use std::sync::{Arc, Mutex};
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use std::io::Cursor;
 
-use so101::camera::{stream, Camera, CameraRole, Continuity, LatestFrame, SyntheticCamera};
+use so101::camera::{stream, Camera, CameraRole, Continuity, LatestFrame, SimulatedCamera};
 use so101::clock::{Clock, ReplayClock, ReplaySpeed, Timestamp};
 use so101::control::{Event, EventBus};
 use so101::session::{CameraInfo, Header, Recorder, RecorderOptions, ReplayCamera, Session};
@@ -55,24 +55,24 @@ fn stepped() -> Arc<ReplayClock> {
 }
 
 #[test]
-fn the_synthetic_camera_conforms() {
-    let mut camera = SyntheticCamera::new(CameraRole::Wrist, stepped());
+fn the_simulated_camera_conforms() {
+    let mut camera = SimulatedCamera::new(CameraRole::Wrist, stepped());
     let c = conforms(&mut camera, 120);
     assert_eq!((c.frames, c.missing, c.long_intervals), (120, 0, 0));
 }
 
 #[test]
 fn a_lost_frame_shows_as_a_gap_and_a_long_interval() {
-    let mut camera = SyntheticCamera::new(CameraRole::Wrist, stepped()).losing(&[5, 6]);
+    let mut camera = SimulatedCamera::new(CameraRole::Wrist, stepped()).losing(&[5, 6]);
     let c = conforms(&mut camera, 20);
     assert_eq!(c.missing, 2);
     assert_eq!(c.long_intervals, 1, "three periods between frames 4 and 7");
 }
 
 #[test]
-fn synthetic_frames_arrive_at_exact_times_on_the_test_clock() {
+fn simulated_frames_arrive_at_exact_times_on_the_test_clock() {
     let clock = stepped();
-    let mut camera = SyntheticCamera::new(CameraRole::Scene, clock.clone())
+    let mut camera = SimulatedCamera::new(CameraRole::Scene, clock.clone())
         .with_period(Duration::from_millis(40))
         .with_latency(Duration::from_millis(10));
     let first = camera.next_frame().unwrap();
@@ -86,7 +86,7 @@ fn synthetic_frames_arrive_at_exact_times_on_the_test_clock() {
 fn a_streamed_camera_feeds_its_latest_frame_slot_until_stopped() {
     let slot = Arc::new(LatestFrame::new(CameraRole::Wrist));
     let seen = Arc::new(Mutex::new(0u64));
-    let camera = SyntheticCamera::new(CameraRole::Wrist, stepped());
+    let camera = SimulatedCamera::new(CameraRole::Wrist, stepped());
     let streaming = {
         let (slot, seen) = (slot.clone(), seen.clone());
         stream(Box::new(camera), move |frame| {
@@ -104,7 +104,7 @@ fn a_streamed_camera_feeds_its_latest_frame_slot_until_stopped() {
     assert_eq!(u64::from(latest.id.sequence) + 1, stats.continuity.frames, "the slot holds the last frame");
 }
 
-/// A session holding `n` synthetic wrist frames (one of them lost), written and read back.
+/// A session holding `n` simulated wrist frames (one of them lost), written and read back.
 fn recorded_wrist(n: usize) -> (Session, Vec<so101::camera::Frame>) {
     let clock = stepped();
     let mut header = Header::now();
@@ -116,7 +116,7 @@ fn recorded_wrist(n: usize) -> (Session, Vec<so101::camera::Frame>) {
         Recorder::start(Cursor::new(Vec::new()), &header, &[], clock.clone(), RecorderOptions::default()).unwrap();
     let bus = EventBus::new();
     bus.attach(recorder.sink());
-    let mut camera = SyntheticCamera::new(CameraRole::Wrist, clock).losing(&[3]);
+    let mut camera = SimulatedCamera::new(CameraRole::Wrist, clock).losing(&[3]);
     let frames: Vec<_> = (0..n).map(|_| camera.next_frame().unwrap()).collect();
     for f in &frames {
         bus.publish(Event::frame(f.clone()));
