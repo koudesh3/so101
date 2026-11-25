@@ -56,6 +56,11 @@ justfile         the commands for the whole repo; mise.toml pins the tools they 
 - **Unit tests sit in the file whose logic they test.** `tests/` is for behaviour that crosses
   folders: teleop against simulated servos, a session written and read back, the schema.
 - **Comments only say what the code can't:** units, outside conventions, measured facts, and why.
+- **Tests check behaviour, not construction:** what the system does given an input (the follower
+  stops at 65 C, a lost frame shows as a gap), never which function called which or a value that
+  only restates the code. A test that breaks on a harmless refactor is a change detector; rewrite
+  it to state the outcome. Fakes carry measured hardware behaviour (one fake per thing), so the
+  same tests hold on the rig.
 - **Modules depend only on lower levels:** clock; then arm and camera (peers, never using each
   other); policy; control; session; `cli.rs` on top. `control/` reaches arms only through the
   `Arm` trait. `just check` enforces both.
