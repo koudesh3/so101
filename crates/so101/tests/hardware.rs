@@ -237,10 +237,18 @@ const AWAY_DEG: f32 = 4.0;
 /// target from 4° above, then from 4° below. The mean of the two is gravity's pull at that pose;
 /// the difference, the play. Enters and leaves through REACH, a path the arm has taken.
 struct GravitySweep {
+    name: &'static str,
     // (start s, target pose, how it gets there: true eases, false steps)
     keys: Vec<(f64, [f32; JOINT_COUNT], bool)>,
     end_s: f64,
+    // Pass through REACH on the way in and out (the band), or go straight from and to home.
+    via_reach: bool,
 }
+
+/// The folded side, on the path out of rest every session takes (lift -80 to -104°): where the arm
+/// rests and the fine-motion test ran, and where the elbow's offset flips sign. 5° inside lift's
+/// range at the lowest, including the dip 4° below.
+const FOLDED_SWEEP: [(f32, f32, f32); 3] = [(-95.0, 86.0, 65.0), (-87.0, 75.0, 60.0), (-78.0, 62.0, 55.0)];
 
 /// (lift, elbow, wrist flex), in visiting order.
 const SWEEP: [(f32, f32, f32); 12] = [
@@ -260,10 +268,19 @@ const SWEEP: [(f32, f32, f32); 12] = [
 
 impl GravitySweep {
     fn new() -> Self {
+        Self::over("gravity-sweep", &SWEEP, true)
+    }
+
+    fn folded() -> Self {
+        Self::over("gravity-sweep-folded", &FOLDED_SWEEP, false)
+    }
+
+    fn over(name: &'static str, poses: &[(f32, f32, f32)], via_reach: bool) -> Self {
         let pose = |(lift, elbow, wrist): (f32, f32, f32), d: f32| [0.0, lift + d, elbow + d, wrist + d, 0.0, 40.0];
-        let mut keys = vec![(0.0, REACH, true)];
+        let first = poses[0];
+        let mut keys = vec![(0.0, if via_reach { REACH } else { pose(first, AWAY_DEG) }, true)];
         let mut t = EASE_S + 1.0;
-        for p in SWEEP {
+        for &p in poses {
             keys.push((t, pose(p, AWAY_DEG), true));
             t += 2.0 + 0.5;
             keys.push((t, pose(p, 0.0), false));
@@ -273,19 +290,26 @@ impl GravitySweep {
             keys.push((t, pose(p, 0.0), false));
             t += SETTLE_S;
         }
-        keys.push((t, REACH, true));
-        t += 3.0;
-        Self { keys, end_s: t + EASE_S + 1.0 }
+        if via_reach {
+            keys.push((t, REACH, true));
+            t += 3.0;
+        }
+        Self { name, keys, end_s: t + EASE_S + 1.0, via_reach }
+    }
+
+    // Where the eases to and from home meet the sweep.
+    fn entry(&self) -> [f32; JOINT_COUNT] {
+        self.keys[0].1
     }
 
     fn sweep_end_s(&self) -> f64 {
-        self.keys.last().unwrap().0 + 3.0
+        self.keys.last().unwrap().0 + if self.via_reach { 3.0 } else { 1.0 + SETTLE_S }
     }
 }
 
 impl Script for GravitySweep {
     fn name(&self) -> &'static str {
-        "gravity-sweep"
+        self.name
     }
 
     fn end_s(&self) -> f64 {
@@ -304,11 +328,12 @@ impl Script for GravitySweep {
         let blend = |a: &[f32; JOINT_COUNT], b: &[f32; JOINT_COUNT], u: f64| {
             Pose(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * u as f32))
         };
+        let last = self.keys.last().unwrap().1;
         if t < EASE_S {
-            return blend(&home.0, &REACH, ease(t / EASE_S));
+            return blend(&home.0, &self.entry(), ease(t / EASE_S));
         }
         if t >= self.sweep_end_s() {
-            return blend(&REACH, &home.0, ease((t - self.sweep_end_s()) / EASE_S));
+            return blend(&last, &home.0, ease((t - self.sweep_end_s()) / EASE_S));
         }
         // The key in effect and the one before it: eases take 2 s from the previous key.
         let i = self.keys.iter().rposition(|k| k.0 <= t).unwrap_or(0);
@@ -402,6 +427,12 @@ fn the_system_id_run_is_safe_and_completes_on_the_simulator() {
 }
 
 #[test]
+fn the_folded_gravity_sweep_is_safe_and_completes_on_the_simulator() {
+    let closest = dry_run(GravitySweep::folded());
+    println!("folded sweep: {:.0} s, camera never closer than {closest:.1} mm", GravitySweep::folded().end_s());
+}
+
+#[test]
 fn the_gravity_sweep_is_safe_and_completes_on_the_simulator() {
     let closest = dry_run(GravitySweep::new());
     println!("gravity sweep: {:.0} s, camera never closer than {closest:.1} mm", GravitySweep::new().end_s());
@@ -465,4 +496,11 @@ fn system_identification() {
 #[ignore]
 fn gravity_sweep() {
     run_on_follower(GravitySweep::new());
+}
+
+/// On the real follower, as above with `gravity_sweep_folded`. About 30 s, near rest.
+#[test]
+#[ignore]
+fn gravity_sweep_folded() {
+    run_on_follower(GravitySweep::folded());
 }
