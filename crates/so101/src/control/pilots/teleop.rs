@@ -17,70 +17,30 @@ pub struct Teleop<L: Arm> {
     predictor: Predictor,
     fine: Arc<FineControl>,
     scaling: Scaling,
-    taps: DoubleTap,
+    open_toggle: OpenToggle,
 }
 
-// Two quick squeezes (or opens) of the leader's gripper: the fine-mode switch, so a hand on the
-// leader can flip it. A tap leaves where the gripper rested by TAP_AWAY and comes back within
-// TAP_HALF of it inside TAP_TIME; two taps inside PAIR_TIME make a double tap.
+// Opening the leader's gripper all the way: the fine-mode switch, so a hand on the leader can
+// flip it. It flips once on reaching OPEN, and again only after closing below REARM, so holding
+// it open doesn't flicker; it doesn't flip if teleop starts with the gripper already open.
+// Normal use stays under 80% (2026-11-24: 99% of cycles).
 #[derive(Default)]
-struct DoubleTap {
-    rest: Option<f32>,
-    // When the gripper left rest, if it is away now.
-    away_since: Option<Timestamp>,
-    // When the last complete tap began.
-    last_tap: Option<Timestamp>,
-    // A double tap's second release, until which nothing counts again.
-    quiet_until: Option<Timestamp>,
+struct OpenToggle {
+    armed: bool,
 }
 
-impl DoubleTap {
-    // Gripper percent.
-    const TAP_AWAY: f32 = 10.0;
-    const TAP_HALF: f32 = 5.0;
-    const TAP_TIME: Duration = Duration::from_millis(400);
-    const PAIR_TIME: Duration = Duration::from_millis(1200);
-    const QUIET: Duration = Duration::from_millis(500);
+impl OpenToggle {
+    // Gripper percent; 100 is fully open.
+    const OPEN: f32 = 95.0;
+    const REARM: f32 = 85.0;
 
-    /// True on the sample that completes a double tap.
-    fn update(&mut self, now: Timestamp, grip: f32) -> bool {
-        if self.quiet_until.is_some_and(|until| now.since(until) == Duration::ZERO) {
-            self.rest = Some(grip);
-            return false;
+    /// True on the sample that reaches fully open.
+    fn update(&mut self, grip: f32) -> bool {
+        if grip >= Self::OPEN {
+            return std::mem::take(&mut self.armed);
         }
-        let rest = *self.rest.get_or_insert(grip);
-        let off = (grip - rest).abs();
-        match self.away_since {
-            None if off >= Self::TAP_AWAY => self.away_since = Some(now),
-            None => {
-                // Drifting slowly (or holding a new grip) moves where it rests.
-                if off < Self::TAP_HALF {
-                    self.rest = Some(rest + 0.05 * (grip - rest));
-                } else {
-                    self.rest = Some(grip);
-                }
-            }
-            Some(left) if off <= Self::TAP_HALF => {
-                self.away_since = None;
-                if now.since(left) <= Self::TAP_TIME {
-                    if self.last_tap.is_some_and(|first| now.since(first) <= Self::PAIR_TIME) {
-                        self.last_tap = None;
-                        self.quiet_until = Some(now + Self::QUIET);
-                        return true;
-                    }
-                    self.last_tap = Some(left);
-                } else {
-                    self.last_tap = None;
-                }
-            }
-            Some(left) => {
-                if now.since(left) > Self::TAP_TIME {
-                    // Held away: a grasp, not a tap; it rests here now.
-                    self.away_since = None;
-                    self.last_tap = None;
-                    self.rest = Some(grip);
-                }
-            }
+        if grip < Self::REARM {
+            self.armed = true;
         }
         false
     }
@@ -221,7 +181,7 @@ impl<L: Arm> Teleop<L> {
             predictor: Predictor::default(),
             fine: Arc::default(),
             scaling: Scaling::default(),
-            taps: DoubleTap::default(),
+            open_toggle: OpenToggle::default(),
         })
     }
 
@@ -238,7 +198,7 @@ impl<L: Arm> Pilot for Teleop<L> {
 
     fn target(&mut self, now: Timestamp, _follower: &JointState) -> Result<(Pose, Vec<Message>)> {
         let leader = self.leader.read_state()?;
-        if self.taps.update(now, leader.pose.0[Joint::Gripper.index()]) {
+        if self.open_toggle.update(leader.pose.0[Joint::Gripper.index()]) {
             self.fine.set_on(!self.fine.is_on());
         }
         let ahead = self.predictor.ahead(now, leader.pose, self.lead);
@@ -340,58 +300,26 @@ mod tests {
         assert_eq!(s.target(grip(0.0), Some(0.25)), grip(0.0), "closes all the way");
     }
 
-    // Gripper samples every 10 ms from `start` ms; returns the times (ms) a double tap completed.
-    fn taps(start: u64, grip: &[f32]) -> Vec<u64> {
-        let mut d = DoubleTap::default();
-        (0..grip.len())
-            .filter(|&i| d.update(Timestamp(0) + Duration::from_millis(start + 10 * i as u64), grip[i]))
-            .map(|i| start + 10 * i as u64)
-            .collect()
-    }
-
-    // `ms` milliseconds at `v`, sampled every 10 ms.
-    fn hold(v: f32, ms: usize) -> Vec<f32> {
-        vec![v; ms / 10]
+    fn toggles(grip: &[f32]) -> usize {
+        let mut t = OpenToggle::default();
+        grip.iter().filter(|&&g| t.update(g)).count()
     }
 
     #[test]
-    fn two_quick_squeezes_are_a_double_tap() {
-        let g = [hold(40.0, 300), hold(20.0, 150), hold(40.0, 150), hold(20.0, 150), hold(40.0, 300)].concat();
-        assert_eq!(taps(0, &g), vec![750]);
+    fn opening_all_the_way_toggles_once() {
+        assert_eq!(toggles(&[0.0, 50.0, 96.0, 99.0, 100.0, 97.0, 96.0]), 1, "holding it open doesn't flicker");
     }
 
     #[test]
-    fn opening_twice_counts_too() {
-        let g = [hold(40.0, 300), hold(60.0, 150), hold(40.0, 150), hold(60.0, 150), hold(40.0, 300)].concat();
-        assert_eq!(taps(0, &g).len(), 1);
+    fn it_rearms_only_after_closing_well_below_open() {
+        assert_eq!(toggles(&[0.0, 96.0, 90.0, 96.0]), 1, "90% isn't closed enough to re-arm");
+        assert_eq!(toggles(&[0.0, 96.0, 40.0, 96.0]), 2);
     }
 
     #[test]
-    fn a_grasp_and_release_is_not_a_tap() {
-        // Close on something for a second, open, close again quickly: only one quick tap.
-        let g = [hold(40.0, 300), hold(15.0, 1000), hold(40.0, 150), hold(20.0, 150), hold(40.0, 300)].concat();
-        assert!(taps(0, &g).is_empty());
-    }
-
-    #[test]
-    fn small_wiggles_and_slow_taps_are_not_taps() {
-        let wiggle = [hold(40.0, 300), hold(34.0, 100), hold(40.0, 100), hold(34.0, 100), hold(40.0, 300)].concat();
-        assert!(taps(0, &wiggle).is_empty());
-        let slow = [hold(40.0, 300), hold(20.0, 600), hold(40.0, 100), hold(20.0, 600), hold(40.0, 300)].concat();
-        assert!(taps(0, &slow).is_empty());
-    }
-
-    #[test]
-    fn taps_too_far_apart_are_not_a_pair() {
-        let g = [hold(40.0, 300), hold(20.0, 150), hold(40.0, 1500), hold(20.0, 150), hold(40.0, 300)].concat();
-        assert!(taps(0, &g).is_empty());
-    }
-
-    #[test]
-    fn a_triple_tap_toggles_once() {
-        let tap = [hold(20.0, 150), hold(40.0, 150)].concat();
-        let g = [hold(40.0, 300), tap.clone(), tap.clone(), tap, hold(40.0, 300)].concat();
-        assert_eq!(taps(0, &g).len(), 1);
+    fn normal_grips_and_an_open_start_dont_toggle() {
+        assert_eq!(toggles(&[0.0, 80.0, 10.0, 90.0, 0.0]), 0);
+        assert_eq!(toggles(&[99.0, 98.0]), 0, "teleop started with the gripper open");
     }
 
     #[test]
