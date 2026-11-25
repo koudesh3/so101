@@ -3,6 +3,7 @@
 //! each step's `Tick`).
 
 mod grid;
+mod health;
 mod pilots;
 mod run;
 
@@ -16,6 +17,7 @@ use crate::policy::CheckpointId;
 use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
+pub use health::{Health, Junk, Trip, OVERHEAT_C, SAG_RATIO};
 pub use pilots::{Pilot, Teleop};
 pub use run::{request_realtime, run, RunOptions, RunStats, LATE_AFTER};
 

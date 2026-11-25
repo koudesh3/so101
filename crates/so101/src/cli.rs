@@ -14,7 +14,7 @@ use so101::arm::{
 };
 use so101::camera::{read_controls, Camera, FfmpegCamera};
 use so101::control::{
-    request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
+    request_realtime, run, ArmRole, Event, EventBus, Grid, Health, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
 use so101::session::{Attachment, CameraInfo, Header};
 
@@ -543,6 +543,13 @@ fn cmd_teleop(
         stats.worst_lateness.as_secs_f64() * 1e3,
         stats.worst_work_time.as_secs_f64() * 1e3
     );
+    if actuators {
+        let junk = stats.junk;
+        println!(
+            "junk actuator readings (ignored): {} temperature ({} over 100 C), {} voltage",
+            junk.temperature, junk.impossible, junk.voltage
+        );
+    }
     Ok(())
 }
 
@@ -721,6 +728,9 @@ fn print_teleop(
 struct Power {
     current_a: [f32; JOINT_COUNT],
     peak_a: f32,
+    // Voltage through the health filter: single junk readings (the wrist roll and gripper servos
+    // report 10-11 V now and then) aren't supply sag.
+    health: Health,
     lowest_v: Option<f32>,
 }
 
@@ -730,12 +740,13 @@ impl Power {
             self.current_a[a.joint.index()] = amps;
             self.peak_a = self.peak_a.max(self.current_a.iter().sum());
         }
-        if let Some(v) = a.voltage_v {
+        self.health.add(a);
+        if let Some(v) = self.health.supply_v() {
             self.lowest_v = Some(self.lowest_v.map_or(v, |low| low.min(v)));
         }
     }
 
-    /// Since the last line: lowest voltage, total current now, peak total.
+    /// Since the last line: lowest supply voltage (median of 5 per servo), total current now, peak.
     fn take_line(&mut self) -> Option<String> {
         let lowest_v = self.lowest_v.take()?;
         let line = format!(

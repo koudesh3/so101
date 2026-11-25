@@ -15,7 +15,7 @@ use bytes::Bytes;
 use so101::arm::{ActuatorStatus, Joint, Limit, JOINT_COUNT};
 use so101::camera::Frame;
 use so101::clock::Clock;
-use so101::control::{Event, Sink};
+use so101::control::{Event, Health, Sink};
 use so101::session::{Attachment, Header, Recorder, RecorderOptions};
 
 const PAGE: &str = include_str!("console.html");
@@ -41,7 +41,8 @@ impl Feed {
 pub struct Live {
     load_percent: [f32; JOINT_COUNT],
     current_a: [f32; JOINT_COUNT],
-    voltage_v: Option<f32>,
+    // Voltage and temperature through the health filter (median of 5), not raw.
+    health: Health,
     pub held: [Option<Limit>; JOINT_COUNT],
 }
 
@@ -50,7 +51,7 @@ impl Live {
         let i = a.joint.index();
         self.load_percent[i] = a.load_percent.unwrap_or(self.load_percent[i]);
         self.current_a[i] = a.current_a.unwrap_or(self.current_a[i]);
-        self.voltage_v = a.voltage_v.or(self.voltage_v);
+        self.health.add(a);
     }
 }
 
@@ -265,7 +266,8 @@ impl Console {
             "joints": Joint::ALL.map(|j| j.name()),
             "load_percent": live.load_percent.map(|v| round(v, 10.0)),
             "current_a": live.current_a.map(|v| round(v, 1000.0)),
-            "voltage_v": live.voltage_v.map(|v| round(v, 10.0)),
+            "voltage_v": live.health.supply_v().map(|v| round(v, 10.0)),
+            "temperature_c": Joint::ALL.map(|j| live.health.temperature_c(j).map(|c| round(c, 1.0))),
             "held": live.held.map(|h| h.map(|l| format!("{l:?}").to_lowercase())),
             "recording": self.recording.json(),
             "message": result.as_ref().map(|r| r.as_ref().unwrap_or_else(|e| e).clone()),

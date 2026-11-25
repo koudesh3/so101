@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::arm::{Arm, Error, Joint, Result};
 use crate::clock::Clock;
-use crate::control::{ArmRole, Clip, Event, EventBus, Grid, JointTarget, Message, Pilot, Tick};
+use crate::control::{ArmRole, Clip, Event, EventBus, Grid, Health, JointTarget, Junk, Message, Pilot, Tick};
 
 // How long a follower may fail every cycle before the loop stops.
 const FAILSAFE_AFTER: Duration = Duration::from_millis(500);
@@ -36,11 +36,14 @@ pub struct RunStats {
     pub errors: u64,
     /// Real compute time, whatever the clock: what the loop costs the host.
     pub worst_work_time: Duration,
+    /// Actuator readings the health filter judged junk (with `read_actuators`).
+    pub junk: Junk,
 }
 
 /// Drives `follower` with `pilot` until `stop` is set or `max_ticks` have run, publishing every
-/// event on `bus`. `on_error` hears each failed step; the previous goal then holds. Follower
-/// torque is switched off on every exit path.
+/// event on `bus`. `on_error` hears each failed step; the previous goal then holds. With
+/// `read_actuators`, a servo that stays too hot or a supply that sags stops the run (`Health`).
+/// Follower torque is switched off on every exit path.
 pub fn run(
     follower: &mut impl Arm,
     pilot: &mut impl Pilot,
@@ -72,6 +75,7 @@ fn run_cycles(
     let mut grid = Grid::new(options.hz, clock.clone());
     let mut stats = RunStats::default();
     let mut consecutive_errors = 0u32;
+    let mut health = Health::default();
     let fail_after = ((FAILSAFE_AFTER.as_secs_f64() * options.hz).ceil() as u32).max(3);
 
     while !stop.load(Ordering::Relaxed) {
@@ -89,8 +93,19 @@ fn run_cycles(
         match outcome {
             Ok(events) => {
                 consecutive_errors = 0;
+                let mut trip = None;
+                for e in &events {
+                    if let Message::Actuator(ArmRole::Follower, a) = &e.message {
+                        trip = trip.or(health.add(a));
+                    }
+                }
+                // Published first, so a recording keeps the readings that tripped it.
                 for event in events {
                     bus.publish(event);
+                }
+                stats.junk = health.junk();
+                if let Some(trip) = trip {
+                    return Err(Error::Other(format!("health: {trip}; stopping with torque off")));
                 }
             }
             Err(e) => {

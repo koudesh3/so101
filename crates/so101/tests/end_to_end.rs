@@ -543,6 +543,24 @@ fn a_servo_that_misses_the_read_after_torque_on_doesnt_fail_the_first_cycle() {
 }
 
 #[test]
+fn a_hot_servo_stops_teleop_with_torque_off() {
+    let clock = stepped();
+    let mut follower_sim = SimulatedServos::arm("follower").with_clock(clock.clone());
+    follower_sim.servo_mut(3).unwrap().temperature_c = 80.0;
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let mut follower = sim_arm(follower_sim, "follower", &clock);
+    let options = RunOptions { hz: 200.0, max_ticks: Some(50), read_actuators: true };
+    follower.set_step_limit(Some(200));
+    let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+    let err = run.result.unwrap_err().to_string();
+    assert!(err.contains("health: elbow_flex at 80 C"), "{err}");
+    assert_eq!(run.steps.len(), 5, "judged on a full window of 5 readings, the last one published");
+    for joint in Joint::ALL {
+        assert_eq!(follower.read_register(joint, servos::TORQUE_ENABLE).unwrap(), 0, "{} torque off", joint.name());
+    }
+}
+
+#[test]
 fn teleop_reads_every_actuator_every_cycle() {
     let clock = stepped();
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
