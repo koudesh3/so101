@@ -164,10 +164,11 @@ camera beside the MCAP, with its CSV on the session clock.
 
 **Smaller changes:**
 - `JointState.t` is the midpoint of request and reply, not the reply.
-- The startup error: the first cycle after connect sometimes fails ("reply from servo 2, expected
-  1", seen in several runs on 2026-11-23 and 24). The likely cause is the EEPROM writes in
-  `configure_follower_with` leaving servos busy; wait for them, or read back, before the first
-  cycle.
+- The startup error (done 2026-11-24): the first cycle after connect sometimes failed ("reply
+  from servo 2, expected 1", several runs). The byte trace showed why: servo 1 missed the first
+  sync read, 0.8 ms after torque came on, so servo 2's reply read as the wrong servo. Torque-on now
+  reads until all six answer (up to 100 ms) before the loop starts. Also, a read interrupted by a
+  signal (Ctrl-C's) retries instead of counting as an error.
 
 ## What 2026-11-24 changed
 
@@ -235,7 +236,7 @@ From the spec: unit tests on the action queue and the safety checks (joint limit
 e-stop), and a tick-jitter histogram from a 10-minute run. Plus: teleop runs on the new loop on the
 real arms and cameras and writes a session (MCAP with the wrist camera, scene video beside it) that
 passes the contract 1 Python check, which the 2026-11-24 recordings fail (frames stamped on
-arrival, ticks without frames); the startup error is gone.
+arrival, ticks without frames); 20 starts in a row with no first-cycle error.
 
 ## Out of scope
 

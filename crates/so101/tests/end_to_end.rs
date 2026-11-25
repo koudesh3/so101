@@ -526,6 +526,23 @@ fn a_blocked_gripper_shows_load_and_no_speed() {
 }
 
 #[test]
+fn a_servo_that_misses_the_read_after_torque_on_doesnt_fail_the_first_cycle() {
+    // Servo 1 on hardware (2026-11-23): the first cycle's sync read, 0.8 ms after torque came on,
+    // got no reply from it, so servo 2's reply read as the wrong servo.
+    let clock = stepped();
+    let mut follower_sim = SimulatedServos::arm("follower").with_clock(clock.clone());
+    follower_sim.deaf_after_torque_on.push(1);
+    let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);
+    let mut follower = sim_arm(follower_sim, "follower", &clock);
+    let options = RunOptions { hz: 200.0, max_ticks: Some(10), read_actuators: true };
+    follower.set_step_limit(Some(200));
+    let run = run_teleop(&mut leader, &mut follower, options, [Duration::ZERO; JOINT_COUNT], &clock);
+    run.result.unwrap();
+    assert_eq!(run.errors, 0, "torque-on waits until every servo answers");
+    assert_eq!(run.steps.len(), 10);
+}
+
+#[test]
 fn teleop_reads_every_actuator_every_cycle() {
     let clock = stepped();
     let mut leader = sim_arm(SimulatedServos::waving_arm("leader").with_clock(clock.clone()), "leader", &clock);

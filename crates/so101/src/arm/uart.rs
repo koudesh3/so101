@@ -138,6 +138,8 @@ impl Transport for SerialPort {
                 Ok(0) => return Err(Error::Timeout { wanted: buf.len(), got }),
                 Ok(n) => got += n,
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(Error::Timeout { wanted: buf.len(), got }),
+                // A signal (Ctrl-C's, on the Spark) interrupted the read; the deadline still holds.
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(Error::Io(e)),
             }
         }

@@ -73,6 +73,9 @@ pub struct SimulatedServos {
     name: String,
     // Replies from these IDs are dropped, to exercise timeouts.
     pub silenced_ids: Vec<u8>,
+    // These IDs miss the first read after their torque comes on, as servo 1 did on hardware.
+    pub deaf_after_torque_on: Vec<u8>,
+    deaf: Vec<u8>,
 }
 
 impl SimServo {
@@ -214,6 +217,8 @@ impl SimulatedServos {
             pending_input: Vec::new(),
             name: name.to_string(),
             silenced_ids: Vec::new(),
+            deaf_after_torque_on: Vec::new(),
+            deaf: Vec::new(),
         }
     }
 
@@ -278,11 +283,26 @@ impl SimulatedServos {
         if self.silenced_ids.contains(&id) {
             return;
         }
+        if let Some(i) = self.deaf.iter().position(|&d| d == id) {
+            self.deaf.remove(i);
+            return;
+        }
         self.reply_queue.extend(encode_status(id, error, params));
     }
 
     fn handle_instruction(&mut self, id: u8, instruction: Instruction, params: &[u8]) {
         self.settle();
+        let torque_before: Vec<(u8, bool)> = self.servos.iter().map(|s| (s.id, s.torque_on())).collect();
+        self.dispatch(id, instruction, params);
+        for (id, was_on) in torque_before {
+            let now_on = self.servo(id).is_some_and(|s| s.torque_on());
+            if !was_on && now_on && self.deaf_after_torque_on.contains(&id) {
+                self.deaf.push(id);
+            }
+        }
+    }
+
+    fn dispatch(&mut self, id: u8, instruction: Instruction, params: &[u8]) {
         let targets: Vec<u8> = if id == BROADCAST_ID { self.servos.iter().map(|s| s.id).collect() } else { vec![id] };
         match instruction {
             Instruction::Ping => {

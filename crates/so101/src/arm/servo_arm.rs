@@ -175,7 +175,22 @@ impl ServoArm {
     pub fn torque_on_holding(&mut self) -> Result<()> {
         let present = self.read_counts()?;
         self.servos.sync_write(servos::GOAL_POSITION, &pairs(present))?;
-        self.servos.sync_write(servos::TORQUE_ENABLE, &IDS.map(|id| (id, 1)))
+        self.servos.sync_write(servos::TORQUE_ENABLE, &IDS.map(|id| (id, 1)))?;
+        self.await_every_servo()
+    }
+
+    // note: a servo can miss the first read after its torque comes on. Servo 1 did on hardware
+    // (2026-11-23, several runs): the first cycle's sync read, 0.8 ms after torque-on, got no
+    // reply from it, so servo 2's reply read as the wrong servo. Read until all six answer.
+    fn await_every_servo(&mut self) -> Result<()> {
+        let deadline = self.clock.now() + TORQUE_ON_SETTLE;
+        loop {
+            match self.read_counts() {
+                Ok(_) => return Ok(()),
+                Err(e) if self.clock.now() >= deadline => return Err(e),
+                Err(_) => self.clock.sleep_until(self.clock.now() + Duration::from_millis(2)),
+            }
+        }
     }
 
     // Declare the current pose to be centre. Returns the Homing_Offset each servo chose.
@@ -400,6 +415,8 @@ const GUARD_AFTER: Duration = Duration::from_millis(50);
 const GUARD_RELEASE_AFTER: Duration = Duration::from_millis(250);
 // The step limit while the guard is on: a quarter of the default.
 const GUARD_STEP_COUNTS: i32 = 10;
+// How long torque-on waits for every servo to answer a read before giving up.
+const TORQUE_ON_SETTLE: Duration = Duration::from_millis(100);
 
 /// The follower's per-write protections, in the counts they were tuned in on hardware: the stall
 /// hold, then the step limit. The range clamp happens before, in the calibration.
