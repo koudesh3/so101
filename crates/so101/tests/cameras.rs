@@ -19,7 +19,14 @@ pub fn conforms(camera: &mut dyn Camera, n: usize) -> Continuity {
     let mut continuity = Continuity::default();
     let mut last: Option<so101::camera::Frame> = None;
     for _ in 0..n {
-        let frame = camera.next_frame().expect("a frame");
+        // A timeout means none yet (a USB camera takes a moment to start): retry, for up to 3 s.
+        let mut waits = 0;
+        let frame = loop {
+            match camera.next_frame() {
+                Err(so101::camera::Error::Timeout) if waits < 15 => waits += 1,
+                other => break other.expect("a frame"),
+            }
+        };
         assert_eq!(frame.camera, role);
         assert!(frame.t_receive >= frame.t_capture, "received before captured: {frame:?}");
         assert_eq!(&frame.jpeg[..2], &[0xFF, 0xD8], "a JPEG starts with SOI");
