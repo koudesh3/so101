@@ -17,6 +17,9 @@
   .cam { position: relative; background: #000; border-radius: 8px; overflow: hidden;
     border: 3px solid transparent; min-height: 0; }
   .cam img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* Turned a quarter: the image's box is the container's, swapped, centred, then rotated. */
+  .cam.turned img { position: absolute; left: 50%; top: 50%; width: var(--h); height: var(--w);
+    transform: translate(-50%, -50%) rotate(90deg); }
   .cam .tag { position: absolute; top: 8px; left: 10px; font-size: 12px; color: var(--muted);
     background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 4px; }
   #wristBox { grid-row: 1 / span 2; }
@@ -56,7 +59,7 @@
     <span class="tag">wrist</span>
     <span id="recBadge">● REC</span>
   </div>
-  <div class="cam" id="sceneBox">
+  <div class="cam turned" id="sceneBox">
     <img src="/cam/scene" alt="scene camera">
     <span class="tag">scene</span>
   </div>
@@ -82,6 +85,17 @@
 <script>
 const NAMES = { shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'wrist flex', wrist_roll: 'wrist roll', gripper: 'gripper' };
 const $ = id => document.getElementById(id);
+
+// The scene camera is mounted on its side: the page shows it turned 90° clockwise (recordings
+// keep the camera's own orientation).
+function fitTurned() {
+  document.querySelectorAll('.cam.turned').forEach(box => {
+    box.style.setProperty('--w', box.clientWidth + 'px');
+    box.style.setProperty('--h', box.clientHeight + 'px');
+  });
+}
+addEventListener('resize', fitTurned);
+fitTurned();
 let state = null, busy = false;
 
 $('record').onclick = () => send(state && state.recording.active ? 'record/stop' : 'record/start');
