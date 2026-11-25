@@ -93,9 +93,9 @@ impl SceneVideo {
     fn start(video: &PathBuf, times: &PathBuf) -> std::io::Result<Self> {
         let mut ffmpeg = Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-use_wallclock_as_timestamps", "1"])
-            .args([
-                "-f", "mjpeg", "-i", "-", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-            ])
+            // image2pipe stamps each frame when it arrives; the mjpeg demuxer would assume 25 fps.
+            .args(["-f", "image2pipe", "-c:v", "mjpeg", "-i", "-", "-fps_mode", "passthrough"])
+            .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p"])
             .arg(video)
             .stdin(Stdio::piped())
             .spawn()?;
