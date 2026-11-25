@@ -1,11 +1,9 @@
 //! Teleop: a `Pilot` that commands where the leader arm is, a little ahead of it to cancel the
-//! follower's own response lag; in fine mode, a fraction of the leader's motion.
+//! follower's own response lag.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
-use crate::arm::{Arm, Joint, JointState, Pose, Result, JOINT_COUNT};
+use crate::arm::{Arm, JointState, Pose, Result, JOINT_COUNT};
 use crate::clock::Timestamp;
 use crate::control::{ArmRole, Message, Pilot, Source};
 
@@ -15,126 +13,6 @@ pub struct Teleop<L: Arm> {
     /// Zero disables.
     lead: [Duration; JOINT_COUNT],
     predictor: Predictor,
-    fine: Arc<FineControl>,
-    scaling: Scaling,
-    open_toggle: OpenToggle,
-}
-
-// Opening the leader's gripper all the way: the fine-mode switch, so a hand on the leader can
-// flip it. It flips once on reaching OPEN, and again only after closing below REARM, so holding
-// it open doesn't flicker; it doesn't flip if teleop starts with the gripper already open.
-// Normal use stays under 80% (2026-11-24: 99% of cycles).
-#[derive(Default)]
-struct OpenToggle {
-    armed: bool,
-}
-
-impl OpenToggle {
-    // Gripper percent; 100 is fully open.
-    const OPEN: f32 = 95.0;
-    const REARM: f32 = 85.0;
-
-    /// True on the sample that reaches fully open.
-    fn update(&mut self, grip: f32) -> bool {
-        if grip >= Self::OPEN {
-            return std::mem::take(&mut self.armed);
-        }
-        if grip < Self::REARM {
-            self.armed = true;
-        }
-        false
-    }
-}
-
-/// Fine mode's switch and scale, shared with whatever flips it from outside the loop.
-#[derive(Debug)]
-pub struct FineControl {
-    on: AtomicBool,
-    scale: AtomicU32,
-}
-
-impl FineControl {
-    pub const DEFAULT_SCALE: f32 = 1.0 / 3.0;
-    const SCALES: std::ops::RangeInclusive<f32> = 0.05..=1.0;
-
-    pub fn is_on(&self) -> bool {
-        self.on.load(Ordering::Relaxed)
-    }
-
-    pub fn set_on(&self, on: bool) {
-        self.on.store(on, Ordering::Relaxed);
-    }
-
-    /// Follower motion per unit of leader motion while fine mode is on.
-    pub fn scale(&self) -> f32 {
-        f32::from_bits(self.scale.load(Ordering::Relaxed))
-    }
-
-    /// Clamped to 0.05..=1.
-    pub fn set_scale(&self, scale: f32) {
-        let scale =
-            if scale.is_nan() { Self::DEFAULT_SCALE } else { scale.clamp(*Self::SCALES.start(), *Self::SCALES.end()) };
-        self.scale.store(scale.to_bits(), Ordering::Relaxed);
-    }
-}
-
-impl Default for FineControl {
-    fn default() -> Self {
-        Self { on: AtomicBool::new(false), scale: AtomicU32::new(Self::DEFAULT_SCALE.to_bits()) }
-    }
-}
-
-// Leader pose -> target. In fine mode the arm's joints move `scale` times the leader's motion from
-// where both were when it began; the gripper stays 1:1, or a scaled grip can't close from where
-// it started. Leaving fine mode keeps the target where it is; the leftover offset then shrinks as
-// the leader moves, so nothing moves on its own.
-#[derive(Default)]
-struct Scaling {
-    // (scale, leader, target) when fine mode began or its scale last changed.
-    anchor: Option<(f32, Pose, Pose)>,
-    offset: [f32; JOINT_COUNT],
-    last: Option<(Pose, Pose)>,
-}
-
-impl Scaling {
-    // Leader motion that goes to closing the offset, per unit moved: the follower moves at 0.5x
-    // or 1.5x the leader until the arms line up again.
-    const CATCH_UP: f32 = 0.5;
-    const UNSCALED: Joint = Joint::Gripper;
-
-    fn target(&mut self, leader: Pose, fine: Option<f32>) -> Pose {
-        let last_target = self.last.map_or(leader, |(_, t)| t);
-        if let Some((prev, _)) = self.last {
-            for i in 0..JOINT_COUNT {
-                let closes = (leader.0[i] - prev.0[i]).abs() * Self::CATCH_UP;
-                self.offset[i] -= self.offset[i].clamp(-closes, closes);
-            }
-        }
-        let followed = |offset: &[f32; JOINT_COUNT], i: usize| leader.0[i] + offset[i];
-        let target = match fine {
-            Some(scale) => {
-                if !matches!(self.anchor, Some((s, _, _)) if s == scale) {
-                    self.anchor = Some((scale, leader, last_target));
-                }
-                let (_, l0, t0) = self.anchor.expect("set above");
-                Pose(std::array::from_fn(|i| {
-                    if i == Self::UNSCALED.index() {
-                        followed(&self.offset, i)
-                    } else {
-                        t0.0[i] + scale * (leader.0[i] - l0.0[i])
-                    }
-                }))
-            }
-            None => {
-                if self.anchor.take().is_some() {
-                    self.offset = std::array::from_fn(|i| last_target.0[i] - leader.0[i]);
-                }
-                Pose(std::array::from_fn(|i| followed(&self.offset, i)))
-            }
-        };
-        self.last = Some((leader, target));
-        target
-    }
 }
 
 // Leader velocity, smoothed, for commanding a little ahead of the hand.
@@ -175,19 +53,7 @@ impl<L: Arm> Teleop<L> {
     /// Turns the leader's torque off, so a hand can move it.
     pub fn new(mut leader: L, lead: [Duration; JOINT_COUNT]) -> Result<Self> {
         leader.torque_off()?;
-        Ok(Self {
-            leader,
-            lead,
-            predictor: Predictor::default(),
-            fine: Arc::default(),
-            scaling: Scaling::default(),
-            open_toggle: OpenToggle::default(),
-        })
-    }
-
-    /// The fine-mode switch, for flipping from another thread while the loop runs.
-    pub fn fine_control(&self) -> Arc<FineControl> {
-        self.fine.clone()
+        Ok(Self { leader, lead, predictor: Predictor::default() })
     }
 }
 
@@ -198,11 +64,7 @@ impl<L: Arm> Pilot for Teleop<L> {
 
     fn target(&mut self, now: Timestamp, _follower: &JointState) -> Result<(Pose, Vec<Message>)> {
         let leader = self.leader.read_state()?;
-        if self.open_toggle.update(leader.pose.0[Joint::Gripper.index()]) {
-            self.fine.set_on(!self.fine.is_on());
-        }
-        let ahead = self.predictor.ahead(now, leader.pose, self.lead);
-        let target = self.scaling.target(ahead, self.fine.is_on().then(|| self.fine.scale()));
+        let target = self.predictor.ahead(now, leader.pose, self.lead);
         Ok((target, vec![Message::JointState(ArmRole::Leader, leader)]))
     }
 }
@@ -245,91 +107,6 @@ mod tests {
         let got = ahead.0[0] - pose.0[0];
         assert!((got - want).abs() < 0.01, "lead {got:.3} deg, wanted {want:.3}");
         assert_eq!(ahead.0[1..], pose.0[1..], "only the moving joint leads");
-    }
-
-    fn pan(deg: f32) -> Pose {
-        let mut pose = Pose::default();
-        pose.0[0] = deg;
-        pose
-    }
-
-    #[test]
-    fn fine_mode_moves_a_fraction_of_the_leader_from_where_it_began() {
-        let mut s = Scaling::default();
-        assert_eq!(s.target(pan(10.0), None), pan(10.0));
-        assert_eq!(s.target(pan(10.0), Some(0.25)), pan(10.0), "switching on doesn't move");
-        assert_eq!(s.target(pan(18.0), Some(0.25)), pan(12.0));
-        assert_eq!(s.target(pan(2.0), Some(0.25)), pan(8.0));
-    }
-
-    #[test]
-    fn changing_the_scale_in_fine_mode_doesnt_jump() {
-        let mut s = Scaling::default();
-        s.target(pan(0.0), Some(0.5));
-        assert_eq!(s.target(pan(10.0), Some(0.5)), pan(5.0));
-        assert_eq!(s.target(pan(10.0), Some(0.25)), pan(5.0));
-        assert_eq!(s.target(pan(14.0), Some(0.25)), pan(6.0));
-    }
-
-    #[test]
-    fn leaving_fine_mode_holds_then_catches_up_as_the_leader_moves() {
-        let mut s = Scaling::default();
-        s.target(pan(0.0), Some(0.5));
-        assert_eq!(s.target(pan(20.0), Some(0.5)), pan(10.0));
-        assert_eq!(s.target(pan(20.0), None), pan(10.0), "switching off doesn't move");
-        assert_eq!(s.target(pan(20.0), None), pan(10.0), "nor does waiting");
-        // Offset 10 behind; moving the leader 4 closes 2 of it.
-        assert_eq!(s.target(pan(24.0), None), pan(16.0));
-        assert_eq!(s.target(pan(14.0), None), pan(11.0), "closing in either direction");
-        for _ in 0..20 {
-            s.target(pan(30.0), None);
-            s.target(pan(0.0), None);
-        }
-        assert_eq!(s.target(pan(5.0), None), pan(5.0), "lined up again");
-    }
-
-    #[test]
-    fn the_gripper_stays_one_to_one_in_fine_mode() {
-        let grip = |deg: f32| {
-            let mut pose = pan(10.0);
-            pose.0[Joint::Gripper.index()] = deg;
-            pose
-        };
-        let mut s = Scaling::default();
-        s.target(grip(60.0), Some(0.25));
-        assert_eq!(s.target(grip(0.0), Some(0.25)), grip(0.0), "closes all the way");
-    }
-
-    fn toggles(grip: &[f32]) -> usize {
-        let mut t = OpenToggle::default();
-        grip.iter().filter(|&&g| t.update(g)).count()
-    }
-
-    #[test]
-    fn opening_all_the_way_toggles_once() {
-        assert_eq!(toggles(&[0.0, 50.0, 96.0, 99.0, 100.0, 97.0, 96.0]), 1, "holding it open doesn't flicker");
-    }
-
-    #[test]
-    fn it_rearms_only_after_closing_well_below_open() {
-        assert_eq!(toggles(&[0.0, 96.0, 90.0, 96.0]), 1, "90% isn't closed enough to re-arm");
-        assert_eq!(toggles(&[0.0, 96.0, 40.0, 96.0]), 2);
-    }
-
-    #[test]
-    fn normal_grips_and_an_open_start_dont_toggle() {
-        assert_eq!(toggles(&[0.0, 80.0, 10.0, 90.0, 0.0]), 0);
-        assert_eq!(toggles(&[99.0, 98.0]), 0, "teleop started with the gripper open");
-    }
-
-    #[test]
-    fn fine_scale_is_clamped() {
-        let fine = FineControl::default();
-        assert!((fine.scale() - FineControl::DEFAULT_SCALE).abs() < 1e-6);
-        fine.set_scale(0.0);
-        assert_eq!(fine.scale(), 0.05);
-        fine.set_scale(3.0);
-        assert_eq!(fine.scale(), 1.0);
     }
 
     #[test]

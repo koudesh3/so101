@@ -1,8 +1,12 @@
 //! The cameras: which one, and the frames they produce, with their capture and receive times.
 
+mod ffmpeg;
+
 use bytes::Bytes;
 
 use crate::clock::Timestamp;
+
+pub use ffmpeg::{read_controls, FfmpegCamera};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Camera {

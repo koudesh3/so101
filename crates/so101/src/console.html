@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #0f1115; --panel: #181b21; --line: #2a2f38; --ink: #e6e8ec; --muted: #8b93a1;
-    --fine: #3b82f6; --ok: #3fb27f; --warn: #e0a526; --hot: #e5534b;
+    --ok: #3fb27f; --warn: #e0a526; --hot: #e5534b;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
@@ -20,20 +20,20 @@
   .cam .tag { position: absolute; top: 8px; left: 10px; font-size: 12px; color: var(--muted);
     background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 4px; }
   #wristBox { grid-row: 1 / span 2; }
-  body.fine #wristBox { border-color: var(--fine); }
-  #fineBadge { display: none; position: absolute; top: 8px; right: 10px; background: var(--fine); color: #fff;
-    font-weight: 700; padding: 4px 10px; border-radius: 4px; font-size: 16px; }
-  body.fine #fineBadge { display: block; }
+  body.rec .cam { border-color: var(--hot); }
+  #recBadge { display: none; position: absolute; top: 8px; right: 10px; background: var(--hot); color: #fff;
+    font-weight: 700; padding: 4px 10px; border-radius: 4px; font-size: 16px; font-variant-numeric: tabular-nums; }
+  body.rec #recBadge { display: block; }
   aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
-  #fine { width: 100%; padding: 14px; font-size: 18px; font-weight: 700; border-radius: 6px; cursor: pointer;
+  #record { width: 100%; padding: 14px; font-size: 18px; font-weight: 700; border-radius: 6px; cursor: pointer;
     border: 2px solid var(--line); background: #222731; color: var(--ink); }
-  body.fine #fine { background: var(--fine); border-color: var(--fine); color: #fff; }
+  #record:disabled { opacity: .5; cursor: default; }
+  body.rec #record { background: var(--hot); border-color: var(--hot); color: #fff; }
+  #recInfo { color: var(--muted); font-size: 12px; margin-top: 8px; word-break: break-word; }
+  #recInfo.bad { color: var(--hot); }
   .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
   .row .label { color: var(--muted); margin-right: 4px; }
-  .seg button { padding: 6px 12px; border-radius: 5px; border: 1px solid var(--line); background: #222731;
-    color: var(--ink); cursor: pointer; font-size: 14px; }
-  .seg button.on { border-color: var(--fine); color: #fff; background: #1d3a6b; }
   .keys { color: var(--muted); font-size: 12px; margin-top: 8px; }
   kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font: 12px ui-monospace, monospace; }
   .load { display: grid; grid-template-columns: 92px 1fr 52px; gap: 6px 8px; align-items: center; }
@@ -54,7 +54,7 @@
   <div class="cam" id="wristBox">
     <img src="/cam/wrist" alt="wrist camera">
     <span class="tag">wrist</span>
-    <span id="fineBadge">FINE</span>
+    <span id="recBadge">● REC</span>
   </div>
   <div class="cam" id="sceneBox">
     <img src="/cam/scene" alt="scene camera">
@@ -62,11 +62,9 @@
   </div>
   <aside>
     <div class="panel">
-      <button id="fine">Fine mode: off</button>
-      <div class="row seg" id="scales"><span class="label">Scale</span></div>
-      <div class="keys">open the leader's gripper all the way, or <kbd>space</kbd>: fine on/off &nbsp; <kbd>1</kbd>–<kbd>4</kbd> scale</div>
-      <div class="row"><label><input type="checkbox" id="chirp" checked> Chirp when fine mode changes</label>
-        <span class="label" id="soundHint">(click the page once to allow sound)</span></div>
+      <button id="record" disabled>● Record</button>
+      <div class="keys"><kbd>r</kbd> start / stop</div>
+      <div id="recInfo"></div>
     </div>
     <div class="panel">
       <h2>Follower load (% of max torque)</h2>
@@ -82,23 +80,14 @@
   </aside>
 </main>
 <script>
-const SCALES = [[1/2, '½'], [1/3, '⅓'], [1/4, '¼'], [1/6, '⅙']];
 const NAMES = { shoulder_pan: 'pan', shoulder_lift: 'lift', elbow_flex: 'elbow', wrist_flex: 'wrist flex', wrist_roll: 'wrist roll', gripper: 'gripper' };
 const $ = id => document.getElementById(id);
 let state = null, busy = false;
 
-SCALES.forEach(([v, label], i) => {
-  const b = document.createElement('button');
-  b.textContent = label; b.dataset.scale = v; b.title = `key ${i + 1}`;
-  b.onclick = () => send(`scale/${v}`);
-  $('scales').appendChild(b);
-});
-$('fine').onclick = () => send('fine/toggle');
+$('record').onclick = () => send(state && state.recording.active ? 'record/stop' : 'record/start');
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') return;
-  if (e.code === 'Space') { e.preventDefault(); send('fine/toggle'); }
-  const n = parseInt(e.key, 10);
-  if (n >= 1 && n <= SCALES.length) send(`scale/${SCALES[n - 1][0]}`);
+  if (e.key === 'r' && !$('record').disabled) $('record').click();
 });
 $('threshold').oninput = () => $('thresholdVal').textContent = $('threshold').value + '%';
 
@@ -108,18 +97,21 @@ async function send(cmd) {
 
 function show(s) {
   const status = $('status');
-  if (!s || s.error) {
-    state = null; status.textContent = s ? s.error : 'console not reachable'; status.className = 'bad';
-    document.body.classList.remove('fine'); tone(0); return;
+  if (!s) {
+    state = null; status.textContent = 'teleop not reachable (is it running, and the tunnel up?)'; status.className = 'bad';
+    $('record').disabled = true; tone(0); return;
   }
-  if (state && state.fine !== s.fine) chirp(s.fine);
   state = s;
-  const frac = SCALES.find(([v]) => Math.abs(v - s.scale) < 0.01);
-  const scaleText = frac ? frac[1] : s.scale.toFixed(2);
-  document.body.classList.toggle('fine', s.fine);
-  $('fine').textContent = s.fine ? `Fine mode: on (${scaleText})` : 'Fine mode: off';
-  $('fineBadge').textContent = `FINE ${scaleText}`;
-  document.querySelectorAll('#scales button').forEach(b => b.classList.toggle('on', Math.abs(b.dataset.scale - s.scale) < 0.01));
+  const rec = s.recording;
+  document.body.classList.toggle('rec', rec.active);
+  $('record').disabled = false;
+  $('record').textContent = rec.active ? '■ Stop recording' : '● Record';
+  const mmss = n => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
+  $('recBadge').textContent = rec.active ? `● REC ${mmss(rec.seconds)}` : '';
+  const info = $('recInfo');
+  if (s.message) { info.textContent = s.message; info.className = s.error ? 'bad' : ''; }
+  else if (rec.active) { info.textContent = `recording ${rec.name}`; info.className = ''; }
+  else if (rec.last) { info.textContent = `last: ${rec.last}`; info.className = ''; }
   const load = $('load');
   if (!load.children.length) {
     s.joints.forEach(j => load.insertAdjacentHTML('beforeend',
@@ -148,21 +140,6 @@ function startAudio() {
   if (audio) return;
   audio = new AudioContext(); osc = audio.createOscillator(); gain = audio.createGain();
   osc.type = 'triangle'; gain.gain.value = 0; osc.connect(gain).connect(audio.destination); osc.start();
-  $('soundHint').textContent = '';
-}
-addEventListener('pointerdown', startAudio);
-addEventListener('keydown', startAudio);
-
-// Fine on: two rising notes; off: two falling.
-function chirp(on) {
-  if (!audio || !$('chirp').checked) return;
-  const notes = on ? [660, 990] : [990, 660];
-  notes.forEach((f, i) => {
-    const t = audio.currentTime + i * 0.09, o = audio.createOscillator(), g = audio.createGain();
-    o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.3, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
-    o.connect(g).connect(audio.destination); o.start(t); o.stop(t + 0.09);
-  });
 }
 
 // A tone that rises in pitch and volume the further the hardest-pushing joint is past the threshold.

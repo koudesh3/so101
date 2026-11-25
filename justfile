@@ -54,6 +54,24 @@ teleop:
       --leader "$LEADER" --follower "$FOLLOWER" \
       --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json
 
+# On the Spark: teleop with both cameras and the console, ports and camera settings from
+# /projects/robot.conf; traces every byte to data/traces/, recordings go to data/logs/
+rig:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . /projects/robot.conf
+    controls=()
+    for entry in "${CAMERA_CONTROLS[@]}"; do controls+=(--camera-controls "$entry"); done
+    cargo run --release -q -- --trace data/traces/rig-$(date +%Y%m%d-%H%M%S).jsonl teleop --hz 120 \
+      --leader "$LEADER_PORT" --follower "$FOLLOWER_PORT" \
+      --leader-calibration data/calibration/leader.json --follower-calibration data/calibration/follower.json \
+      --wrist-camera "$WRIST_CAMERA" --scene-camera "$SCENE_CAMERA" "${controls[@]}"
+
+# On the laptop: tunnel the Spark's teleop console to http://localhost:8090 (Ctrl-C to close)
+console host="spark":
+    @echo "console: http://localhost:8090"
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=5 -L 8090:127.0.0.1:8090 {{host}}
+
 # Push this commit to the Spark and run a recipe there, e.g. `just spark check` (only committed work goes)
 spark *args:
     @git diff --quiet HEAD || echo "note: uncommitted changes stay on this machine"

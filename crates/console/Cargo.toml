@@ -1,7 +1,0 @@
-[package]
-name = "console"
-description = "Teleop console for the laptop: both cameras and fine mode in a browser, over SSH to the Spark"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true

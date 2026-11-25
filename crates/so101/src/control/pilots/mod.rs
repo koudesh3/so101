@@ -4,7 +4,7 @@
 
 mod teleop;
 
-pub use teleop::{FineControl, Teleop};
+pub use teleop::Teleop;
 
 use crate::arm::{JointState, Pose, Result};
 use crate::clock::Timestamp;

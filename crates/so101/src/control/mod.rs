@@ -16,7 +16,7 @@ use crate::policy::CheckpointId;
 use crate::policy::Chunk;
 
 pub use grid::{Cycle, Grid};
-pub use pilots::{FineControl, Pilot, Teleop};
+pub use pilots::{Pilot, Teleop};
 pub use run::{request_realtime, run, RunOptions, RunStats, LATE_AFTER};
 
 /// What the control loop used at one step: downstream reads the loop's view only from here (contract 2).

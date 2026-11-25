@@ -10,15 +10,15 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
   arm/             the arm: joints, poses, its errors and the `Arm` trait (mod.rs); `ServoArm`, the
                    SO-101 on its STS3215 servos (servo_arm.rs); the servos and their registers
                    (servos.rs); their UART; simulated servos; calibration; the camera clearance map
-  camera/          frames (the V4L2 code joins it in Phase 4)
+  camera/          frames, and cameras read through ffmpeg (its own V4L2 capture joins it in Phase 4)
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop (run.rs) on its grid of cycles, ticks, events, the event bus, and the
                    pilots that drive it (pilots/: teleop so far)
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   cli.rs           the `so101` command line, which puts the pieces together
-crates/console/  the teleop console, run on the laptop: both cameras, the follower's load and the
-                 fine-mode switch on one page (localhost:8090), over SSH to the Spark
+  console.rs       teleop's console page (console.html): both cameras, the follower's load, record
+                   and stop; served on the Spark, `just console` tunnels it to the laptop
 tools/           offline scripts (uv run): camera_clearance.py builds data/camera_clearance.json from
                  The Robot Studio's SO-101 model
 ml/              the LeRobot side
@@ -83,7 +83,6 @@ One concept, one name, one home.
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
 | `Pilot` | what decides the follower's target each tick: teleop now, a script or the action queue next (a trait) | `control/pilots` |
-| `FineControl` | teleop's fine mode (open the leader's gripper all the way, or the console): while on, the follower's arm joints move a fraction (the scale) of the leader's motion, the gripper 1:1; switched over the control port | `control/pilots` |
 | `Source` | which pilot produced a target, as recorded: teleop, script, policy | `control` |
 | `Event` | anything published on the `EventBus` (the only bus), with its times; it carries a `Message` | `control` |
 | `Session` | one run's recording: an MCAP file of `Event`s, with a header | `session` |

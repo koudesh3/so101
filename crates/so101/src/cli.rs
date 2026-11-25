@@ -1,7 +1,8 @@
 //! The `so101` command line: picks the arms, transports and session, and puts them together.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+mod console;
+
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -11,9 +12,13 @@ use so101::arm::{
     check_centred, demo, sweep, ActuatorStatus, ByteTrace, Calibration, ClearanceMap, Error, FollowerGains, Joint,
     Limit, Pose, Result, SerialPort, ServoArm, Servos, SimulatedServos, Traced, Transport, IDS, JOINT_COUNT,
 };
+use so101::camera::{read_controls, Camera, FfmpegCamera};
 use so101::control::{
-    request_realtime, run, ArmRole, Event, EventBus, FineControl, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
+    request_realtime, run, ArmRole, Event, EventBus, Grid, Message, RunOptions, Teleop, Tick, LATE_AFTER,
 };
+use so101::session::{Attachment, CameraInfo, Header};
+
+use console::{Console, Recording, RecordingSetup};
 
 // Under the kernel's threaded interrupt handlers (priority 50), so serial and USB I/O still run.
 const REALTIME_PRIORITY: i32 = 40;
@@ -31,6 +36,8 @@ struct Cli {
     command: Command,
 }
 
+// Parsed once; teleop's many flags make it the biggest variant by far, which costs nothing here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Ping one servo and read its model number.
@@ -90,10 +97,10 @@ enum Command {
         /// the factory default is 32. Higher is stiffer and closes gaps faster.
         #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(i32).range(4..=64))]
         p_gain: i32,
-        /// Follower gripper drive ceiling in percent. 50 is LeRobot's (gentle,
-        /// but halves gripper speed); 100 is full speed. Stall protection
-        /// stays on either way.
-        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(i32).range(20..=100))]
+        /// Follower gripper drive ceiling in percent. 30 grips discs without
+        /// flinging them (2026-11-24; 50, LeRobot's, squeezed them out); 100 is
+        /// full speed. Stall protection stays on either way.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(i32).range(20..=100))]
         grip_torque: i32,
         /// Command this many ms ahead of the leader on pan, lift, elbow and
         /// gripper, from the leader's velocity (0 = off).
@@ -114,11 +121,27 @@ enum Command {
         /// How close the wrist camera may come to the arm, in mm, by the map.
         #[arg(long, default_value_t = 10.0)]
         camera_margin_mm: f32,
-        /// Serve fine mode and live status on this port, on 127.0.0.1 only, one text command per
-        /// line (`fine on|off|toggle`, `scale 0.33`, `status`), each answered with a JSON status
-        /// line. 0 turns it off. The console (crates/console) reaches it over SSH.
-        #[arg(long, default_value_t = 8091)]
-        control_port: u16,
+        /// Serve the console (cameras, load, record button) on this port, on 127.0.0.1 only;
+        /// `just console` tunnels it to the laptop. 0 turns it off.
+        #[arg(long, default_value_t = 8090)]
+        console_port: u16,
+        /// The wrist camera's V4L2 device; recorded into the session's MCAP.
+        #[arg(long)]
+        wrist_camera: Option<String>,
+        #[arg(long, default_value = "640x480")]
+        wrist_size: String,
+        /// The scene camera's V4L2 device; recorded beside the MCAP as video.
+        #[arg(long)]
+        scene_camera: Option<String>,
+        #[arg(long, default_value = "1280x720")]
+        scene_size: String,
+        /// v4l2 controls for a camera, applied before streaming: "DEVICE name=value ...", as in
+        /// robot.conf's CAMERA_CONTROLS. Repeat for each camera.
+        #[arg(long = "camera-controls")]
+        camera_controls: Vec<String>,
+        /// Where recordings go.
+        #[arg(long, default_value = "data/logs")]
+        record_dir: PathBuf,
     },
     /// Recorded sessions (MCAP files).
     Session {
@@ -186,7 +209,13 @@ fn main() {
             actuators,
             camera_clearance,
             camera_margin_mm,
-            control_port,
+            console_port,
+            wrist_camera,
+            wrist_size,
+            scene_camera,
+            scene_size,
+            camera_controls,
+            record_dir,
         } => {
             let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
             let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
@@ -200,7 +229,13 @@ fn main() {
             });
             let tuning = (gains, lead);
             let camera = (camera_clearance != "none").then(|| (PathBuf::from(camera_clearance), camera_margin_mm));
-            let control = (control_port > 0).then_some(control_port);
+            let io = TeleopIo {
+                console_port: (console_port > 0).then_some(console_port),
+                wrist: wrist_camera.map(|d| (d, wrist_size)),
+                scene: scene_camera.map(|d| (d, scene_size)),
+                camera_controls,
+                record_dir,
+            };
             cmd_teleop(
                 leader_servos,
                 follower_servos,
@@ -212,7 +247,7 @@ fn main() {
                 cli.sim,
                 actuators,
                 camera,
-                control,
+                io,
             )
         }
         Command::Session { command: SessionCommand::Recover { input, output } } => cmd_session_recover(&input, &output),
@@ -398,8 +433,12 @@ fn cmd_teleop(
     sim: bool,
     actuators: bool,
     camera_guard: Option<(PathBuf, f32)>,
-    control_port: Option<u16>,
+    io: TeleopIo,
 ) -> Result<()> {
+    let calibration_files: Vec<(&str, PathBuf)> = [("leader", &leader_cal), ("follower", &follower_cal)]
+        .into_iter()
+        .filter_map(|(n, p)| Some((n, p.clone()?)))
+        .collect();
     let mut leader = ServoArm::new("leader", leader_servos, load_calibration(leader_cal, "leader", sim)?);
     let mut follower = ServoArm::new("follower", follower_servos, load_calibration(follower_cal, "follower", sim)?);
     leader.check_present()?;
@@ -431,23 +470,69 @@ fn cmd_teleop(
     );
     follower.set_step_limit((max_step > 0).then_some(max_step));
     let clock = follower.clock();
-    let bus = EventBus::new();
-    let live = Arc::new(Mutex::new(Live::default()));
-    let printer = print_teleop(bus.subscribe(), hz, live.clone());
-    let mut pilot = Teleop::new(leader, lead)?;
-    if let Some(port) = control_port {
-        match serve_control(port, pilot.fine_control(), live) {
-            Ok(()) => println!("control on 127.0.0.1:{port}: fine mode off, scale {:.2}", pilot.fine_control().scale()),
-            Err(e) => println!("control off: cannot listen on 127.0.0.1:{port}: {e}"),
+    let bus = Arc::new(EventBus::new());
+    let config = BTreeMap::from([
+        ("hz".to_string(), hz.to_string()),
+        ("max_step".into(), max_step.to_string()),
+        ("p_gain".into(), gains.p.to_string()),
+        ("grip_torque_percent".into(), (gains.max_torque[Joint::Gripper.index()] / 10).to_string()),
+        ("lead_ms".into(), lead.map(|d| d.as_millis().to_string()).join(",")),
+        ("source".into(), "teleop".into()),
+    ]);
+    let recording = Arc::new(Recording::new(RecordingSetup {
+        dir: io.record_dir.clone(),
+        scene_video: io.scene.is_some(),
+        clock: clock.clone(),
+        header: session_header(config, calibration_files, &io),
+    }));
+    bus.attach(recording.clone());
+    let console = Arc::new(Console {
+        wrist: Arc::default(),
+        scene: Arc::default(),
+        live: Arc::default(),
+        recording: recording.clone(),
+    });
+    let printer = print_teleop(bus.subscribe(), hz, console.live.clone());
+    let mut cameras = Vec::new();
+    if let Some((device, size)) = &io.wrist {
+        let (feed, bus) = (console.wrist.clone(), bus.clone());
+        let started =
+            FfmpegCamera::start(Camera::Wrist, device, size, &io.controls_for(device), clock.clone(), move |f| {
+                feed.put(f.jpeg.clone());
+                bus.publish(Event::frame(f));
+            });
+        cameras.push(report_camera("wrist", device, started));
+    }
+    if let Some((device, size)) = &io.scene {
+        let (feed, recording) = (console.scene.clone(), recording.clone());
+        let started =
+            FfmpegCamera::start(Camera::Scene, device, size, &io.controls_for(device), clock.clone(), move |f| {
+                feed.put(f.jpeg.clone());
+                recording.scene_frame(&f);
+            });
+        cameras.push(report_camera("scene", device, started));
+    }
+    if let Some(port) = io.console_port {
+        match console.serve(port) {
+            Ok(()) => println!("console on 127.0.0.1:{port} (just console, then http://localhost:{port})"),
+            Err(e) => println!("console off: cannot listen on 127.0.0.1:{port}: {e}"),
         }
     }
+    let mut pilot = Teleop::new(leader, lead)?;
     match request_realtime(REALTIME_PRIORITY) {
         Ok(()) => println!("loop at real-time priority (SCHED_FIFO {REALTIME_PRIORITY})"),
         Err(why) => println!("loop at normal priority: {why}"),
     }
-    let stats = run(&mut follower, &mut pilot, options, clock, &stop, &bus, |e| println!("ERROR {e}"))?;
+    let stats = run(&mut follower, &mut pilot, options, clock, &stop, &bus, |e| println!("ERROR {e}"));
+    if recording.is_recording() {
+        if let Err(e) = recording.stop() {
+            println!("ERROR closing the recording: {e}");
+        }
+    }
+    drop(cameras);
     drop(bus);
     let _ = printer.join();
+    let stats = stats?;
     println!(
         "stopped after {} ticks: {} errors, {} skipped, {} started over {} ms late (worst {:.2} ms), worst tick work {:.2} ms",
         stats.ticks,
@@ -459,6 +544,84 @@ fn cmd_teleop(
         stats.worst_work_time.as_secs_f64() * 1e3
     );
     Ok(())
+}
+
+/// The console and cameras around teleop.
+struct TeleopIo {
+    console_port: Option<u16>,
+    /// (device, size)
+    wrist: Option<(String, String)>,
+    scene: Option<(String, String)>,
+    /// "DEVICE name=value ..." per camera.
+    camera_controls: Vec<String>,
+    record_dir: PathBuf,
+}
+
+impl TeleopIo {
+    fn controls_for(&self, device: &str) -> Vec<String> {
+        self.camera_controls
+            .iter()
+            .filter_map(|entry| {
+                let mut words = entry.split_whitespace();
+                (words.next() == Some(device)).then(|| words.map(str::to_string).collect::<Vec<_>>())
+            })
+            .flatten()
+            .collect()
+    }
+}
+
+fn report_camera(role: &str, device: &str, started: std::io::Result<FfmpegCamera>) -> Option<FfmpegCamera> {
+    match started {
+        Ok(camera) => {
+            println!("{role} camera on {device}");
+            Some(camera)
+        }
+        Err(e) => {
+            println!("{role} camera off: {device}: {e}");
+            None
+        }
+    }
+}
+
+/// A session header, made fresh at each recording's start: the commit, teleop's settings, both
+/// calibrations (attached), and each camera's device with its controls read back.
+fn session_header(
+    config: BTreeMap<String, String>,
+    calibrations: Vec<(&'static str, PathBuf)>,
+    io: &TeleopIo,
+) -> Box<dyn Fn() -> (Header, Vec<Attachment>) + Send + Sync> {
+    let cameras: Vec<(&str, String, Vec<String>)> = [("wrist", &io.wrist), ("scene", &io.scene)]
+        .into_iter()
+        .filter_map(|(role, cam)| cam.as_ref().map(|(device, _)| (role, device.clone(), io.controls_for(device))))
+        .collect();
+    Box::new(move || {
+        let mut header = Header::now();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        header.git_commit = git(&["rev-parse", "HEAD"]).unwrap_or_default();
+        header.git_dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+        header.config = config.clone();
+        header
+            .config
+            .insert("scene_video".into(), "beside the MCAP: <name>-scene.mkv, frame times in <name>-scene.csv".into());
+        let attachments = calibrations
+            .iter()
+            .filter_map(|(name, path)| std::fs::read(path).ok().map(|bytes| header.add_calibration(name, &bytes)))
+            .collect();
+        for (role, device, controls) in &cameras {
+            let names: Vec<&str> = controls.iter().filter_map(|c| c.split('=').next()).collect();
+            header.cameras.insert(
+                role.to_string(),
+                CameraInfo { device: device.clone(), settings: read_controls(device, &names) },
+            );
+        }
+        (header, attachments)
+    })
 }
 
 fn cmd_session_recover(input: &Path, output: &Path) -> Result<()> {
@@ -499,7 +662,11 @@ fn report_holds(tick: &Tick, held: &mut [Option<Limit>; JOINT_COUNT]) {
 
 /// Prints what the teleop loop publishes: holds as they start and end, and both arms' poses once a
 /// second. Ends when the bus is dropped.
-fn print_teleop(events: mpsc::Receiver<Event>, hz: f64, live: Arc<Mutex<Live>>) -> std::thread::JoinHandle<()> {
+fn print_teleop(
+    events: mpsc::Receiver<Event>,
+    hz: f64,
+    live: Arc<Mutex<console::Live>>,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut held = [None; JOINT_COUNT];
         let mut poses = [Pose::default(); 2];
@@ -532,81 +699,6 @@ fn print_teleop(events: mpsc::Receiver<Event>, hz: f64, live: Arc<Mutex<Live>>) 
             }
         }
     })
-}
-
-/// What the control port reports: the follower's latest load and current per joint, its supply
-/// voltage, and which joints a guard is holding.
-#[derive(Default)]
-struct Live {
-    load_percent: [f32; JOINT_COUNT],
-    current_a: [f32; JOINT_COUNT],
-    voltage_v: Option<f32>,
-    held: [Option<Limit>; JOINT_COUNT],
-}
-
-impl Live {
-    fn add(&mut self, a: &ActuatorStatus) {
-        let i = a.joint.index();
-        self.load_percent[i] = a.load_percent.unwrap_or(self.load_percent[i]);
-        self.current_a[i] = a.current_a.unwrap_or(self.current_a[i]);
-        self.voltage_v = a.voltage_v.or(self.voltage_v);
-    }
-
-    fn json(&self, fine: &FineControl) -> String {
-        let round = |v: f32, by: f64| (f64::from(v) * by).round() / by;
-        serde_json::json!({
-            "fine": fine.is_on(),
-            "scale": round(fine.scale(), 1000.0),
-            "joints": Joint::ALL.map(|j| j.name()),
-            "load_percent": self.load_percent.map(|v| round(v, 10.0)),
-            "current_a": self.current_a.map(|v| round(v, 1000.0)),
-            "voltage_v": self.voltage_v.map(|v| round(v, 10.0)),
-            "held": self.held.map(|h| h.map(|l| format!("{l:?}").to_lowercase())),
-        })
-        .to_string()
-    }
-}
-
-/// Listens on 127.0.0.1 only; each connection is a line-per-command session (see `--control-port`).
-fn serve_control(port: u16, fine: Arc<FineControl>, live: Arc<Mutex<Live>>) -> std::io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    std::thread::spawn(move || {
-        for conn in listener.incoming().flatten() {
-            let (fine, live) = (fine.clone(), live.clone());
-            std::thread::spawn(move || control_session(conn, &fine, &live));
-        }
-    });
-    Ok(())
-}
-
-fn control_session(conn: TcpStream, fine: &FineControl, live: &Mutex<Live>) -> std::io::Result<()> {
-    let mut reply = conn.try_clone()?;
-    for line in BufReader::new(conn).lines() {
-        let line = line?;
-        let was = (fine.is_on(), fine.scale());
-        match line.split_whitespace().collect::<Vec<_>>().as_slice() {
-            ["fine", "on"] => fine.set_on(true),
-            ["fine", "off"] => fine.set_on(false),
-            ["fine", "toggle"] => fine.set_on(!fine.is_on()),
-            ["scale", x] => match x.parse() {
-                Ok(x) => fine.set_scale(x),
-                Err(_) => {
-                    writeln!(reply, "{}", serde_json::json!({ "error": format!("not a scale: {x}") }))?;
-                    continue;
-                }
-            },
-            ["status"] | [] => {}
-            _ => {
-                writeln!(reply, "{}", serde_json::json!({ "error": format!("unknown command: {line}") }))?;
-                continue;
-            }
-        }
-        if (fine.is_on(), fine.scale()) != was {
-            println!("fine mode {} (scale {:.2})", if fine.is_on() { "on" } else { "off" }, fine.scale());
-        }
-        writeln!(reply, "{}", live.lock().expect("live status").json(fine))?;
-    }
-    Ok(())
 }
 
 /// The follower's draw on its supply, summed over the servos, for the live printout.
