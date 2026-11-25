@@ -10,17 +10,18 @@ crates/so101/    the Rust code, one crate, one folder per thing (src/):
   arm/             the arm: joints, poses, its errors and the `Arm` trait (mod.rs); `ServoArm`, the
                    SO-101 on its STS3215 servos (servo_arm.rs); the servos and their registers
                    (servos.rs); their UART; simulated servos; calibration; the camera clearance map
-  camera/          frames, and cameras read through ffmpeg (its own V4L2 capture joins it in Phase 4)
+  camera/          the `Camera` trait and frames; V4L2 cameras (Linux), synthetic ones
   policy/          observations and action chunks (the ONNX runner joins it in Phase 2)
   control/         the loop (run.rs) on its grid of cycles, ticks, events, the event bus, and the
                    pilots that drive it (pilots/: teleop so far)
   session/         a recorded session: protobuf in MCAP, recorder, reader, recovery
   clock.rs         timestamps, real and replayed time
   cli.rs           the `so101` command line, which puts the pieces together
+  scene_video.rs   the scene camera beside a recording: saved raw, encoded after it stops
   console.rs       teleop's console page (console.html): both cameras, the follower's load, record
                    and stop; served on the Spark, `just console` tunnels it to the laptop
 tools/           offline scripts (uv run): camera_clearance.py builds data/camera_clearance.json from
-                 The Robot Studio's SO-101 model
+                 The Robot Studio's SO-101 model; linux.Dockerfile, the image `just linux` builds in
 ml/              the LeRobot side
   act              record, teleop, calibrate and train with LeRobot on the Spark, in tmux
 proto/           the log's messages in protobuf (so101/v1), readable from any language; Foxglove's
@@ -81,6 +82,8 @@ One concept, one name, one home.
 | `JointTarget` | a pose the loop commanded, with its time, counts and source | `control` |
 | `ActuatorStatus` | one joint's temperature, current, load, faults | `arm` |
 | `Frame` | one camera image with its times | `camera` |
+| `CameraRole` / `Camera` | which camera (wrist, scene) / a source of frames: V4L2, synthetic or replay (a trait) | `camera` |
+| `LatestFrame` | a camera's newest frame, for the control loop to read without waiting | `camera` |
 | `Chunk` | an action chunk: a policy's predicted poses, one per tick | `policy` |
 | `Grid` / `Cycle` | the servo loop's fixed 120 Hz schedule / one cycle on it (read, step toward the target, write) | `control` |
 | `Tick` | one 30 Hz control step, and the record of what the loop saw and sent at it | `control` |
@@ -114,6 +117,7 @@ With [mise](https://mise.jdx.dev) installed, `mise install` fetches Rust, just a
 just              # list the commands
 just check        # formatting, clippy, the tests (simulated servos), and Python reading a log
 just sim          # teleop the simulated arms, no hardware
+just linux check  # the same in an arm64 Linux container (builds the V4L2 code); needs Docker
 ```
 
 With hardware (`so101` is the binary `cargo install --path crates/so101` puts on your path),

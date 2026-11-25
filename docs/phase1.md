@@ -96,9 +96,8 @@ From 2026-11-24:
   `-scene.mkv` and `-scene.csv` beside it. The header carries the commit, teleop's settings, both
   calibration files and each camera's device and read-back settings. `just rig` starts it all on
   the Spark from `/projects/robot.conf`.
-- **Cameras through ffmpeg** (`camera/ffmpeg.rs`, interim): MJPEG off the camera, copied, split
-  into JPEGs. Its frames are stamped on arrival (capture time = receive time) and numbered by us,
-  which contract 3 doesn't allow; V4L2 replaces it (below).
+- **Cameras through ffmpeg** (interim, removed the same day): frames stamped on arrival and
+  numbered by us, which contract 3 doesn't allow. Replaced by V4L2 (below).
 - **Gripper torque 30%** by default (it was 50%; see "What 2026-11-24 changed").
 
 Phase 1 builds on that:
@@ -149,13 +148,31 @@ speed limit, and a reversal dead band (0.3-0.4° on most joints, 1.7° on the el
 Fast and deterministic on a replayed clock; `--sim` can switch to it. `SimulatedServos` stays for
 testing the servo driver byte for byte.
 
-**Cameras** (`camera/`), one trait, three implementations:
-- **V4L2** (moved from Phase 4): the camera's MJPEG through the kernel's buffers, with each
-  frame's kernel timestamp as `t_capture` (start of exposure, contract 3), our receive time as
-  `t_receive`, and the kernel's frame number as `sequence`, so a gap is a real drop. Applies and
-  reads back the settings from robot.conf (contract 7).
-- **Synthetic:** generated frames with exact times.
-- **Replay:** frames from a session or a LeRobot dataset video, at their recorded times.
+**Cameras** (`camera/`; done 2026-11-24), the `Camera` trait (role, nominal period, device and
+read-back settings, blocking `next_frame`), `stream` to run one on its own thread counting
+contract 3's drops (sequence gaps and long intervals, apart), and `LatestFrame`, a lock-free slot
+the real-time loop reads without waiting. Three implementations, one conformance suite
+(`tests/cameras.rs`):
+- **V4L2** (`V4l2Camera`, Linux, the `v4l` crate): MJPEG through the kernel's mmap buffers;
+  `t_capture` is the kernel's CLOCK_MONOTONIC stamp, `t_receive` ours, `sequence` the kernel's
+  frame number. Controls by v4l2-ctl's names (robot.conf unchanged), auto switches first, read
+  back; one that didn't take refuses the open. Two quirks worked around: the crate's own timeout
+  re-queues a buffer the kernel holds (EINVAL), so we poll ourselves; the icSpring pads a byte
+  after the JPEG's end marker, so frames are trimmed to it. The first 2 frames after start arrive
+  truncated and are skipped. Measured on the Spark: both cameras 3 minutes together, 0 frames
+  lost, 0 long intervals (wrist 29.8 fps, scene 29.5 fps); one wrist frame lost in an earlier
+  10 s run, so losses happen but rarely.
+- **Synthetic** (`SyntheticCamera`): exact times on any clock, chosen losses; `--sim` uses it.
+- **Replay** (`session::ReplayCamera`): one role's frames from a session at their recorded times,
+  with the recorded device and settings. Replay from LeRobot dataset video waits for the exporter.
+
+**The scene video** (`scene_video.rs`; done 2026-11-24): saved raw while recording (the camera's
+JPEGs in `<name>-scene.mjpeg`, a CSV of each frame's sequence, capture and receive times and byte
+range), so the live path never waits on another process. Stopping a recording starts `so101
+encode-scenes` as its own low-priority process: H.264 with every frame at its CSV capture time
+(ffmpeg's concat input with per-frame durations at a 1 ms time base), checked frame by frame
+within 1.5 ms before the raw file is removed; a recording cut short keeps its complete frames.
+`just encode-scenes` finishes any left raw.
 
 **The session:** the recorder keeps the scene camera beside the MCAP, with its CSV on the session
 clock. Done 2026-11-24: one gains file, `data/gains.json` (P 32, I 0, D 32, per-joint
@@ -237,8 +254,9 @@ A day of teleop on the real rig, a fine-motion measurement, two analysed episode
 From the spec: unit tests on the action queue and the safety checks (joint limits, rate limits,
 e-stop), and a tick-jitter histogram from a 10-minute run. Plus: teleop runs on the new loop on the
 real arms and cameras and writes a session (MCAP with the wrist camera, scene video beside it) that
-passes the contract 1 Python check, which the 2026-11-24 recordings fail (frames stamped on
-arrival, ticks without frames); 20 starts in a row with no first-cycle error.
+passes the contract 1 Python check (a 10 s recording with the real cameras and simulated arms
+passes since 2026-11-24; ticks don't reference frames yet); 20 starts in a row with no
+first-cycle error.
 
 ## Out of scope
 

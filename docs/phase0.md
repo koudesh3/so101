@@ -24,9 +24,11 @@ names come last, as the implementation of those promises.
   inside is protobuf; a camera frame's picture is the camera's own JPEG bytes inside a protobuf
   message.
 - **Except the scene camera** (decided 2026-11-24): it isn't a policy input, and its 1280x720 JPEGs
-  would be about 22 GB an hour, so it's stored beside the MCAP as `<name>-scene.mkv` (H.264) with
-  `<name>-scene.csv` giving each frame's sequence and times on the session clock. The header names
-  the files; the CSV, not the video's own timestamps, is the source of truth for frame times.
+  would be about 22 GB an hour, so it's stored beside the MCAP: `<name>-scene.csv` gives each
+  frame's kernel sequence, capture and receive times (session clock) and byte range, and the
+  frames themselves are `<name>-scene.mjpeg` while recording, then `<name>-scene.mkv` (H.264,
+  every frame at its capture time to 1 ms) once encoded after the recording stops. The CSV is the
+  source of truth for frame times.
 - Every file embeds the exact schema each message was written with, so Python and Foxglove decode
   any log, old or new, without generated code.
 - The `.proto` files in `proto` (package `so101.v1`) are the single definition of every logged
@@ -81,7 +83,7 @@ policy; either can be clipped before it reaches the follower. So:
   - **Joint state:** stamped when the sync read returns. The servos sampled sometime in the
     ~1 ms round trip before that. Phase 1 stamps the midpoint of request and reply instead, which
     bounds the error to about ±0.5 ms against a 10 ms cycle.
-  - **V4L2 camera on Linux:** the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
+  - **V4L2 camera on Linux** (`camera::V4l2Camera`): the kernel's buffer timestamp (same clock as `CLOCK_MONOTONIC`),
     which the UVC driver marks as start of exposure (`ts-src-soe`). Measured for the wrist camera
     (below): exposure actually starts about 10 ms before the stamp; no correction is applied yet. Each camera model needs
     its own check: the driver's claim depends on the camera's own clock reports.
