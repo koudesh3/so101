@@ -201,7 +201,23 @@ load_conf() {
   [[ -e $FOLLOWER_PORT ]] || die "follower arm not found at $FOLLOWER_PORT (plugged in and powered? act devices)"
 }
 need_tty() { [[ -t 0 ]] || die "this one is interactive: run it as  ssh -t spark act $*"; }
-robot_args() { echo --robot.type=so101_follower --robot.port="$FOLLOWER_PORT" --robot.id="$FOLLOWER_ID"; }
+# The follower's gains come from the repo's one gains file (contract 8, docs/phase0.md), so LeRobot
+# writes the same P/I/D our teleop does. LeRobot hardcodes the gripper's Max_Torque at 500 (50%),
+# so recordings made through act still grip at 50%, not the file's 30%, until the Phase 4 plugin.
+GAINS=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)/data/gains.json
+gains_args() {
+  [[ -f $GAINS ]] || die "no gains file at $GAINS"
+  "$BIN/python" - "$GAINS" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+print(f"--robot.position_p_coefficient={g['p_coefficient']}",
+      f"--robot.position_i_coefficient={g['i_coefficient']}",
+      f"--robot.position_d_coefficient={g['d_coefficient']}")
+PY
+}
+robot_args() {
+  echo --robot.type=so101_follower --robot.port="$FOLLOWER_PORT" --robot.id="$FOLLOWER_ID" $(gains_args)
+}
 teleop_args() { echo --teleop.type=so101_leader --teleop.port="$LEADER_PORT" --teleop.id="$LEADER_ID"; }
 
 # Set the v4l2 controls listed in CAMERA_CONTROLS (robot.conf), one entry per camera:

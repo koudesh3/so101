@@ -1,0 +1,18 @@
+{
+  "about": "The follower's gains and limits: the one source (contract 8, docs/phase0.md). Teleop writes them to every servo on start, reads them back and refuses to run if one differs, and records what it read in every session header. P/I/D: the factory 32/0/32, which stop within 0.4-0.7 deg (2026-11-23; LeRobot's P 16 stops up to 2.3 deg short). max_torque, 0-1000 = 0-100%: about 1.2x the most each joint used in Hanoi moves at step limit 20 (2026-11-23); the gripper at 30%, since 50% flung discs (2026-11-24). gripper: LeRobot's burnout guard (protection current in 6.5 mA units; overload torque in percent).",
+  "p_coefficient": 32,
+  "i_coefficient": 0,
+  "d_coefficient": 32,
+  "max_torque": {
+    "shoulder_pan": 900,
+    "shoulder_lift": 800,
+    "elbow_flex": 700,
+    "wrist_flex": 800,
+    "wrist_roll": 700,
+    "gripper": 300
+  },
+  "gripper": {
+    "protection_current": 250,
+    "overload_torque": 25
+  }
+}

@@ -28,6 +28,8 @@ proto/           the log's messages in protobuf (so101/v1), readable from any la
 data/            what isn't code
   calibration/     the leader's and follower's calibration files (in git)
   camera_clearance.json  how close the wrist camera comes to the arm, by elbow, wrist flex and roll
+  gains.json       the follower's gains and limits, the one source: written and read back on
+                   every start, recorded in every session
   robot.conf       the Spark's arm ports and camera settings, read by `act`
   logs/            recorded logs from runs (not in git)
 docs/

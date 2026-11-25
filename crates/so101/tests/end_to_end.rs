@@ -779,7 +779,8 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     let clock = stepped();
     use so101::arm::FollowerGains;
     let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
-    arm.configure_follower_with(FollowerGains { p: 28, d: 32, max_torque: [900, 800, 700, 800, 700, 800] }).unwrap();
+    let gains = FollowerGains { p: 28, max_torque: [900, 800, 700, 800, 700, 800], ..FollowerGains::LEROBOT };
+    arm.configure_follower_with(gains).unwrap();
     assert_eq!(arm.read_register(Joint::Gripper, servos::MAX_TORQUE).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::Gripper, servos::TORQUE_LIMIT).unwrap(), 800);
     assert_eq!(arm.read_register(Joint::ElbowFlex, servos::MAX_TORQUE).unwrap(), 700);
@@ -793,6 +794,44 @@ fn configure_writes_gains_max_acceleration_and_clears_the_wrap_bit() {
     assert_eq!(arm.read_register(Joint::ElbowFlex, servos::MAXIMUM_ACCELERATION).unwrap(), 254);
     assert_eq!(arm.read_register(Joint::ElbowFlex, servos::LOCK).unwrap(), 1);
     assert_eq!(arm.configure_readings().unwrap(), 0, "factory Phase 12 has bit 4 clear");
+}
+
+#[test]
+fn the_committed_gains_file_loads() {
+    use so101::arm::FollowerGains;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/gains.json");
+    let gains = FollowerGains::load(&path).unwrap();
+    assert_eq!((gains.p, gains.i, gains.d), (32, 0, 32));
+    assert_eq!(gains.max_torque[Joint::Gripper.index()], 300, "50% flung discs (2026-11-24)");
+}
+
+#[test]
+fn gains_read_back_after_configure_and_go_in_the_header() {
+    use so101::arm::FollowerGains;
+    let clock = stepped();
+    let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+    let gains = FollowerGains { p: 32, max_torque: [900, 800, 700, 800, 700, 300], ..FollowerGains::LEROBOT };
+    arm.configure_follower_with(gains).unwrap();
+    let registers = arm.check_gains(&gains).unwrap();
+    let gripper = &registers[Joint::Gripper.index()];
+    for want in ["P_Coefficient=32", "I_Coefficient=0", "D_Coefficient=32", "Max_Torque=300", "Torque_Limit=300"] {
+        assert!(gripper.contains(want), "{want} in {gripper}");
+    }
+    assert!(gripper.contains("Protection_Current=250") && gripper.contains("Overload_Torque=25"));
+    assert_eq!(registers[Joint::ElbowFlex.index()].split(' ').count(), 11, "every recorded register");
+}
+
+#[test]
+fn servos_left_at_another_tools_gains_fail_the_check() {
+    use so101::arm::FollowerGains;
+    let clock = stepped();
+    let mut arm = sim_arm(SimulatedServos::arm("follower").with_clock(clock.clone()), "follower", &clock);
+    // What the servos hold after LeRobot connected last.
+    arm.configure_follower_with(FollowerGains::LEROBOT).unwrap();
+    let ours = FollowerGains { p: 32, max_torque: [900, 800, 700, 800, 700, 300], ..FollowerGains::LEROBOT };
+    let err = arm.check_gains(&ours).unwrap_err().to_string();
+    assert!(err.contains("elbow_flex P_Coefficient reads 16, gains say 32"), "{err}");
+    assert!(err.contains("gripper Max_Torque reads 500, gains say 300"), "{err}");
 }
 
 #[test]

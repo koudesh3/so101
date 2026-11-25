@@ -19,16 +19,43 @@ pub const STATUS_BLOCK_START: u8 = 56;
 
 pub const STATUS_BLOCK_LEN: u8 = 15;
 
-// The follower's position-loop gains. LeRobot halves P from the factory 32 to
-// 16 to avoid shake; higher P is stiffer and quicker to close a gap.
-#[derive(Clone, Copy, Debug)]
+/// The follower's gains and limits, written to every servo at connect and read back (contract 8).
+/// Their one source is `data/gains.json`: servos keep whatever the last tool wrote, so every
+/// start writes these and checks they took, and every recording stores what was read back.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FollowerGains {
+    /// Position loop. LeRobot halves P from the factory 32 to 16; higher is stiffer and closes
+    /// a gap faster (P 16 stops up to 2.3° short, measured 2026-11-23).
     pub p: i32,
+    pub i: i32,
     pub d: i32,
-    // Drive ceiling per joint, 0..1000 = 0..100%, written to Max_Torque (EEPROM, so it survives a
-    // brownout reboot) and Torque_Limit. It caps force and, with it, top speed: the gripper at 500
-    // measured ~1600 counts/s against ~3100 at full drive. Stall protection does not depend on it.
+    /// Drive ceiling per joint, 0..1000 = 0..100%, written to Max_Torque (EEPROM, so it survives a
+    /// brownout reboot) and Torque_Limit. It caps force and, with it, top speed: the gripper at 500
+    /// measured ~1600 counts/s against ~3100 at full drive. Stall protection does not depend on it.
     pub max_torque: [i32; JOINT_COUNT],
+    /// The gripper's own burnout guard: current limit (6.5 mA units) and the torque it falls back
+    /// to, in percent, once overloaded.
+    pub gripper_protection_current: i32,
+    pub gripper_overload_torque: i32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GainsFile {
+    #[serde(rename = "about")]
+    _about: Option<String>,
+    p_coefficient: i32,
+    i_coefficient: i32,
+    d_coefficient: i32,
+    max_torque: std::collections::BTreeMap<String, i32>,
+    gripper: GripperLimits,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GripperLimits {
+    protection_current: i32,
+    overload_torque: i32,
 }
 
 pub struct ServoArm {
@@ -53,11 +80,75 @@ impl Joint {
 }
 
 impl FollowerGains {
-    pub const LEROBOT: FollowerGains = FollowerGains { p: 16, d: 32, max_torque: [1000, 1000, 1000, 1000, 1000, 500] };
-    /// About 1.2x the most each joint used in Hanoi moves at step limit 20 (2026-11-23: pan 74%,
-    /// lift 66%, elbow 54%, wrist flex 66%, roll 59%; holding never above 9%). Normal moves are
-    /// unchanged; a jam or collision can't draw full current.
-    pub const MEASURED_MAX_TORQUE: [i32; JOINT_COUNT] = [900, 800, 700, 800, 700, 500];
+    /// What LeRobot's SO-101 follower writes on every connect.
+    pub const LEROBOT: FollowerGains = FollowerGains {
+        p: 16,
+        i: 0,
+        d: 32,
+        max_torque: [1000, 1000, 1000, 1000, 1000, 500],
+        gripper_protection_current: 250,
+        gripper_overload_torque: 25,
+    };
+
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        Self::from_json(&text).map_err(|e| Error::Other(format!("gains {}: {e}", path.display())))
+    }
+
+    /// Every joint's ceiling must be named; values must fit their registers.
+    pub fn from_json(text: &str) -> std::result::Result<Self, String> {
+        let file: GainsFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let mut max_torque = [0; JOINT_COUNT];
+        for joint in Joint::ALL {
+            max_torque[joint.index()] =
+                *file.max_torque.get(joint.name()).ok_or_else(|| format!("max_torque has no {}", joint.name()))?;
+        }
+        if let Some(extra) = file.max_torque.keys().find(|k| Joint::from_name(k).is_none()) {
+            return Err(format!("max_torque names an unknown joint: {extra}"));
+        }
+        let gains = Self {
+            p: file.p_coefficient,
+            i: file.i_coefficient,
+            d: file.d_coefficient,
+            max_torque,
+            gripper_protection_current: file.gripper.protection_current,
+            gripper_overload_torque: file.gripper.overload_torque,
+        };
+        let check = |name: &str, v: i32, max: i32| {
+            if (0..=max).contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} {v} is outside 0..={max}"))
+            }
+        };
+        check("p_coefficient", gains.p, 254)?;
+        check("i_coefficient", gains.i, 254)?;
+        check("d_coefficient", gains.d, 254)?;
+        for (joint, &v) in Joint::ALL.iter().zip(&gains.max_torque) {
+            check(&format!("max_torque.{}", joint.name()), v, 1000)?;
+        }
+        check("gripper.protection_current", gains.gripper_protection_current, 2047)?;
+        check("gripper.overload_torque", gains.gripper_overload_torque, 100)?;
+        Ok(gains)
+    }
+
+    /// The registers these gains set on `joint`, as (register, value), for writing and checking.
+    fn registers(&self, joint: Joint) -> Vec<(servos::Register, i32)> {
+        let mut regs = vec![
+            (servos::P_COEFFICIENT, self.p),
+            (servos::I_COEFFICIENT, self.i),
+            (servos::D_COEFFICIENT, self.d),
+            (servos::MAX_TORQUE, self.max_torque[joint.index()]),
+            (servos::TORQUE_LIMIT, self.max_torque[joint.index()]),
+            (servos::MAXIMUM_ACCELERATION, 254),
+            (servos::ACCELERATION, 254),
+        ];
+        if joint == Joint::Gripper {
+            regs.push((servos::PROTECTION_CURRENT, self.gripper_protection_current));
+            regs.push((servos::OVERLOAD_TORQUE, self.gripper_overload_torque));
+        }
+        regs
+    }
 }
 
 impl ServoArm {
@@ -142,29 +233,51 @@ impl ServoArm {
         self.configure_follower_with(FollowerGains::LEROBOT)
     }
 
-    // The register set LeRobot writes to a follower at connect time.
+    /// Writes `gains` to every servo, with the rest of the register set LeRobot writes at connect.
+    /// Follow with `check_gains`.
     pub fn configure_follower_with(&mut self, gains: FollowerGains) -> Result<()> {
-        for id in IDS {
+        for joint in Joint::ALL {
+            let id = joint.id();
             self.servos.write(id, servos::TORQUE_ENABLE, 0)?;
             self.servos.write_eeprom(id, servos::RETURN_DELAY, 0)?;
             self.servos.write_eeprom(id, servos::OPERATING_MODE, 0)?;
-            self.servos.write_eeprom(id, servos::P_COEFFICIENT, gains.p)?;
-            self.servos.write_eeprom(id, servos::I_COEFFICIENT, 0)?;
-            self.servos.write_eeprom(id, servos::D_COEFFICIENT, gains.d)?;
-            self.servos.write_unlocked(id, servos::MAXIMUM_ACCELERATION, 254)?;
-            self.servos.write(id, servos::ACCELERATION, 254)?;
+            for (reg, value) in gains.registers(joint) {
+                if reg == servos::MAXIMUM_ACCELERATION {
+                    // Outside the lockable EEPROM range, but it still needs the unlock.
+                    self.servos.write_unlocked(id, reg, value)?;
+                } else {
+                    self.servos.write_eeprom(id, reg, value)?;
+                }
+            }
         }
-        for (id, max_torque) in IDS.into_iter().zip(gains.max_torque) {
-            self.servos.write_eeprom(id, servos::MAX_TORQUE, max_torque)?;
-            // The RAM copy, in case Max_Torque only loads at power-on.
-            self.servos.write(id, servos::TORQUE_LIMIT, max_torque)?;
-        }
-        // Gripper burnout guard, LeRobot's values. Closing the leader trigger
-        // drives the claw into itself; without these it stalls at full torque.
-        let grip = Joint::Gripper.id();
-        self.servos.write_eeprom(grip, servos::PROTECTION_CURRENT, 250)?; // factory default 0 = off
-        self.servos.write_eeprom(grip, servos::OVERLOAD_TORQUE, 25)?; // overload trips at 25%
         Ok(())
+    }
+
+    /// Reads back every register contract 8 records from every servo; errors if one `gains` sets
+    /// reads differently (a write that didn't take, or another tool's value). Returns, per joint,
+    /// the registers as "Name=value ..." for the session header.
+    pub fn check_gains(&mut self, gains: &FollowerGains) -> Result<[String; JOINT_COUNT]> {
+        let mut out: [String; JOINT_COUNT] = Default::default();
+        let mut wrong = Vec::new();
+        for joint in Joint::ALL {
+            let expected = gains.registers(joint);
+            let mut read = Vec::new();
+            for reg in RECORDED_REGISTERS {
+                let value = self.servos.read(joint.id(), reg)?;
+                if let Some((_, want)) = expected.iter().find(|(r, _)| *r == reg) {
+                    if *want != value {
+                        wrong.push(format!("{} {} reads {value}, gains say {want}", joint.name(), reg.name));
+                    }
+                }
+                read.push(format!("{}={value}", reg.name));
+            }
+            out[joint.index()] = read.join(" ");
+        }
+        if wrong.is_empty() {
+            Ok(out)
+        } else {
+            Err(Error::Other(format!("servo gains didn't take: {}", wrong.join("; "))))
+        }
     }
 
     pub fn torque_off(&mut self) -> Result<()> {
@@ -415,6 +528,21 @@ const GUARD_AFTER: Duration = Duration::from_millis(50);
 const GUARD_RELEASE_AFTER: Duration = Duration::from_millis(250);
 // The step limit while the guard is on: a quarter of the default.
 const GUARD_STEP_COUNTS: i32 = 10;
+// What every session header records from each servo (contract 8).
+const RECORDED_REGISTERS: [servos::Register; 11] = [
+    servos::P_COEFFICIENT,
+    servos::I_COEFFICIENT,
+    servos::D_COEFFICIENT,
+    servos::MAX_TORQUE,
+    servos::TORQUE_LIMIT,
+    servos::PROTECTION_CURRENT,
+    servos::OVERLOAD_TORQUE,
+    servos::ACCELERATION,
+    servos::MAXIMUM_ACCELERATION,
+    servos::OPERATING_MODE,
+    servos::RETURN_DELAY,
+];
+
 // How long torque-on waits for every servo to answer a read before giving up.
 const TORQUE_ON_SETTLE: Duration = Duration::from_millis(100);
 
@@ -564,6 +692,34 @@ impl Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GAINS: &str = r#"{"p_coefficient": 32, "i_coefficient": 0, "d_coefficient": 32,
+        "max_torque": {"shoulder_pan": 900, "shoulder_lift": 800, "elbow_flex": 700,
+                       "wrist_flex": 800, "wrist_roll": 700, "gripper": 300},
+        "gripper": {"protection_current": 250, "overload_torque": 25}}"#;
+
+    #[test]
+    fn gains_load_by_joint_name() {
+        let g = FollowerGains::from_json(GAINS).unwrap();
+        assert_eq!(g.max_torque, [900, 800, 700, 800, 700, 300]);
+        assert_eq!((g.gripper_protection_current, g.gripper_overload_torque), (250, 25));
+    }
+
+    #[test]
+    fn a_gains_file_missing_a_joint_or_naming_a_stranger_is_refused() {
+        let missing = GAINS.replace(r#""wrist_roll": 700, "#, "");
+        assert!(FollowerGains::from_json(&missing).unwrap_err().contains("no wrist_roll"));
+        let stranger = GAINS.replace(r#""gripper": 300"#, r#""gripper": 300, "elbow": 5"#);
+        assert!(FollowerGains::from_json(&stranger).unwrap_err().contains("unknown joint: elbow"));
+    }
+
+    #[test]
+    fn a_gain_outside_its_register_is_refused() {
+        let too_strong = GAINS.replace(r#""gripper": 300"#, r#""gripper": 1300"#);
+        assert!(FollowerGains::from_json(&too_strong).unwrap_err().contains("max_torque.gripper 1300"));
+        let typo = GAINS.replace("p_coefficient", "p_coeficient");
+        assert!(FollowerGains::from_json(&typo).is_err(), "unknown keys are refused, not ignored");
+    }
 
     #[test]
     fn the_current_guard_engages_after_50_ms_over_budget_and_releases_after_250_ms_under() {

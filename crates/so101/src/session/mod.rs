@@ -26,6 +26,8 @@ const CALIBRATION_SUFFIX: &str = ".sha256";
 const CAMERA_PREFIX: &str = "camera.";
 const CAMERA_DEVICE_SUFFIX: &str = ".device";
 const CAMERA_SETTINGS_SUFFIX: &str = ".settings";
+const SERVO_PREFIX: &str = "servo.";
+const SERVO_REGISTERS_SUFFIX: &str = ".registers";
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -59,6 +61,9 @@ pub struct Header {
     /// Camera role ("wrist", "scene") -> device and settings read back at session start
     /// (contract 7). Tying settings to the device shows a swapped config instead of hiding it.
     pub cameras: BTreeMap<String, CameraInfo>,
+    /// Joint ("shoulder_pan" … "gripper") -> its gain and limit registers read back at session
+    /// start, "Name=value ..." (contract 8): what the follower actually ran at.
+    pub servos: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +117,7 @@ impl Header {
             config: BTreeMap::new(),
             calibrations: BTreeMap::new(),
             cameras: BTreeMap::new(),
+            servos: BTreeMap::new(),
         }
     }
 
@@ -145,6 +151,9 @@ impl Header {
             m.insert(format!("{CAMERA_PREFIX}{role}{CAMERA_DEVICE_SUFFIX}"), c.device.clone());
             m.insert(format!("{CAMERA_PREFIX}{role}{CAMERA_SETTINGS_SUFFIX}"), c.settings.clone());
         }
+        for (joint, registers) in &self.servos {
+            m.insert(format!("{SERVO_PREFIX}{joint}{SERVO_REGISTERS_SUFFIX}"), registers.clone());
+        }
         m
     }
 
@@ -173,6 +182,7 @@ impl Header {
                     })
                     .collect()
             },
+            servos: between(m, SERVO_PREFIX, SERVO_REGISTERS_SUFFIX),
         })
     }
 }

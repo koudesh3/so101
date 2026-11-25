@@ -157,10 +157,12 @@ testing the servo driver byte for byte.
 - **Synthetic:** generated frames with exact times.
 - **Replay:** frames from a session or a LeRobot dataset video, at their recorded times.
 
-**The session:** the header gains the gain and limit registers read back from every servo
-(contract 8), applied on every start from one gains file in `data/`, so the `act` wrapper and our
-runtime agree (P 32, I 0, D 32, per-joint Max_Torque, gripper 30%). The recorder keeps the scene
-camera beside the MCAP, with its CSV on the session clock.
+**The session:** the recorder keeps the scene camera beside the MCAP, with its CSV on the session
+clock. Done 2026-11-24: one gains file, `data/gains.json` (P 32, I 0, D 32, per-joint
+Max_Torque, gripper 30%), written on every start and read back, refusing to run if a servo
+differs; every header records each servo's registers as read and attaches the file; `--gains`
+replaces the `--p-gain` and `--grip-torque` flags; `act` passes the file's P/I/D to LeRobot (its
+gripper stays at LeRobot's hardcoded 50%).
 
 **Smaller changes:**
 - `JointState.t` is the midpoint of request and reply, not the reply.

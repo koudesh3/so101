@@ -93,15 +93,10 @@ enum Command {
         /// Stop after this many ticks (0 runs until Ctrl-C).
         #[arg(long, default_value_t = 0)]
         ticks: u64,
-        /// Follower position-loop P gain (servo register 21). LeRobot uses 16;
-        /// the factory default is 32. Higher is stiffer and closes gaps faster.
-        #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(i32).range(4..=64))]
-        p_gain: i32,
-        /// Follower gripper drive ceiling in percent. 30 grips discs without
-        /// flinging them (2026-11-24; 50, LeRobot's, squeezed them out); 100 is
-        /// full speed. Stall protection stays on either way.
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(i32).range(20..=100))]
-        grip_torque: i32,
+        /// The follower's gains and limits, the one source (contract 8): written to every servo
+        /// on start and read back; teleop refuses to run if one didn't take.
+        #[arg(long, default_value = "data/gains.json")]
+        gains: PathBuf,
         /// Command this many ms ahead of the leader on pan, lift, elbow and
         /// gripper, from the leader's velocity (0 = off).
         #[arg(long, default_value_t = 40, value_parser = clap::value_parser!(u64).range(0..=150))]
@@ -202,8 +197,7 @@ fn main() {
             hz,
             max_step,
             ticks,
-            p_gain,
-            grip_torque,
+            gains,
             lead_ms,
             wrist_lead_ms,
             actuators,
@@ -220,9 +214,8 @@ fn main() {
             let leader_servos = open_servos(Role::Leader, leader, cli.sim, &trace);
             let follower_servos = open_servos(Role::Follower, follower, cli.sim, &trace);
             let cals = (leader_calibration, follower_calibration);
-            let mut max_torque = FollowerGains::MEASURED_MAX_TORQUE;
-            max_torque[Joint::Gripper.index()] = grip_torque * 10;
-            let gains = FollowerGains { p: p_gain, d: FollowerGains::LEROBOT.d, max_torque };
+            let gains_file = gains;
+            let gains = FollowerGains::load(&gains_file).unwrap_or_else(|e| fail(&e.to_string()));
             let lead = Joint::ALL.map(|j| {
                 let ms = if matches!(j, Joint::WristFlex | Joint::WristRoll) { wrist_lead_ms } else { lead_ms };
                 std::time::Duration::from_millis(ms)
@@ -230,6 +223,7 @@ fn main() {
             let tuning = (gains, lead);
             let camera = (camera_clearance != "none").then(|| (PathBuf::from(camera_clearance), camera_margin_mm));
             let io = TeleopIo {
+                gains_file,
                 console_port: (console_port > 0).then_some(console_port),
                 wrist: wrist_camera.map(|d| (d, wrist_size)),
                 scene: scene_camera.map(|d| (d, scene_size)),
@@ -450,6 +444,15 @@ fn cmd_teleop(
         }
     }
     follower.configure_follower_with(gains)?;
+    let registers = follower.check_gains(&gains)?;
+    println!(
+        "gains from {}: P {} I {} D {}, gripper {}%; all six servos read back",
+        io.gains_file.display(),
+        gains.p,
+        gains.i,
+        gains.d,
+        gains.max_torque[Joint::Gripper.index()] / 10
+    );
     match camera_guard {
         Some((path, margin_mm)) => {
             let map = ClearanceMap::load(&path)?;
@@ -462,9 +465,7 @@ fn cmd_teleop(
     let options = RunOptions { hz, max_ticks: (ticks > 0).then_some(ticks), read_actuators: actuators };
     let stop = ctrl_c_flag();
     println!(
-        "teleop at {hz} Hz, max step {max_step} counts, P {}, grip torque {}%, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
-        gains.p,
-        gains.max_torque[Joint::Gripper.index()] / 10,
+        "teleop at {hz} Hz, max step {max_step} counts, lead {} ms (wrists {} ms); Ctrl-C to stop (follower torque goes off on exit)",
         lead[Joint::ShoulderPan.index()].as_millis(),
         lead[Joint::WristFlex.index()].as_millis()
     );
@@ -474,8 +475,7 @@ fn cmd_teleop(
     let config = BTreeMap::from([
         ("hz".to_string(), hz.to_string()),
         ("max_step".into(), max_step.to_string()),
-        ("p_gain".into(), gains.p.to_string()),
-        ("grip_torque_percent".into(), (gains.max_torque[Joint::Gripper.index()] / 10).to_string()),
+        ("gains_file".into(), io.gains_file.display().to_string()),
         ("lead_ms".into(), lead.map(|d| d.as_millis().to_string()).join(",")),
         ("source".into(), "teleop".into()),
     ]);
@@ -483,7 +483,7 @@ fn cmd_teleop(
         dir: io.record_dir.clone(),
         scene_video: io.scene.is_some(),
         clock: clock.clone(),
-        header: session_header(config, calibration_files, &io),
+        header: session_header(config, calibration_files, registers, &io),
     }));
     bus.attach(recording.clone());
     let console = Arc::new(Console {
@@ -548,6 +548,8 @@ fn cmd_teleop(
 
 /// The console and cameras around teleop.
 struct TeleopIo {
+    /// The gains file, attached to every recording beside the registers read back.
+    gains_file: PathBuf,
     console_port: Option<u16>,
     /// (device, size)
     wrist: Option<(String, String)>,
@@ -584,12 +586,21 @@ fn report_camera(role: &str, device: &str, started: std::io::Result<FfmpegCamera
 }
 
 /// A session header, made fresh at each recording's start: the commit, teleop's settings, both
-/// calibrations (attached), and each camera's device with its controls read back.
+/// calibrations (attached), each servo's gain registers as read back at teleop's start (nothing
+/// else writes them while it runs) with the gains file attached, and each camera's device with
+/// its controls read back.
 fn session_header(
     config: BTreeMap<String, String>,
     calibrations: Vec<(&'static str, PathBuf)>,
+    registers: [String; JOINT_COUNT],
     io: &TeleopIo,
 ) -> Box<dyn Fn() -> (Header, Vec<Attachment>) + Send + Sync> {
+    // As applied: read once, at start, not again at each recording.
+    let gains_file = std::fs::read(&io.gains_file).ok().map(|data| Attachment {
+        name: "gains.json".into(),
+        media_type: "application/json".into(),
+        data,
+    });
     let cameras: Vec<(&str, String, Vec<String>)> = [("wrist", &io.wrist), ("scene", &io.scene)]
         .into_iter()
         .filter_map(|(role, cam)| cam.as_ref().map(|(device, _)| (role, device.clone(), io.controls_for(device))))
@@ -609,10 +620,14 @@ fn session_header(
         header
             .config
             .insert("scene_video".into(), "beside the MCAP: <name>-scene.mkv, frame times in <name>-scene.csv".into());
-        let attachments = calibrations
+        let mut attachments: Vec<Attachment> = calibrations
             .iter()
             .filter_map(|(name, path)| std::fs::read(path).ok().map(|bytes| header.add_calibration(name, &bytes)))
             .collect();
+        attachments.extend(gains_file.clone());
+        for joint in Joint::ALL {
+            header.servos.insert(joint.name().to_string(), registers[joint.index()].clone());
+        }
         for (role, device, controls) in &cameras {
             let names: Vec<&str> = controls.iter().filter_map(|c| c.split('=').next()).collect();
             header.cameras.insert(

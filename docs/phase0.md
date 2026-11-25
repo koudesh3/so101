@@ -257,12 +257,15 @@ every connect, and caps the gripper at Max_Torque 500, Protection_Current 250, O
   2026-11-23, to revisit if real discs slipped; instead they flew. Teleop closes the leader against
   its stop in every grasp, so grip force is the torque ceiling; at 300, with the stall hold
   regulating the squeeze (about 21% load while holding), nothing flew in a 158 s episode. Anything
-  recorded with `act` uses LeRobot's 500 unless `act` passes 300 too. Not built yet: today the
-  values are constants in `servo_arm.rs` and CLI defaults. Our runtime will apply the file on every
-  start and read it back; `act` passes the same values to LeRobot
-  (`--robot.position_p_coefficient=32` and the I and D equivalents).
+  recorded with `act` grips at 500: LeRobot hardcodes it, and only the Phase 4 plugin changes that.
+  **Built 2026-11-24:** the file is `data/gains.json`. Teleop writes it to every servo on start,
+  reads every register back and refuses to run if one differs (`ServoArm::check_gains`); `act`
+  passes its P/I/D to LeRobot (`--robot.position_p_coefficient=32` and the I and D equivalents).
 - **Every log's header stores the gain and limit registers read back from each servo** at session
-  start, like calibration and camera settings.
+  start, like calibration and camera settings (`servo.<joint>.registers`: P, I, D, Max_Torque,
+  Torque_Limit, Protection_Current, Overload_Torque, Acceleration, Maximum_Acceleration,
+  Operating_Mode, Return_Delay), with the gains file attached as `gains.json`. Teleop reads them
+  once at start, since nothing else writes them while it runs.
 - The runtime refuses to run a policy whose training data's gains differ (Phase 4).
 - Servo health checks (temperature, voltage) act on the median of a joint's last 5 readings, never
   a single reading; the log keeps every raw reading, and the reader counts impossible values

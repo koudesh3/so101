@@ -67,6 +67,10 @@ fn header_fields() -> Header {
             settings: "auto_exposure=1 exposure_time_absolute=300 gain=0".into(),
         },
     );
+    h.servos.insert(
+        "gripper".into(),
+        "P_Coefficient=32 I_Coefficient=0 D_Coefficient=32 Max_Torque=300 Torque_Limit=300".into(),
+    );
     h
 }
 
