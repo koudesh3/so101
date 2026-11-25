@@ -9,7 +9,7 @@ use bytes::Bytes;
 use v4l::buffer::{Flags, Type};
 use v4l::control::{Control, Description as ControlDescription, Type as ControlType, Value};
 use v4l::io::mmap::Stream;
-use v4l::io::traits::CaptureStream;
+use v4l::io::traits::{CaptureStream, Stream as _};
 use v4l::video::capture::Parameters;
 use v4l::video::Capture;
 use v4l::{Device, Format, FourCC};
@@ -19,7 +19,7 @@ use crate::clock::{Clock, Timestamp};
 
 const BUFFERS: u32 = 4;
 // How long next_frame waits before returning `Timeout`, so a stopping thread notices in time.
-const WAIT: Duration = Duration::from_millis(200);
+const WAIT_MS: i32 = 200;
 
 pub struct V4l2Camera {
     role: CameraRole,
@@ -59,8 +59,15 @@ impl V4l2Camera {
         }
         let period = Duration::from_secs_f64(f64::from(interval.numerator) / f64::from(interval.denominator));
         let settings = apply_controls(&device, path, controls)?;
+        // note: the v4l crate's `next` re-queues the buffer it handed out last, then waits for the
+        // next; after its own timeout it re-queues a buffer the kernel already holds, which fails
+        // (EINVAL). So we wait ourselves and call `next` only once a frame is ready, and start the
+        // stream in the state `next` expects between calls: every buffer queued but the first.
         let mut stream = Stream::with_buffers(&device, Type::VideoCapture, BUFFERS)?;
-        stream.set_timeout(WAIT);
+        for index in 1..BUFFERS as usize {
+            stream.queue(index)?;
+        }
+        stream.start()?;
         Ok(Self { role, path: path.to_string(), period, settings, stream, _device: device, clock })
     }
 }
@@ -80,12 +87,13 @@ impl Camera for V4l2Camera {
 
     fn next_frame(&mut self) -> Result<Frame> {
         loop {
-            let (buffer, meta) = match self.stream.next() {
-                Ok(next) => next,
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Err(Error::Timeout),
+            match self.stream.handle().poll(libc::POLLIN, WAIT_MS) {
+                Ok(0) => return Err(Error::Timeout),
+                Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => return Err(Error::Io(e)),
-            };
+            }
+            let (buffer, meta) = self.stream.next()?;
             let t_receive = self.clock.now();
             if meta.flags & Flags::TIMESTAMP_MASK != Flags::TIMESTAMP_MONOTONIC {
                 return Err(Error::Device(format!("{}: kernel timestamps aren't CLOCK_MONOTONIC", self.path)));
